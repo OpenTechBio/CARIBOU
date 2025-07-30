@@ -1,0 +1,13 @@
+{
+    "soma_joinid": 5,
+    "citation": "Publication: https://doi.org/10.1016/j.isci.2022.104097 Dataset Version: https://datasets.cellxgene.cziscience.com/d5e8239f-a6a3-475a-b60d-d6991ad9a108.h5ad curated and distributed by CZ CELLxGENE Discover in Collection: https://cellxgene.cziscience.com/collections/8e880741-bf9a-4c8e-9227-934204631d2a",
+    "collection_id": "8e880741-bf9a-4c8e-9227-934204631d2a",
+    "collection_name": "High Resolution Slide-seqV2 Spatial Transcriptomics Enables Discovery of Disease-Specific Cell Neighborhoods and Pathways",
+    "collection_doi": "10.1016/j.isci.2022.104097",
+    "collection_doi_label": "Marshall et al. (2022) iScience",
+    "dataset_id": "530c9bff-c552-45b9-be77-0de605e6858b",
+    "dataset_version_id": "d5e8239f-a6a3-475a-b60d-d6991ad9a108",
+    "dataset_title": "Spatial transcriptomics in mouse: Puck_191109_14",
+    "dataset_h5ad_path": "530c9bff-c552-45b9-be77-0de605e6858b.h5ad",
+    "dataset_total_cell_count": 12351
+}

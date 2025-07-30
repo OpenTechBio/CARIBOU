@@ -1,0 +1,10 @@
+.env
+__pycache__/
+.DS_store
+outputs/
+*.sif
+*agent_systems/
+agent_systems/
+*.pyc
+**/*.pyc
+bin/
