@@ -111,7 +111,7 @@ def load_bp_json(console) -> Path:
     If multiple are found, prompt user to choose or enter manual path.
     """
     search_paths = [
-        Path.home() / "Olaf" / "cli" / "agents",
+        Path.home() / "Caribou" / "cli" / "agents",
         Path.cwd() / "cli" / "agents",
         Path.cwd() / "agents"
     ]
@@ -193,7 +193,7 @@ def save_chat_history_as_json(console: Console, history: list, file_path: Path):
         console.print(f"\n[bold red]Error saving chat history: {e}[/bold red]")
 
 def save_chat_history_as_notebook(console: Console, history: list, file_path: Path):
-    """Parses an OLAF chat log and converts it into a Jupyter Notebook (.ipynb)."""
+    """Parses an CARIBOU chat log and converts it into a Jupyter Notebook (.ipynb)."""
     notebook = {
         "cells": [],
         "metadata": {

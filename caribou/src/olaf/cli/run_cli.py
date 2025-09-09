@@ -1,4 +1,4 @@
-# olaf/cli/run_cli.py
+# caribou/cli/run_cli.py
 import os
 import re
 import textwrap
@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt, IntPrompt
 from dotenv import load_dotenv
-from olaf.config import DEFAULT_AGENT_DIR, ENV_FILE, OLAF_HOME
+from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -117,10 +117,10 @@ def main_run_callback(
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
 ):
     # --- Heavy imports are deferred to here ---
-    from olaf.agents.AgentSystem import AgentSystem
-    from olaf.core.io_helpers import collect_resources
-    from olaf.core.sandbox_management import init_docker, init_singularity_exec
-    from olaf.datasets.czi_datasets import get_datasets_dir
+    from caribou.agents.AgentSystem import AgentSystem
+    from caribou.core.io_helpers import collect_resources
+    from caribou.core.sandbox_management import init_docker, init_singularity_exec
+    from caribou.datasets.czi_datasets import get_datasets_dir
 
     load_dotenv(dotenv_path=ENV_FILE)
     app_context = AppContext()
@@ -173,7 +173,7 @@ def main_run_callback(
         from openai import OpenAI
         app_context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     elif llm_backend == "ollama":
-        from olaf.core.ollama_wrapper import OllamaClient as OpenAI
+        from caribou.core.ollama_wrapper import OllamaClient as OpenAI
         app_context.llm_client = OpenAI(host=ollama_host)
     else:
         raise typer.BadParameter(f"Unknown LLM backend '{llm_backend}'.")
@@ -193,9 +193,9 @@ def main_run_callback(
 
 def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, max_turns: int, benchmark_modules: Optional[List[Path]] = None):
     """Helper to start, run, and stop the sandbox session."""
-    from olaf.execution.runner import run_agent_session, SandboxManager
-    from olaf.agents.AgentSystem import AgentSystem
-    from olaf.core.io_helpers import save_chat_history_as_json, save_chat_history_as_notebook
+    from caribou.execution.runner import run_agent_session, SandboxManager
+    from caribou.agents.AgentSystem import AgentSystem
+    from caribou.core.io_helpers import save_chat_history_as_json, save_chat_history_as_notebook
 
     sandbox_manager = cast(SandboxManager, context.sandbox_manager)
     console = context.console
@@ -235,7 +235,7 @@ def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, ma
         sandbox_manager.stop_container()
         if not is_auto:
             if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
-                log_dir = OLAF_HOME / "runs" / "chat_logs"
+                log_dir = CARIBOU_HOME / "runs" / "chat_logs"
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 
                 # --- NEW: Prompt for save format ---

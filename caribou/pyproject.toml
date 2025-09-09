@@ -3,7 +3,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "olaf"
+name = "caribou"
 version = "0.1.0"
 description = "CLI + library for <what it does>"
 readme = "README.md"
@@ -27,9 +27,9 @@ dependencies = [
   "tf_keras"
 ]
 
-# If you want a command like `olaf …`
+# If you want a command like `caribou …`
 [project.scripts]
-olaf = "olaf.cli.main:main"
+caribou = "caribou.cli.main:main"
 
 # Optional extras (install with: pip install .[dev])
 [project.optional-dependencies]
@@ -42,4 +42,4 @@ dev = [
 
 # If you’re using a src/ layout, tell Hatch where packages live.
 [tool.hatch.build.targets.wheel]
-packages = ["src/olaf"]
+packages = ["src/caribou"]

@@ -1,4 +1,4 @@
-# src/olaf/cli/create_agent.py
+# src/caribou/cli/create_agent.py
 from __future__ import annotations
 
 import os
@@ -7,10 +7,10 @@ import tempfile
 from pathlib import Path
 import typer
 
-from olaf.agents.create_agent_system import (
+from caribou.agents.create_agent_system import (
     DEFAULT_AGENT_DIR,
     DEFAULT_SAMPLES_DIR,
-    OLAF_HOME,
+    CARIBOU_HOME,
     define_global_policy,
     define_agents,
     connect_agents,
@@ -22,16 +22,16 @@ from olaf.agents.create_agent_system import (
 # Initialize Typer. `no_args_is_help=False` allows the callback to run by default.
 app = typer.Typer(
     no_args_is_help=False,
-    help="Create OLAF agent systems. Defaults to interactive mode."
+    help="Create CARIBOU agent systems. Defaults to interactive mode."
 )
 
 def _run_interactive(output_dir: str, code_samples_dir: str):
     """
     The actual logic for the interactive agent system builder.
     """
-    os.environ.setdefault("OLAF_HOME", str(OLAF_HOME))
+    os.environ.setdefault("CARIBOU_HOME", str(CARIBOU_HOME))
 
-    print(f"{Colors.HEADER}{Colors.BOLD}--- OLAF: Create Agent System (Interactive) ---{Colors.ENDC}")
+    print(f"{Colors.HEADER}{Colors.BOLD}--- CARIBOU: Create Agent System (Interactive) ---{Colors.ENDC}")
     print(f"Using output directory: {output_dir}")
     print(f"Using code samples dir: {code_samples_dir}")
 

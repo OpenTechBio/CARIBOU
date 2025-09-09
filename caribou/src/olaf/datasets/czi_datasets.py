@@ -1,4 +1,4 @@
-# cli/olaf/src/olaf/cli/datasets.py
+# cli/caribou/src/caribou/cli/datasets.py
 
 import os
 import re
@@ -60,12 +60,12 @@ except ImportError:
             return input(p_text).strip()
 
 # --- Path Configuration ---
-APP_NAME = "olaf"
+APP_NAME = "caribou"
 APP_AUTHOR = "OpenTechBio"
 dirs = PlatformDirs(APP_NAME, APP_AUTHOR)
 
-OLAF_HOME = Path(os.environ.get("OLAF_HOME", dirs.user_data_dir)).expanduser()
-DEFAULT_DATASETS_DIR = OLAF_HOME / "datasets"
+CARIBOU_HOME = Path(os.environ.get("CARIBOU_HOME", dirs.user_data_dir)).expanduser()
+DEFAULT_DATASETS_DIR = CARIBOU_HOME / "datasets"
 
 def get_datasets_dir() -> Path:
     """

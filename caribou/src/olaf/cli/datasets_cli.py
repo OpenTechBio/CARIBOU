@@ -1,10 +1,10 @@
-# cli/olaf/src/olaf/cli/datasets_cli.py
+# cli/caribou/src/caribou/cli/datasets_cli.py
 
 import typer
 from typing_extensions import Annotated
 
 # Import the logic functions from our other file
-import olaf.datasets.czi_datasets as datasets
+import caribou.datasets.czi_datasets as datasets
 
 try:
     from rich.console import Console

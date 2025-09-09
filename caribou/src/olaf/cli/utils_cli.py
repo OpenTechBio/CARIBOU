@@ -1,4 +1,4 @@
-# olaf/cli/utils_cli.py
+# caribou/cli/utils_cli.py
 import json
 import re
 from pathlib import Path
@@ -8,20 +8,20 @@ import typer
 from rich.console import Console
 
 # Import from the central config to know where chat logs are stored by default
-from olaf.config import OLAF_HOME
+from caribou.config import CARIBOU_HOME
 
 utils_app = typer.Typer(
     name="utils",
-    help="Utility commands for managing OLAF artifacts like chat logs.",
+    help="Utility commands for managing CARIBOU artifacts like chat logs.",
     no_args_is_help=True
 )
 
 console = Console()
-LOG_DIR = OLAF_HOME / "runs" / "chat_logs"
+LOG_DIR = CARIBOU_HOME / "runs" / "chat_logs"
 
 def _convert_history_to_notebook(history_path: Path, output_path: Path):
     """
-    Parses an OLAF chat log and converts it into a Jupyter Notebook (.ipynb).
+    Parses an CARIBOU chat log and converts it into a Jupyter Notebook (.ipynb).
     """
     try:
         with open(history_path, 'r', encoding='utf-8') as f:
@@ -111,7 +111,7 @@ def convert_to_notebook(
     ),
 ):
     """
-    Converts an OLAF interactive chat log into an executable Jupyter Notebook.
+    Converts an CARIBOU interactive chat log into an executable Jupyter Notebook.
     
     This command parses the JSON log file, extracts all Python code blocks generated
     by the assistant, and arranges them into code cells. The explanatory text
@@ -119,7 +119,7 @@ def convert_to_notebook(
     reproducible protocol of the agent session.
     """
     if not chat_log.name.startswith("interactive_chat_"):
-        console.print(f"[yellow]Warning: The input file '{chat_log.name}' does not look like a standard OLAF chat log.[/yellow]")
+        console.print(f"[yellow]Warning: The input file '{chat_log.name}' does not look like a standard CARIBOU chat log.[/yellow]")
 
     output_path = output
     if output_path is None:

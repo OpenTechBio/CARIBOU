@@ -1,4 +1,4 @@
-# cli/olaf/src/olaf/__main__.py
+# cli/caribou/src/caribou/__main__.py
 
 import typer
 
@@ -10,10 +10,10 @@ from .datasets_cli import datasets_app
 from .run_cli import run_app
 from .config_cli import config_app 
 from .utils_cli import utils_app  # <-- Import the utils app
-# Main OLAF application
+# Main caribou application
 app = typer.Typer(
-    name="olaf",
-    help="OLAF: The Open-source Language Agent Framework",
+    name="caribou",
+    help="CARIBOU: The Open-source Language Agent Framework",
     no_args_is_help=True
 )
 

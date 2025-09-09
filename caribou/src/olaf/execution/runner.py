@@ -1,4 +1,4 @@
-# olaf/execution/runner.py
+# caribou/execution/runner.py
 from __future__ import annotations
 
 import json
@@ -14,12 +14,12 @@ from rich.table import Table
 
 # --- Project-specific Imports ---
 try:
-    from olaf.config import OLAF_HOME
-    from olaf.agents.AgentSystem import Agent, AgentSystem
-    from olaf.core.io_helpers import display, extract_python_code, format_execute_response
-    from olaf.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
+    from caribou.config import CARIBOU_HOME
+    from caribou.agents.AgentSystem import Agent, AgentSystem
+    from caribou.core.io_helpers import display, extract_python_code, format_execute_response
+    from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
 except ImportError as e:
-    print(f"Failed to import a required OLAF module: {e}", file=sys.stderr)
+    print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -37,7 +37,7 @@ class SandboxManager:
 
 # --- Constants and Path Setup ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
-_OUTPUTS_DIR = OLAF_HOME / "runs"
+_OUTPUTS_DIR = CARIBOU_HOME / "runs"
 _SNIPPET_DIR = _OUTPUTS_DIR / "snippets"
 _LEDGER_PATH = _OUTPUTS_DIR / f"benchmark_history_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.jsonl"
 _RAG_RE = re.compile(r"query_rag_([^>]+)")

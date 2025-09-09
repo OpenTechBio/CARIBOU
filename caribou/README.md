@@ -1,10 +1,10 @@
-# OLAF CLI: The Open-source Language Agent Framework 🚀
+# CARIBOU CLI: The Open-source Language Agent Framework 🚀
 
-**The OLAF CLI is a powerful command-line interface for building, testing, and running sandboxed, multi-agent AI systems.** 
+**The CARIBOU CLI is a powerful command-line interface for building, testing, and running sandboxed, multi-agent AI systems.** 
 
 It provides a robust framework for orchestrating multiple language agents that can collaborate to perform complex tasks, such as data analysis, in a secure and isolated environment.
 
-At its core, OLAF allows you to define a team of specialized AI agents in a simple JSON "blueprint." You can then deploy this team into a secure sandbox (powered by Docker or Singularity) with a specific dataset and give them a high-level task to solve.
+At its core, CARIBOU allows you to define a team of specialized AI agents in a simple JSON "blueprint." You can then deploy this team into a secure sandbox (powered by Docker or Singularity) with a specific dataset and give them a high-level task to solve.
 
 ## Key Features
 
@@ -19,7 +19,7 @@ At its core, OLAF allows you to define a team of specialized AI agents in a simp
 
 ### Prerequisites
 
-Before installing OLAF, you need to have the following installed and configured on your system:
+Before installing CARIBOU, you need to have the following installed and configured on your system:
 
 1.  **Python** (version 3.9 or higher)
 2.  **Pip** (Python's package installer)
@@ -35,10 +35,10 @@ Coming soon!
 To install the latest development version, you can clone the repository and install it in editable mode:
 
 ```bash
-git clone https://github.com/OpenTechBio/Olaf
-cd olaf/cli/olaf
+git clone https://github.com/OpenTechBio/caribou
+cd caribou/cli/caribou
 pip install -e .
-olaf
+caribou
 ```
 
 -----
@@ -49,13 +49,13 @@ This guide will walk you through setting up your API key, downloading a dataset,
 
 ### Step 1: Configure Your API Key
 
-First, tell OLAF about your OpenAI API key. This is a one-time setup.
+First, tell CARIBOU about your OpenAI API key. This is a one-time setup.
 
 ```bash
-olaf config set-openai-key "sk-YourSecretKeyGoesHere"
+caribou config set-openai-key "sk-YourSecretKeyGoesHere"
 ```
 
-Your key will be stored securely in a local `.env` file within the OLAF configuration directory.
+Your key will be stored securely in a local `.env` file within the CARIBOU configuration directory.
 
 ### Step 2: Download a Dataset
 
@@ -63,7 +63,7 @@ Next, let's get some data for our agents to analyze. Run the `datasets` command 
 
 ```bash
 # This will start the interactive dataset browser
-olaf datasets
+caribou datasets
 ```
 
 Follow the prompts to list versions and datasets, then use the `download` command as instructed.
@@ -73,7 +73,7 @@ Follow the prompts to list versions and datasets, then use the `download` comman
 Now you're ready to run an agent system. The `run` command is fully interactive if you don't provide any flags. It will guide you through selecting a blueprint, a dataset, and a sandbox environment.
 
 ```bash
-olaf run interactive
+caribou run interactive
 ```
 
 This will trigger a series of prompts:
@@ -90,76 +90,76 @@ After configuration, the session will begin, and you can start giving instructio
 
 ## Command Reference
 
-OLAF's commands are organized into logical groups.
+CARIBOU's commands are organized into logical groups.
 
-### `olaf run`
+### `caribou run`
 
 The main command for executing an agent system.
 
   * **Run interactively (recommended for manual use):**
     ```bash
-    olaf run interactive
+    caribou run interactive
     ```
   * **Run automatically for 5 turns:**
     ```bash
-    olaf run auto --turns 5 --prompt "Analyze this dataset and generate a UMAP plot."
+    caribou run auto --turns 5 --prompt "Analyze this dataset and generate a UMAP plot."
     ```
   * **Run with all options specified (for scripting):**
     ```bash
-    olaf run interactive \
-      --blueprint ~/.local/share/olaf/agent_systems/my_custom_system.json \
+    caribou run interactive \
+      --blueprint ~/.local/share/caribou/agent_systems/my_custom_system.json \
       --driver-agent data_analyst \
-      --dataset ~/.local/share/olaf/datasets/my_data.h5ad \
+      --dataset ~/.local/share/caribou/datasets/my_data.h5ad \
       --sandbox docker \
       --llm chatgpt
     ```
 
-### `olaf create-system`
+### `caribou create-system`
 
 Tools for building new agent system blueprints.
 
   * **Start the interactive builder:**
     ```bash
-    olaf create-system
+    caribou create-system
     ```
   * **Create a minimal blueprint quickly:**
     ```bash
-    olaf create-system quick --name my-first-system
+    caribou create-system quick --name my-first-system
     ```
 
-### `olaf datasets`
+### `caribou datasets`
 
 Tools for managing datasets.
 
   * **Start the interactive dataset browser:**
     ```bash
-    olaf datasets
+    caribou datasets
     ```
   * **Download a specific dataset directly:**
     ```bash
-    olaf datasets download --version stable --dataset-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    caribou datasets download --version stable --dataset-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     ```
 
-### `olaf config`
+### `caribou config`
 
-Manage your OLAF configuration.
+Manage your CARIBOU configuration.
 
   * **Set your OpenAI API key:**
     ```bash
-    olaf config set-openai-key "sk-..."
+    caribou config set-openai-key "sk-..."
     ```
 
 -----
 
 ## Configuration
 
-OLAF stores all user-generated content and configuration in a central directory. You can override this location by setting the `OLAF_HOME` environment variable.
+CARIBOU stores all user-generated content and configuration in a central directory. You can override this location by setting the `CARIBOU_HOME` environment variable.
 
   * **Default Location:**
-      * **Linux:** `~/.local/share/olaf/`
-      * **macOS:** `~/Library/Application Support/olaf/`
-      * **Windows:** `C:\Users\<user>\AppData\Local\OpenTechBio\olaf\`
-  * **Configuration File:** API keys are stored in `$OLAF_HOME/.env`.
-  * **Agent Systems:** Custom blueprints are saved to `$OLAF_HOME/agent_systems/`.
-  * **Datasets:** Downloaded datasets are stored in `$OLAF_HOME/datasets/`.
-  * **Run Outputs:** Code snippets and logs from agent runs are saved to `$OLAF_HOME/runs/`.
+      * **Linux:** `~/.local/share/caribou/`
+      * **macOS:** `~/Library/Application Support/caribou/`
+      * **Windows:** `C:\Users\<user>\AppData\Local\OpenTechBio\caribou\`
+  * **Configuration File:** API keys are stored in `$CARIBOU_HOME/.env`.
+  * **Agent Systems:** Custom blueprints are saved to `$CARIBOU_HOME/agent_systems/`.
+  * **Datasets:** Downloaded datasets are stored in `$CARIBOU_HOME/datasets/`.
+  * **Run Outputs:** Code snippets and logs from agent runs are saved to `$CARIBOU_HOME/runs/`.

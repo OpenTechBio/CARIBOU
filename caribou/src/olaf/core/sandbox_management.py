@@ -5,7 +5,7 @@ from pathlib import Path
 
 import json
 
-from olaf.sandbox.benchmarking_sandbox_management import (
+from caribou.sandbox.benchmarking_sandbox_management import (
     SandboxManager as _BackendManager,
     CONTAINER_NAME as _SANDBOX_HANDLE,
     IMAGE_TAG as _SANDBOX_IMAGE,  
@@ -36,7 +36,7 @@ def init_docker(script_dir:str, subprocess, console, force_refresh:bool=False):
 
 
 def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console, force_refresh: bool = False):
-    import olaf.sandbox.benchmarking_sandbox_management_singularity as sing
+    import caribou.sandbox.benchmarking_sandbox_management_singularity as sing
 
     # optional force‑refresh
     if force_refresh:

@@ -2,11 +2,11 @@ import json
 from typing import Dict, Optional
 from pathlib import Path
 
-# Import the central OLAF_HOME path from our config module
-from olaf.config import OLAF_HOME
+# Import the central CARIBOU_HOME path from our config module
+from caribou.config import CARIBOU_HOME
 
 # 1. The user-specific directory (for custom samples)
-USER_CODE_SAMPLES_DIR = OLAF_HOME / "code_samples"
+USER_CODE_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
 USER_CODE_SAMPLES_DIR.mkdir(exist_ok=True) # Ensure it exists
 
 # 2. The package-internal directory (for default samples), found relative to this file

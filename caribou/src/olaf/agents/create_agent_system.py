@@ -5,16 +5,16 @@ from pathlib import Path
 from platformdirs import PlatformDirs
 import tempfile
 
-APP_NAME   = "olaf"
+APP_NAME   = "caribou"
 APP_AUTHOR = "OpenTechBio"
 dirs = PlatformDirs(APP_NAME, APP_AUTHOR)
 
-# Root for user-specific OLAF files. Precedence: env -> platformdirs.
-OLAF_HOME = Path(os.environ.get("OLAF_HOME", dirs.user_data_dir)).expanduser()
+# Root for user-specific CARIBOU files. Precedence: env -> platformdirs.
+CARIBOU_HOME = Path(os.environ.get("CARIBOU_HOME", dirs.user_data_dir)).expanduser()
 
 # Subfolders we manage
-DEFAULT_AGENT_DIR = OLAF_HOME / "agent_systems"
-DEFAULT_SAMPLES_DIR = OLAF_HOME / "code_samples"
+DEFAULT_AGENT_DIR = CARIBOU_HOME / "agent_systems"
+DEFAULT_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
 
 # A simple class to hold ANSI color codes for terminal output
 class Colors:
@@ -22,7 +22,7 @@ class Colors:
     OKGREEN = '\033[92m'; WARNING = '\033[93m'; FAIL = '\033[91m'
     ENDC = '\033[0m'; BOLD = '\033[1m'; UNDERLINE = '\033[4m'
 
-# Prefer the user’s code_samples under OLAF_HOME; fall back to repo relative path if empty.
+# Prefer the user’s code_samples under CARIBOU_HOME; fall back to repo relative path if empty.
 REPO_SAMPLES_DIR = Path("cli/code_samples")
 CODE_SAMPLES_DIR = DEFAULT_SAMPLES_DIR if (DEFAULT_SAMPLES_DIR.exists() and any(DEFAULT_SAMPLES_DIR.glob("*.py"))) else REPO_SAMPLES_DIR
 
@@ -42,11 +42,11 @@ def define_global_policy() -> str:
 def get_output_directory() -> str:
     """
     Ask the user for an output directory. Default is a user data directory:
-      - $OLAF_HOME/agent_systems if OLAF_HOME is set
+      - $CARIBOU_HOME/agent_systems if CARIBOU_HOME is set
       - otherwise platformdirs user_data_dir, e.g.:
-          macOS:   ~/Library/Application Support/olaf/agent_systems
-          Linux:   ~/.local/share/olaf/agent_systems
-          Windows: %APPDATA%/olaf/agent_systems
+          macOS:   ~/Library/Application Support/caribou/agent_systems
+          Linux:   ~/.local/share/caribou/agent_systems
+          Windows: %APPDATA%/caribou/agent_systems
     """
     default_dir = str(DEFAULT_AGENT_DIR)
     prompt = f"{Colors.WARNING}Enter the output directory (press Enter to use '{default_dir}'): {Colors.ENDC}"

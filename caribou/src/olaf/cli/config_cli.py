@@ -1,14 +1,14 @@
-# olaf/cli/config_cli.py
+# caribou/cli/config_cli.py
 import re
 import typer
 from rich.console import Console
 
 # Import the centralized ENV_FILE path
-from olaf.config import ENV_FILE
+from caribou.config import ENV_FILE
 
 config_app = typer.Typer(
     name="config",
-    help="Manage OLAF configuration and API keys.",
+    help="Manage CARIBOU configuration and API keys.",
     no_args_is_help=True
 )
 
@@ -19,7 +19,7 @@ def set_api_key(
     api_key: str = typer.Argument(..., help="Your OpenAI API key (e.g., 'sk-...')")
 ):
     """
-    Saves your OpenAI API key to the OLAF environment file.
+    Saves your OpenAI API key to the CARIBOU environment file.
     """
     if not api_key.startswith("sk-"):
         console.print("[yellow]Warning: Key does not look like a standard OpenAI API key (should start with 'sk-').[/yellow]")
