@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.prompt import Prompt, IntPrompt
 from dotenv import load_dotenv
 
-from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME
+from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME, DEFAULT_BLUEPRINT_NAME
 
 # --------------------------------------------------------------------------------------
 # Constants & Package Paths
@@ -310,7 +310,7 @@ def initialize_context(
 
     # ---- Agent System Blueprint ----
     if blueprint is None:
-        blueprint = prompt_for_file(console, DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR, ".json", "Agent System Blueprint")
+        blueprint = prompt_for_file(console, DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR, ".json", "Agent System Blueprint", default_name=DEFAULT_BLUEPRINT_NAME)
     context.agent_system = AgentSystem.load_from_json(str(blueprint))
 
     # ---- Driver Agent ----

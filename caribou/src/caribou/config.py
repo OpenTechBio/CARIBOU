@@ -16,6 +16,9 @@ CARIBOU_HOME = Path(os.environ.get("CARIBOU_HOME", dirs.user_data_dir)).expandus
 DEFAULT_AGENT_DIR = CARIBOU_HOME / "agent_systems"
 DEFAULT_DATASETS_DIR = CARIBOU_HOME / "datasets"
 
+# The benchmark-validated full multi-agent system used in end-to-end evaluation
+DEFAULT_BLUEPRINT_NAME = "caribou_fully_connected_v2.json"
+
 # Define the path to the environment file for storing secrets like API keys
 ENV_FILE = CARIBOU_HOME / ".env"
 
