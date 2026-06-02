@@ -51,13 +51,16 @@ From: nvidia/cuda:12.0.0-devel-ubuntu22.04
     chmod +x /opt/offline_kernel.py
 
     # --- 5 ▸ Create home directory structure and mamba config ------
-    # Ensure home directory and subdirectories exist with proper permissions
     mkdir -p "/home/$NB_USER/.config/mamba"
-    # Create minimal .mambarc to prevent warnings
+    mkdir -p "/home/$NB_USER/.ipython/profile_default/startup"
     cat > "/home/$NB_USER/.mambarc" << 'EOF'
 # Minimal mamba config
 show_banner: false
 EOF
+
+    # Install rpy2 IPython startup script so %%R magic is available at kernel boot
+    cp /opt/app/00_rpy2_init.py "/home/$NB_USER/.ipython/profile_default/startup/00_rpy2_init.py"
+
     chown -R "$NB_USER:$NB_GID" "/home/$NB_USER"
 
     # Clean up
@@ -79,6 +82,8 @@ EOF
     export MAMBA_NO_BANNER=1
     export MAMBA_NO_LOW_SPEED_LIMIT=1
     export PYTHONUNBUFFERED=1
+    # R_HOME must be set explicitly so rpy2 can locate the conda-installed R
+    export R_HOME="/usr/local/envs/rapids/lib/R"
     # Set conda environment variables directly (no need for shell hook/activation)
     export CONDA_PREFIX="/usr/local/envs/rapids"
     export CONDA_DEFAULT_ENV="rapids"

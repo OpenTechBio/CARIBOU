@@ -57,12 +57,12 @@ dependencies:
   - fastapi
   - uvicorn
   - python-multipart
-  # R runtime + bioinformatics packages
+  # R runtime + bioinformatics packages (conda-forge for correct R library linking)
   - r-base
   - r-seurat
+  - rpy2
+  - anndata2ri
 
   - pip:
     - rapids-singlecell
     - scib-metrics
-    - rpy2
-    - anndata2ri

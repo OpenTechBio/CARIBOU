@@ -77,13 +77,14 @@ def _convert_history_to_notebook(history_path: Path, output_path: Path):
         if role and "assistant" in role:
             parts = split_message_by_fence(content)
             for kind, part in parts:
-                if kind == "code":
+                if kind.startswith("code"):
+                    source = f"%%R\n{part}" if kind == "code_r" else part
                     cell = {
                         "cell_type": "code",
                         "execution_count": None,
                         "metadata": {},
                         "outputs": [],
-                        "source": part,
+                        "source": source,
                     }
                 else:
                     cell = {"cell_type": "markdown", "metadata": {}, "source": part}

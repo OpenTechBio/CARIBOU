@@ -52,6 +52,16 @@ class Agent:
             full_prompt += "\n\n**YOU MUST USE THESE EXACT COMMANDS TO DELEGATE TASKS. NO OTHER FORMATTING OR COMMANDS ARE ALLOWED.**"
 
         full_prompt += (
+            "\n\n## Execution Environment\n"
+            "You are connected to a live sandbox kernel. Write code to execute experiments:\n"
+            "- **Python**: use a ```python``` block — runs in the IPython kernel\n"
+            "- **R**: use a ```r``` block — runs via rpy2 in the same kernel session, "
+            "sharing memory with Python. Use `anndata2ri` to convert between "
+            "AnnData (Python) and SingleCellExperiment (R).\n"
+            "Each block executes immediately and its output is returned to you."
+        )
+
+        full_prompt += (
             "\n\nTo end the session early when you believe the task is complete, "
             "emit the command on a standalone line: `end_session`. "
             "The end_session message must not include code blocks or other content."
@@ -79,7 +89,7 @@ class Agent:
                 "**CRITICAL RULES:**\n"
                 "1. These files DO NOT EXIST on disk inside the sandbox. You CANNOT `import` them or run them directly.\n"
                 "2. They exist solely to show you the correct API, function signatures, and patterns.\n"
-                "3. You MUST rewrite any logic you need from scratch inside your own ```python``` code block.\n"
+                "3. You MUST rewrite any logic you need from scratch inside your own ```python``` or ```r``` code block.\n"
                 "4. Treat them like documentation — read, understand, then write your own implementation.\n"
             )
             for sample_name, sample_content in self.code_samples.items():
