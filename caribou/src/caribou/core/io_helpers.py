@@ -250,10 +250,12 @@ def format_execute_response(resp: dict, output_dir) -> str:
     return "\n".join(lines)
 
 def prompt_for_file(
-    console: Console, user_dir: Path, package_dir: Path, extension: str, prompt_title: str
+    console: Console, user_dir: Path, package_dir: Path, extension: str, prompt_title: str,
+    default_name: Optional[str] = None,
 ) -> Path:
     """
     Generic helper to find files, or prompt for a custom path if none are suitable.
+    default_name: filename (not full path) to pre-select and mark as [default].
     """
     console.print(f"[bold]Select {prompt_title}:[/bold]")
     found_files = []
@@ -268,17 +270,21 @@ def prompt_for_file(
             if file_path.name not in seen_filenames:
                 found_files.append({"path": file_path, "label": "Package"})
                 seen_filenames.add(file_path.name)
-    
-    # Display any found files
+
+    default_choice_str = None
     for i, file_info in enumerate(found_files, 1):
-        console.print(f"  [cyan]{i}[/cyan]: {file_info['path'].name} [yellow]({file_info['label']})[/yellow]")
+        is_default = default_name and file_info["path"].name == default_name
+        tag = " [bold green]\[default][/bold green]" if is_default else ""
+        console.print(f"  [cyan]{i}[/cyan]: {file_info['path'].name} [yellow]({file_info['label']})[/yellow]{tag}")
+        if is_default:
+            default_choice_str = str(i)
 
     # Add the custom path option at the end of the list
     custom_path_option_index = len(found_files) + 1
     console.print(f"  [cyan]{custom_path_option_index}[/cyan]: Provide a custom file path...")
-    
+
     choices = [str(i) for i in range(1, custom_path_option_index + 1)]
-    choice_str = Prompt.ask("Enter the number of your choice", choices=choices)
+    choice_str = Prompt.ask("Enter the number of your choice", choices=choices, default=default_choice_str)
     choice_idx = int(choice_str) - 1
 
     if choice_idx == len(found_files):  # User selected the "Provide custom path" option

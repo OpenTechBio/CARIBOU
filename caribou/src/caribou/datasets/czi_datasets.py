@@ -8,7 +8,6 @@ import shlex
 import sys
 from pathlib import Path
 
-import cellxgene_census
 from platformdirs import PlatformDirs
 
 try:
@@ -84,6 +83,7 @@ def sanitize_filename(name: str) -> str:
 
 def get_census_versions_data():
     """Fetches available CELLxGENE Census versions data."""
+    import cellxgene_census
     try:
         census_versions = cellxgene_census.get_census_version_directory()
         versions_list = []
@@ -107,6 +107,7 @@ def fetch_source_datasets_data(census_version: str):
     """Fetches source datasets DataFrame for a specific Census version."""
     console = Console()
     console.print(f"Fetching source datasets info for Census version: [cyan]{census_version}[/cyan]...")
+    import cellxgene_census
     try:
         with cellxgene_census.open_soma(census_version=census_version) as census:
             datasets_df = census["census_info"]["datasets"].read().concat().to_pandas()
@@ -154,6 +155,7 @@ def download_dataset(console: Console, census_version: str, dataset_id: str):
 
         # 3. Download H5AD
         console.print(f"Downloading H5AD to [blue]{h5ad_filepath}[/blue]...")
+        import cellxgene_census
         cellxgene_census.download_source_h5ad(dataset_id, to_path=str(h5ad_filepath), census_version=census_version)
         console.print("[bold green]H5AD Download complete.[/bold green]")
 
