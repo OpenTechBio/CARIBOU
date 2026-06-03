@@ -1,0 +1,211 @@
+<div class="session-layout">
+
+  <!-- Top bar -->
+  <header class="session-header">
+    <button class="btn btn-ghost btn-sm back-btn" (click)="goBack()">← Back</button>
+    <div class="session-info">
+      <span class="session-id">{{ session()?.id?.slice(0,8) }}</span>
+      <span class="agent-badge" *ngIf="currentAgent()">{{ currentAgent() }}</span>
+    </div>
+    <div class="header-right">
+      <span class="turn-counter" *ngIf="session()">
+        Turn {{ session()!.current_turn }}{{ session()!.max_turns ? ' / ' + session()!.max_turns : '' }}
+      </span>
+      <app-status-indicator [status]="status()" />
+      <button class="btn btn-danger btn-sm" *ngIf="isRunning()" (click)="stopSession()">Stop</button>
+    </div>
+  </header>
+
+  <!-- Fatal error banner -->
+  @if (isError() && lastError()) {
+    <div class="error-banner">
+      <strong>{{ lastError()!.code }}</strong>
+      <span>{{ lastError()!.message }}</span>
+    </div>
+  }
+
+  <div class="session-body">
+
+    <!-- Chat panel -->
+    <main class="chat-panel" (scroll)="onScroll($event)">
+      <div class="chat-content">
+
+        @for (item of chatItems(); track $index) {
+          @if (item.kind === 'message' && item.message) {
+            <app-message-bubble [message]="item.message" [streaming]="false" />
+          }
+          @if (item.kind === 'delegation' && item.delegation) {
+            <div class="delegation-indicator">
+              <span>{{ item.delegation.from }}</span>
+              <span class="arrow">→</span>
+              <span>{{ item.delegation.to }}</span>
+              <code class="cmd">{{ item.delegation.command }}</code>
+            </div>
+          }
+          @if (item.kind === 'code' && item.codeEvent) {
+            <div class="code-item">
+              <div class="code-header">
+                <span class="agent-tag">{{ item.codeEvent.submitted.agent_name }}</span>
+                <span class="exec-status"
+                  [class.ok]="item.codeEvent.result?.success"
+                  [class.fail]="item.codeEvent.result?.success === false">
+                  {{ item.codeEvent.result ? (item.codeEvent.result.success ? '✓' : '✗') : '…' }}
+                </span>
+                <span class="duration" *ngIf="item.codeEvent.result">{{ item.codeEvent.result.duration_ms }}ms</span>
+              </div>
+              <pre class="code-source">{{ item.codeEvent.submitted.source }}</pre>
+              @if (item.codeEvent.result?.stdout) {
+                <pre class="code-stdout">{{ item.codeEvent.result!.stdout }}</pre>
+              }
+              @if (item.codeEvent.result?.stderr) {
+                <pre class="code-stderr">{{ item.codeEvent.result!.stderr }}</pre>
+              }
+            </div>
+          }
+          @if (item.kind === 'error' && item.error) {
+            <div class="chat-error-item" [class.fatal]="item.error.fatal">
+              <div class="chat-error-header">
+                <span class="error-icon">⚠</span>
+                <span class="error-code">{{ item.error.code }}</span>
+                <span class="error-ts">{{ item.error.timestamp | date:'HH:mm:ss' }}</span>
+                <span class="error-severity">{{ item.error.fatal ? 'fatal' : 'non-fatal' }}</span>
+              </div>
+              <pre class="error-message">{{ item.error.message }}</pre>
+            </div>
+          }
+        }
+
+        <!-- Sandbox initializing indicator -->
+        @if (isInitializing()) {
+          <div class="init-indicator">
+            <div class="spinner"></div>
+            <span>Starting sandbox — this may take up to 30 seconds…</span>
+          </div>
+        }
+
+        <!-- Thinking indicator: running but no tokens yet -->
+        @if (isThinking()) {
+          <div class="thinking-indicator">
+            <span class="thinking-label">{{ currentAgent() || 'Agent' }}</span>
+            <div class="thinking-dots">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+        }
+
+        <!-- Streaming message bubble -->
+        @if (stream.isStreaming()) {
+          <app-message-bubble
+            [message]="{
+              id: 'streaming',
+              session_id: session()?.id ?? '',
+              turn: (session()?.current_turn ?? 0) + 1,
+              role: 'assistant',
+              agent_name: stream.streamingAgent(),
+              content: stream.streamingContent(),
+              timestamp: '',
+              is_delegation: false
+            }"
+            [streaming]="true" />
+        }
+
+        <div #chatBottom></div>
+      </div>
+    </main>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+      @if (errorLog().length > 0) {
+        <section class="sidebar-section error-log-section">
+          <h3>Errors <span class="count error-count">{{ errorLog().length }}</span></h3>
+          @for (err of errorLog(); track $index) {
+            <div class="sidebar-error">
+              <div class="sidebar-error-header">
+                <span class="error-code">{{ err.code }}</span>
+                <span class="error-ts">{{ err.timestamp | date:'HH:mm:ss' }}</span>
+              </div>
+              <p class="sidebar-error-msg">{{ err.message }}</p>
+            </div>
+          }
+        </section>
+      }
+
+      <section class="sidebar-section">
+        <h3>Artifacts <span class="count">{{ artifacts().length }}</span></h3>
+        @for (artifact of artifacts(); track artifact.id) {
+          <app-artifact-card [artifact]="artifact" />
+        }
+        @if (artifacts().length === 0) {
+          <p class="empty">No artifacts yet.</p>
+        }
+      </section>
+
+      <section class="sidebar-section">
+        <h3>Status Log</h3>
+        <div class="status-log">
+          @for (entry of statusLog(); track $index) {
+            <div class="status-log-entry" [class]="'log-' + entry.status">
+              <span class="log-dot"></span>
+              <div class="log-body">
+                <div class="log-main">
+                  <span class="log-status">{{ entry.status }}</span>
+                  @if (entry.count > 1) {
+                    <span class="log-count">×{{ entry.count }}</span>
+                  }
+                </div>
+                @if (entry.reason) {
+                  <div class="log-reason">{{ entry.reason }}</div>
+                }
+                <div class="log-time">{{ entry.timestamp | date:'HH:mm:ss' }}</div>
+              </div>
+            </div>
+          }
+          @if (statusLog().length === 0) {
+            <p class="empty">No status events yet.</p>
+          }
+        </div>
+      </section>
+
+      <section class="sidebar-section">
+        <h3>Session</h3>
+        <div class="meta-list" *ngIf="session() as s">
+          <span class="ml">Blueprint</span><span>{{ s.agent_system }}</span>
+          <span class="ml">Backend</span><span>{{ s.llm_backend }}</span>
+          <span class="ml">Sandbox</span><span>{{ s.sandbox_type }}</span>
+          <span class="ml">Mode</span><span>{{ s.mode }}</span>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- Input bar -->
+  <footer class="input-bar">
+    <textarea
+      class="message-input"
+      [value]="userInput()"
+      (input)="userInput.set($any($event.target).value)"
+      (keydown)="onKeyDown($event)"
+      [disabled]="isError() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing()"
+      placeholder="{{
+        isError()          ? 'Session ended with an error — see error log' :
+        isInitializing()   ? 'Initializing sandbox…' :
+        session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
+        session()?.mode === 'auto' && status() === 'stopped' ? 'Auto session complete' :
+        'Enter your message (Shift+Enter for newline)'
+      }}"
+      rows="2">
+    </textarea>
+    @if (isRunning() || isInitializing()) {
+      <button class="btn btn-danger send-btn" (click)="stopSession()">Stop</button>
+    } @else {
+      <button
+        class="btn btn-primary send-btn"
+        (click)="sendMessage()"
+        [disabled]="!userInput().trim() || isError()">
+        Send
+      </button>
+    }
+  </footer>
+
+</div>

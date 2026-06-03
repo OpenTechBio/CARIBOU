@@ -1,0 +1,10 @@
+<div class="artifact-card">
+  @if (isPlot) {
+    <img class="artifact-preview" [src]="downloadUrl" [alt]="artifact.filename" loading="lazy" />
+  }
+  <div class="artifact-info">
+    <span class="artifact-name" [title]="artifact.filename">{{ artifact.filename }}</span>
+    <span class="artifact-size">{{ formatSize(artifact.size_bytes) }}</span>
+    <a class="btn btn-ghost btn-xs" [href]="downloadUrl" [download]="artifact.filename">↓</a>
+  </div>
+</div>

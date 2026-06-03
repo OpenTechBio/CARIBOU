@@ -73,3 +73,35 @@ class AnthropicClient:
         message = SimpleNamespace(content=content, role="assistant")
         choice = SimpleNamespace(message=message, index=0, finish_reason=getattr(response, "stop_reason", "stop"))
         return SimpleNamespace(choices=[choice])
+
+    def stream_chat(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        **_: Any,
+    ):
+        """Generator that yields text tokens one at a time for streaming responses."""
+        system_parts: List[str] = []
+        converted: List[Dict[str, str]] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system_parts.append(str(content))
+                continue
+            converted.append({"role": role if role in ("assistant", "user") else "user", "content": content})
+
+        system_prompt = "\n\n".join(system_parts) if system_parts else None
+
+        with self._client.messages.stream(
+            model=model or self._default_model,
+            system=system_prompt,
+            messages=converted,
+            temperature=temperature,
+            max_tokens=max_output_tokens or self._max_output_tokens,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
