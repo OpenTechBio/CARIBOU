@@ -1,0 +1,98 @@
+/* CARIBOU — light cividis theme
+   Cividis dark end (#00204D navy) drives all text/borders/interactive elements.
+   Warm white surface + yellow highlight from the bright end of the scale.       */
+
+:root {
+  --bg:             #FFFFFF;
+  --surface:        #F7F4EB;
+  --surface-2:      #EEE9D8;
+  --border:         #D4CEB8;
+  --border-light:   #E8E3D2;
+
+  --text:           #1A1710;
+  --text-muted:     #6B6555;
+  --text-on-dark:   #F7F4EB;
+
+  /* Cividis scale — dark to bright */
+  --cividis-navy:   #00204D;
+  --cividis-blue:   #31446B;
+  --cividis-mid:    #666870;
+  --cividis-olive:  #958F78;
+  --cividis-warm:   #BBAE6A;
+  --cividis-yellow: #F0D060;
+  --cividis-pale:   #FDF6D0;
+
+  /* Semantic roles */
+  --primary:        var(--cividis-blue);
+  --primary-dark:   var(--cividis-navy);
+  --primary-bg:     var(--cividis-pale);
+  --accent:         var(--cividis-warm);
+
+  --error:          #A03828;
+  --error-bg:       #FDF0ED;
+  --error-border:   #E8C4BC;
+
+  --success:        #2A5C3A;
+  --success-bg:     #EEF6F0;
+
+  /* legacy aliases so existing components keep working */
+  --caribou-green:  var(--cividis-warm);
+  --caribou-blue:   var(--cividis-blue);
+  --caribou-red:    var(--error);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cividis-olive); }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.45rem 1rem;
+  transition: all 0.15s;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  &.btn-primary {
+    background: var(--primary);
+    color: var(--text-on-dark);
+    &:not(:disabled):hover { background: var(--primary-dark); }
+  }
+  &.btn-danger {
+    background: var(--error);
+    color: #fff;
+    &:not(:disabled):hover { background: #8a2e20; }
+  }
+  &.btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    &:not(:disabled):hover { color: var(--text); border-color: var(--cividis-olive); background: var(--surface); }
+  }
+  &.btn-sm  { padding: 0.25rem 0.6rem;  font-size: 0.75rem; }
+  &.btn-xs  { padding: 0.1rem  0.35rem; font-size: 0.7rem;  }
+}

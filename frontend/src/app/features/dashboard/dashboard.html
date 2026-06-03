@@ -1,0 +1,137 @@
+<div class="dashboard">
+  <header class="dashboard-header">
+    <div class="brand">
+      <span class="brand-name">CARIBOU</span>
+      <span class="brand-sub">Multi-Agent Bioinformatics</span>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-ghost btn-sm" routerLink="/settings">⚙ Settings</a>
+      <button class="btn btn-primary" (click)="openCreate()">+ New Session</button>
+    </div>
+  </header>
+
+  <section class="sessions-section">
+    <h2>Sessions</h2>
+    @if (sessionSvc.sessions().length === 0) {
+      <div class="empty-state">
+        <p>No sessions yet. Create one to get started.</p>
+      </div>
+    }
+    <div class="session-grid">
+      @for (session of sessionSvc.sessions(); track session.id) {
+        <div class="session-card" (click)="openSession(session.id)">
+          <div class="session-card-header">
+            <app-status-indicator [status]="session.status" />
+            <span class="session-id">{{ session.id.slice(0, 8) }}</span>
+            <button class="btn btn-ghost btn-sm delete-btn" (click)="requestDelete(session.id, $event)">✕</button>
+          </div>
+          <div class="session-meta">
+            <span class="label">Blueprint</span>
+            <span>{{ session.agent_system }}</span>
+            <span class="label">Backend</span>
+            <span>{{ session.llm_backend }}</span>
+            <span class="label">Turn</span>
+            <span>{{ session.current_turn }}{{ session.max_turns ? ' / ' + session.max_turns : '' }}</span>
+            <span class="label">Agent</span>
+            <span class="agent-name">{{ session.current_agent || '—' }}</span>
+          </div>
+          <div class="session-footer">
+            <span>{{ session.artifact_count }} artifacts</span>
+            <span>{{ session.message_count }} messages</span>
+          </div>
+        </div>
+      }
+    </div>
+  </section>
+</div>
+
+<!-- Delete confirmation dialog -->
+@if (pendingDeleteId()) {
+  <div class="overlay" (click)="cancelDelete()">
+    <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
+      <div class="confirm-icon">🗑</div>
+      <h3>Delete session?</h3>
+      <p class="confirm-detail">
+        <code>{{ pendingDeleteId()?.slice(0, 8) }}</code>
+        @if (pendingDeleteSession; as s) {
+          &nbsp;·&nbsp;{{ s.agent_system }}&nbsp;·&nbsp;{{ s.llm_backend }}
+        }
+      </p>
+      <p class="confirm-warning">This will permanently remove the session and all its messages. This cannot be undone.</p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelDelete()">Cancel</button>
+        <button class="btn btn-danger" (click)="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Create session dialog -->
+@if (showCreateDialog()) {
+  <div class="overlay" (click)="cancelCreate()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h2>New Session</h2>
+
+      @if (createError()) {
+        <div class="error-banner">{{ createError() }}</div>
+      }
+
+      <div class="form-grid">
+        <label>Blueprint</label>
+        <select [(ngModel)]="form.agent_system">
+          @for (bp of configSvc.blueprints(); track bp.name) {
+            <option [value]="bp.name">{{ bp.name }}</option>
+          }
+        </select>
+
+        <label>LLM Backend</label>
+        <select [(ngModel)]="form.llm_backend">
+          @for (be of availableBackends(); track be.id) {
+            <option [value]="be.id">{{ be.display_name }}</option>
+          }
+        </select>
+
+        <label>Sandbox</label>
+        <select [(ngModel)]="form.sandbox_type">
+          <option value="singularity">Singularity</option>
+          <option value="docker">Docker</option>
+          <option value="offline">Offline</option>
+        </select>
+
+        <label>Mode</label>
+        <select [(ngModel)]="form.mode">
+          <option value="auto">Auto</option>
+          <option value="interactive">Interactive</option>
+        </select>
+
+        <label>Max Turns</label>
+        <input type="number" [(ngModel)]="form.max_turns" min="1" max="100" />
+
+        <label>Dataset</label>
+        <div class="dataset-row">
+          <select [(ngModel)]="form.dataset_path">
+            <option value="">— select uploaded dataset —</option>
+            @for (ds of datasets(); track ds.filename) {
+              <option [value]="ds.path">{{ ds.filename }} ({{ formatSize(ds.size_bytes) }})</option>
+            }
+          </select>
+          <label class="upload-btn">
+            Upload
+            <input type="file" accept=".h5ad" (change)="onFileSelected($event)" hidden />
+          </label>
+        </div>
+
+        <label>Initial Prompt</label>
+        <textarea [(ngModel)]="form.initial_prompt" rows="4"
+          placeholder="Describe the analysis task…"></textarea>
+      </div>
+
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelCreate()">Cancel</button>
+        <button class="btn btn-primary" (click)="submitCreate()" [disabled]="creating()">
+          {{ creating() ? 'Creating…' : 'Create Session' }}
+        </button>
+      </div>
+    </div>
+  </div>
+}

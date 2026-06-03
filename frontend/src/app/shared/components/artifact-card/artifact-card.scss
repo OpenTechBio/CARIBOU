@@ -1,0 +1,39 @@
+.artifact-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+  transition: box-shadow 0.15s;
+  &:hover { box-shadow: 0 2px 8px rgba(0,20,40,0.08); }
+}
+
+.artifact-preview {
+  width: 100%;
+  display: block;
+  max-height: 180px;
+  object-fit: contain;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.artifact-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.artifact-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.artifact-size {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
