@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -26,6 +27,7 @@ from caribou.server.routes.config import router as config_router
 from caribou.server.routes.sessions import router as sessions_router
 from caribou.server.routes.datasets import router as datasets_router
 from caribou.server.routes.websocket import router as ws_router
+from caribou.server.session_manager import session_manager
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _FRONTEND_DIST = _PACKAGE_ROOT / "frontend" / "dist" / "frontend" / "browser"
@@ -74,14 +76,17 @@ class OodPathMiddleware:
         await self.app(scope, receive, send)
 
 
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await session_manager.shutdown_all()
+
 
 app = FastAPI(
     title="CARIBOU Server",
     description="Web API for CARIBOU multi-agent LLM framework",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(OodPathMiddleware)

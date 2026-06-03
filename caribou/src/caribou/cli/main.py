@@ -11,6 +11,7 @@ from .run_cli import run_app
 from .config_cli import config_app
 from .utils_cli import utils_app
 from .serve_cli import serve_app
+from .server_cli import server_app
 
 # Main caribou application
 app = typer.Typer(
@@ -26,6 +27,7 @@ app.add_typer(run_app, name="run")
 app.add_typer(config_app, name="config")
 app.add_typer(utils_app, name="utils")
 app.add_typer(serve_app, name="serve")
+app.add_typer(server_app, name="server")
 
 
 def main():

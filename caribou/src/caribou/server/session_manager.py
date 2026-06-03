@@ -249,6 +249,62 @@ class SessionManager:
                 except Exception:
                     pass
 
+    async def shutdown_all(self) -> List[str]:
+        """
+        Stop all active server-owned sessions and sandbox processes.
+
+        This is used by the FastAPI lifespan shutdown hook. It is deliberately
+        best-effort: one broken sandbox must not prevent the rest from being
+        torn down.
+        """
+        errors: List[str] = []
+
+        async with self._lock:
+            sessions = list(self._sessions.values())
+
+        for session in sessions:
+            session.stop_flag.set()
+
+        for session in sessions:
+            if session.runner_task and not session.runner_task.done():
+                session.runner_task.cancel()
+
+        for session in sessions:
+            if session.runner_task and not session.runner_task.done():
+                try:
+                    await asyncio.wait_for(session.runner_task, timeout=5)
+                except asyncio.CancelledError:
+                    pass
+                except asyncio.TimeoutError:
+                    errors.append(f"{session.id}: runner did not stop before timeout")
+                except Exception as exc:
+                    errors.append(f"{session.id}: runner shutdown failed: {exc}")
+
+            if session.sandbox_manager:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(session.sandbox_manager.stop_container),
+                        timeout=10,
+                    )
+                except asyncio.TimeoutError:
+                    errors.append(f"{session.id}: sandbox did not stop before timeout")
+                except Exception as exc:
+                    errors.append(f"{session.id}: sandbox shutdown failed: {exc}")
+
+            if session.status in (SessionStatus.initializing, SessionStatus.running, SessionStatus.idle):
+                session.status = SessionStatus.stopped
+                session.updated_at = datetime.utcnow()
+                session.events.append({
+                    "type": "status_change",
+                    "session_id": session.id,
+                    "turn": session.current_turn,
+                    "timestamp": session.updated_at.isoformat(),
+                    "data": {"status": "stopped", "reason": "server shutdown"},
+                })
+                self._save_session(session)
+
+        return errors
+
     async def send_user_message(self, session_id: str, content: str) -> bool:
         """Put a user message into the interactive-mode queue. Returns False if not found."""
         session = self._sessions.get(session_id)
