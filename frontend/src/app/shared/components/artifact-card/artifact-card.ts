@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+import { Component, Input, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Artifact } from '../../../core/models/session.model';
 
@@ -11,10 +11,17 @@ import { Artifact } from '../../../core/models/session.model';
 })
 export class ArtifactCardComponent {
   @Input() artifact!: Artifact;
+  lightboxOpen = false;
 
   get isPlot(): boolean {
     return this.artifact.type === 'plot';
   }
+
+  openLightbox(): void  { this.lightboxOpen = true; }
+  closeLightbox(): void { this.lightboxOpen = false; }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void { this.lightboxOpen = false; }
 
   get downloadUrl(): string {
     const base = document.baseURI.replace(/\/$/, '');
