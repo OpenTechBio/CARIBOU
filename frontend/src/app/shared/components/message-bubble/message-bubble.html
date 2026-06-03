@@ -6,7 +6,9 @@
     </span>
     <span class="streaming-cursor" *ngIf="streaming">▌</span>
   </div>
-  <div class="bubble-content">
-    <pre class="message-text">{{ message.content }}</pre>
-  </div>
+  @if (streaming) {
+    <div class="bubble-content md-body streaming-text">{{ message.content }}</div>
+  } @else {
+    <div class="bubble-content md-body" [innerHTML]="message.content | markdown"></div>
+  }
 </div>

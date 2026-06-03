@@ -1,6 +1,12 @@
 <div class="artifact-card">
   @if (isPlot) {
-    <img class="artifact-preview" [src]="downloadUrl" [alt]="artifact.filename" loading="lazy" />
+    <img
+      class="artifact-preview"
+      [src]="downloadUrl"
+      [alt]="artifact.filename"
+      loading="lazy"
+      (click)="openLightbox()"
+      title="Click to enlarge" />
   }
   <div class="artifact-info">
     <span class="artifact-name" [title]="artifact.filename">{{ artifact.filename }}</span>
@@ -8,3 +14,17 @@
     <a class="btn btn-ghost btn-xs" [href]="downloadUrl" [download]="artifact.filename">↓</a>
   </div>
 </div>
+
+<!-- Lightbox overlay -->
+@if (lightboxOpen) {
+  <div class="lightbox-overlay" (click)="closeLightbox()">
+    <div class="lightbox-container" (click)="$event.stopPropagation()">
+      <button class="lightbox-close" (click)="closeLightbox()">✕</button>
+      <img class="lightbox-img" [src]="downloadUrl" [alt]="artifact.filename" />
+      <div class="lightbox-caption">
+        {{ artifact.filename }}
+        <a class="lightbox-download" [href]="downloadUrl" [download]="artifact.filename">↓ Download</a>
+      </div>
+    </div>
+  </div>
+}
