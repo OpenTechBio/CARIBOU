@@ -181,31 +181,58 @@
 
   <!-- Input bar -->
   <footer class="input-bar">
-    <textarea
-      class="message-input"
-      [value]="userInput()"
-      (input)="userInput.set($any($event.target).value)"
-      (keydown)="onKeyDown($event)"
-      [disabled]="isError() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing()"
-      placeholder="{{
-        isError()          ? 'Session ended with an error — see error log' :
-        isInitializing()   ? 'Initializing sandbox…' :
-        session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
-        session()?.mode === 'auto' && status() === 'stopped' ? 'Auto session complete' :
-        'Enter your message (Shift+Enter for newline)'
-      }}"
-      rows="2">
-    </textarea>
-    @if (isRunning() || isInitializing()) {
-      <button class="btn btn-danger send-btn" (click)="stopSession()">Stop</button>
+
+    @if (canExtend() && showExtend()) {
+      <!-- Extend panel -->
+      <div class="extend-panel">
+        @if (extendError()) {
+          <span class="extend-error">{{ extendError() }}</span>
+        }
+        <span class="extend-label">Continue for</span>
+        <input
+          class="extend-input"
+          type="number"
+          [value]="extendTurns()"
+          (input)="extendTurns.set(+$any($event.target).value)"
+          min="1" max="100" />
+        <span class="extend-label">more turns</span>
+        <button class="btn btn-primary btn-sm" (click)="confirmExtend()" [disabled]="extending()">
+          {{ extending() ? 'Starting…' : 'Continue' }}
+        </button>
+        <button class="btn btn-ghost btn-sm" (click)="showExtend.set(false)">Cancel</button>
+      </div>
     } @else {
-      <button
-        class="btn btn-primary send-btn"
-        (click)="sendMessage()"
-        [disabled]="!userInput().trim() || isError()">
-        Send
-      </button>
+      <textarea
+        class="message-input"
+        [value]="userInput()"
+        (input)="userInput.set($any($event.target).value)"
+        (keydown)="onKeyDown($event)"
+        [disabled]="isError() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing()"
+        placeholder="{{
+          isError()          ? 'Session ended with an error — see error log' :
+          isInitializing()   ? 'Initializing sandbox…' :
+          session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
+          session()?.mode === 'auto' && status() === 'stopped' ? 'Auto session complete' :
+          'Enter your message (Shift+Enter for newline)'
+        }}"
+        rows="2">
+      </textarea>
+      @if (isRunning() || isInitializing()) {
+        <button class="btn btn-danger send-btn" (click)="stopSession()">Stop</button>
+      } @else if (canExtend()) {
+        <button class="btn btn-primary send-btn" (click)="showExtend.set(true)">
+          + Extend
+        </button>
+      } @else {
+        <button
+          class="btn btn-primary send-btn"
+          (click)="sendMessage()"
+          [disabled]="!userInput().trim() || isError()">
+          Send
+        </button>
+      }
     }
+
   </footer>
 
 </div>

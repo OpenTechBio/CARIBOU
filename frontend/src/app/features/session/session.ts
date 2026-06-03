@@ -63,6 +63,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   pendingCode = signal<Map<string, CodeSubmittedData>>(new Map());
   errorLog = signal<ErrorRecord[]>([]);
   statusLog = signal<StatusEntry[]>([]);
+  showExtend = signal(false);
+  extendTurns = signal(10);
+  extending = signal(false);
+  extendError = signal<string | null>(null);
   autoScroll = true;
   private subs = new Subscription();
   private shouldScrollToBottom = false;
@@ -201,6 +205,27 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   stopSession(): void {
     this.stream.stop();
+  }
+
+  canExtend = computed(() =>
+    this.session()?.mode === 'auto' && this.status() === 'stopped'
+  );
+
+  confirmExtend(): void {
+    const s = this.session();
+    if (!s) return;
+    this.extending.set(true);
+    this.extendError.set(null);
+    this.sessionSvc.extendSession(s.id, this.extendTurns()).subscribe({
+      next: () => {
+        this.extending.set(false);
+        this.showExtend.set(false);
+      },
+      error: (err) => {
+        this.extending.set(false);
+        this.extendError.set(err?.error?.detail ?? 'Failed to extend session.');
+      },
+    });
   }
 
   goBack(): void {

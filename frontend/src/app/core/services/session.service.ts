@@ -66,6 +66,12 @@ export class SessionService {
     return `${base}/api/sessions/${sessionId}/artifacts/${artifactId}/download`;
   }
 
+  extendSession(id: string, additionalTurns: number): Observable<Session> {
+    return this.http.post<Session>(`api/sessions/${id}/extend`, { additional_turns: additionalTurns }).pipe(
+      tap(s => this.updateLocal(s))
+    );
+  }
+
   updateLocal(session: Session): void {
     this.currentSession.set(session);
     this.sessions.update(all => all.map(s => s.id === session.id ? session : s));

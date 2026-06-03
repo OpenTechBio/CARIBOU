@@ -89,6 +89,9 @@
   display: flex;
   flex-direction: column;
   gap: 0.875rem;
+  /* min-width: 0 prevents flex children from overflowing their column */
+  min-width: 0;
+  width: 100%;
 }
 
 /* ── Thinking / loading indicator ── */
@@ -471,3 +474,35 @@ pre.error-message {
 }
 
 .send-btn { align-self: flex-end; padding: 0.55rem 1.25rem; }
+
+.extend-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.extend-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.extend-input {
+  width: 72px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  text-align: center;
+  &:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(49,68,107,0.1); }
+}
+
+.extend-error {
+  font-size: 0.78rem;
+  color: var(--error);
+  width: 100%;
+}

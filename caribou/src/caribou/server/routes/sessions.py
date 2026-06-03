@@ -6,6 +6,7 @@ from typing import List
 import aiofiles
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from caribou.server.models import (
     ArtifactRecord,
@@ -15,6 +16,10 @@ from caribou.server.models import (
     SessionResponse,
 )
 from caribou.server.session_manager import session_manager
+
+
+class ExtendRequest(BaseModel):
+    additional_turns: int
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -34,6 +39,23 @@ async def get_session(session_id: str) -> SessionResponse:
     s = session_manager.get_session(session_id)
     if not s:
         raise HTTPException(404, "Session not found")
+    return s.to_response()
+
+
+@router.post("/{session_id}/extend", response_model=SessionResponse)
+async def extend_session(session_id: str, body: ExtendRequest) -> SessionResponse:
+    s = session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.config.mode.value != "auto":
+        raise HTTPException(400, "Only auto sessions can be extended")
+    if s.status.value != "stopped":
+        raise HTTPException(400, "Session must be stopped before extending")
+    if not s.live_history:
+        raise HTTPException(400, "No conversation history to resume from — session may have been restored from disk after a restart")
+    ok = await session_manager.extend_run(session_id, body.additional_turns)
+    if not ok:
+        raise HTTPException(500, "Failed to extend session")
     return s.to_response()
 
 

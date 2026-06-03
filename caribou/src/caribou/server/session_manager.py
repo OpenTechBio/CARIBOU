@@ -75,6 +75,8 @@ class _Session:
     agent_system: Any = None
     driver_agent: Any = None
     initial_history: List[Dict] = field(default_factory=list)
+    # Live history — mutated in-place by the runner so we always have the latest state
+    live_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
@@ -258,7 +260,7 @@ class SessionManager:
     async def start_run(self, session_id: str, initial_prompt: str) -> bool:
         """
         Called when the WebSocket client sends a 'run' message.
-        Launches the runner task.
+        Launches the runner task from the beginning.
         """
         session = self._sessions.get(session_id)
         if not session or session.status not in (SessionStatus.idle,):
@@ -266,18 +268,60 @@ class SessionManager:
         if session.runner_task and not session.runner_task.done():
             return False
 
-        # Append initial user message to history
         history = list(session.initial_history)
         history.append({"role": "user", "content": initial_prompt})
+        # Store on session so extend_run can resume from here
+        session.live_history = history
+
+        return await self._launch_runner(session, history)
+
+    async def extend_run(self, session_id: str, additional_turns: int) -> bool:
+        """
+        Resume a stopped auto session for additional_turns more turns,
+        continuing from the exact conversation state where it left off.
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        if session.status not in (SessionStatus.stopped,):
+            return False
+        if session.config.mode != SessionMode.auto:
+            return False
+        if not session.live_history:
+            return False
+        if not session.sandbox_manager or not session.agent_system:
+            return False
+        if session.runner_task and not session.runner_task.done():
+            return False
+
+        # Reset stop flag for the new run
+        session.stop_flag.clear()
+        session.status = SessionStatus.idle
+
+        # Update max_turns to allow additional_turns more from current position
+        new_max = session.current_turn + additional_turns
+        session.config = session.config.model_copy(update={"max_turns": new_max})
+
+        self._on_event(session, {
+            "type": "status_change",
+            "session_id": session.id,
+            "turn": session.current_turn,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {"status": "running", "reason": f"extended by {additional_turns} turns"},
+        })
+
+        return await self._launch_runner(session, session.live_history)
+
+    async def _launch_runner(self, session: _Session, history: List[Dict]) -> bool:
+        """Shared runner launch logic used by start_run and extend_run."""
+        from caribou.server.streaming_runner import run_session_async
 
         is_auto = session.config.mode == SessionMode.auto
         max_turns = session.config.max_turns or 20
 
-        from caribou.server.streaming_runner import run_session_async
-
         session.runner_task = asyncio.create_task(
             run_session_async(
-                session_id=session_id,
+                session_id=session.id,
                 agent_system=session.agent_system,
                 driver_agent=session.driver_agent,
                 analysis_context=session.analysis_context,

@@ -2,6 +2,8 @@
   border-radius: 10px;
   padding: 0.75rem 1rem;
   max-width: 100%;
+  min-width: 0;       /* prevents flex children from blowing past parent */
+  overflow: hidden;   /* clip anything that escapes the border-radius */
 
   &.user {
     background: var(--surface);
@@ -59,7 +61,10 @@
   font-size: 0.875rem;
   line-height: 1.65;
   color: var(--text);
+  /* Prose: wrap long words/URLs rather than overflow */
+  overflow-wrap: break-word;
   word-break: break-word;
+  min-width: 0;
 
   // Streaming plain text (no markdown rendered yet)
   &.streaming-text {
@@ -134,8 +139,14 @@
     pre {
       margin: 0;
       padding: 0.75rem;
+      /* Code blocks scroll horizontally — never wrap */
       overflow-x: auto;
+      overflow-y: visible;
       background: transparent;
+      /* Custom scrollbar to match dark code background */
+      &::-webkit-scrollbar       { height: 5px; }
+      &::-webkit-scrollbar-track { background: #141828; }
+      &::-webkit-scrollbar-thumb { background: #3a4060; border-radius: 3px; }
     }
 
     code {
@@ -143,6 +154,10 @@
       font-size: 0.8rem;
       line-height: 1.55;
       background: transparent;
+      /* Keep code on one logical line — scrolling handles overflow */
+      white-space: pre;
+      word-break: normal;
+      overflow-wrap: normal;
     }
   }
 }
