@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -7,7 +9,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from caribou.config import CARIBOU_HOME
-from caribou.server.models import DatasetRecord
+from caribou.server.models import DatasetPathValidationRequest, DatasetRecord
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -19,6 +21,9 @@ _PACKAGE_DATASETS_DIR = Path(__file__).resolve().parent.parent.parent / "dataset
 
 # User datasets downloaded via `caribou datasets`
 _USER_DATASETS_DIR = CARIBOU_HOME / "datasets"
+
+_PATH_VALIDATION_ERROR = "Dataset path must be an absolute readable .h5ad file."
+_UPLOAD_VALIDATION_ERROR = "Uploaded dataset must be a .h5ad file."
 
 
 def _scan_dir(directory: Path, deletable: bool) -> List[DatasetRecord]:
@@ -36,11 +41,45 @@ def _scan_dir(directory: Path, deletable: bool) -> List[DatasetRecord]:
     return records
 
 
+def _record_for_hpc_path(raw_path: str) -> DatasetRecord:
+    path_text = raw_path.strip()
+    if not path_text or "\x00" in path_text:
+        raise HTTPException(400, _PATH_VALIDATION_ERROR)
+
+    path = Path(path_text)
+    if not path.is_absolute() or path.suffix != ".h5ad":
+        raise HTTPException(400, _PATH_VALIDATION_ERROR)
+
+    try:
+        file_stat = path.stat()
+    except (OSError, ValueError):
+        raise HTTPException(400, _PATH_VALIDATION_ERROR)
+
+    if not stat.S_ISREG(file_stat.st_mode) or not os.access(path, os.R_OK):
+        raise HTTPException(400, _PATH_VALIDATION_ERROR)
+
+    try:
+        with path.open("rb"):
+            pass
+    except OSError:
+        raise HTTPException(400, _PATH_VALIDATION_ERROR)
+
+    return DatasetRecord(
+        filename=path.name,
+        path=str(path),
+        size_bytes=file_stat.st_size,
+        uploaded_at=datetime.fromtimestamp(file_stat.st_mtime),
+    )
+
+
 @router.post("", response_model=DatasetRecord, status_code=201)
 async def upload_dataset(file: UploadFile) -> DatasetRecord:
     if not file.filename:
         raise HTTPException(400, "No filename provided")
-    dest = _UPLOADS_DIR / file.filename
+    safe_name = Path(file.filename).name
+    if safe_name != file.filename or safe_name in ("", ".", "..") or Path(safe_name).suffix != ".h5ad":
+        raise HTTPException(400, _UPLOAD_VALIDATION_ERROR)
+    dest = _UPLOADS_DIR / safe_name
     try:
         with dest.open("wb") as f:
             while chunk := await file.read(1024 * 1024):
@@ -53,6 +92,11 @@ async def upload_dataset(file: UploadFile) -> DatasetRecord:
         size_bytes=dest.stat().st_size,
         uploaded_at=datetime.utcnow(),
     )
+
+
+@router.post("/validate-path", response_model=DatasetRecord)
+async def validate_dataset_path(body: DatasetPathValidationRequest) -> DatasetRecord:
+    return _record_for_hpc_path(body.path)
 
 
 @router.get("", response_model=List[DatasetRecord])

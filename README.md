@@ -90,6 +90,7 @@ npm run build          # outputs to frontend/dist/frontend/browser/
 ```bash
 caribou serve                    # binds to 0.0.0.0:8000
 caribou serve --port 9000        # custom port
+caribou serve --refresh          # backend reload + Angular browser refresh
 ```
 
 FastAPI serves both the REST/WebSocket API and the Angular static bundle. The server auto-detects the Open OnDemand node-proxy path pattern and strips it transparently — no extra flags needed.
@@ -113,18 +114,15 @@ Open the Ports panel (bottom panel → Ports tab), click **Forward a Port**, ent
 
 ### Development (hot reload)
 
-Run the Angular dev server locally and proxy API calls to the HPC server:
+Let `caribou serve` start both the backend and Angular dev server:
 
 ```bash
-# On HPC: start the backend
-caribou serve --port 8000
-
-# Locally: start the dev server (proxies /api and /ws to HPC via SSH tunnel)
-cd frontend
-ng serve
+caribou serve --refresh
 ```
 
-`proxy.conf.json` is pre-configured to forward `/api` and `/ws` to `localhost:8000`.
+`--refresh` starts Uvicorn with backend reload and starts Angular on port `4200`
+with browser auto-refresh. Use `--frontend-port 4201` if port `4200` is already
+in use. FastAPI remains available on the backend port, usually `8000`.
 
 ### Frontend features
 
@@ -176,7 +174,9 @@ caribou run auto \
 ```bash
 caribou serve                     # start web server on 0.0.0.0:8000
 caribou serve --port 9000         # custom port
-caribou serve --reload            # dev mode with auto-reload
+caribou serve --reload            # backend Python auto-reload only
+caribou serve --refresh           # backend reload + Angular browser refresh
+caribou serve --refresh --frontend-port 4201
 ```
 
 ### `caribou create-system`

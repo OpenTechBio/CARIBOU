@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import queue
+import shutil
 import subprocess
 import textwrap
 import threading
@@ -113,6 +114,7 @@ class SessionManager:
 
     def __init__(self) -> None:
         self._sessions: Dict[str, _Session] = {}
+        self._deleted_session_ids: set[str] = set()
         self._lock = asyncio.Lock()
         self._load_persisted_sessions()
 
@@ -123,8 +125,16 @@ class SessionManager:
     def _session_file(self, session_id: str) -> Path:
         return _SESSIONS_DIR / session_id / "session.json"
 
+    def _session_dir(self, session_id: str) -> Path:
+        return _SESSIONS_DIR / session_id
+
+    def _is_deleted(self, session_id: str) -> bool:
+        return session_id in getattr(self, "_deleted_session_ids", set())
+
     def _save_session(self, session: _Session) -> None:
         """Write session state to disk. Called after every non-token event."""
+        if self._is_deleted(session.id):
+            return
         try:
             path = self._session_file(session.id)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +151,8 @@ class SessionManager:
                 "code_events": [c.model_dump() for c in session.code_events],
                 "events": session.events,
             }
+            if self._is_deleted(session.id):
+                return
             path.write_text(json.dumps(data, indent=2, default=str))
         except Exception:
             pass  # persistence failure must never crash the server
@@ -220,6 +232,7 @@ class SessionManager:
         )
 
         async with self._lock:
+            self._deleted_session_ids.discard(session_id)
             self._sessions[session_id] = session
 
         self._save_session(session)
@@ -238,7 +251,9 @@ class SessionManager:
             session.stop_flag.set()
 
     async def delete_session(self, session_id: str) -> None:
-        session = self._sessions.pop(session_id, None)
+        async with self._lock:
+            self._deleted_session_ids.add(session_id)
+            session = self._sessions.pop(session_id, None)
         if session:
             session.stop_flag.set()
             if session.runner_task and not session.runner_task.done():
@@ -248,6 +263,10 @@ class SessionManager:
                     await asyncio.to_thread(session.sandbox_manager.stop_container)
                 except Exception:
                     pass
+        try:
+            await asyncio.to_thread(shutil.rmtree, self._session_dir(session_id), ignore_errors=True)
+        except Exception:
+            pass
 
     async def shutdown_all(self) -> List[str]:
         """
@@ -407,6 +426,8 @@ class SessionManager:
 
     def _on_event(self, session: _Session, event: Dict[str, Any]) -> None:
         """Called from run_session_async (main thread via call_soon_threadsafe)."""
+        if self._is_deleted(session.id):
+            return
         session.events.append(event)
         session.updated_at = datetime.utcnow()
         self._process_event(session, event)
@@ -485,6 +506,8 @@ class SessionManager:
         load_dotenv(dotenv_path=ENV_FILE, override=True)
 
         def _emit_init(event_type: str, data: Dict) -> None:
+            if self._is_deleted(session.id):
+                return
             self._on_event(session, {
                 "type": event_type,
                 "session_id": session.id,
@@ -494,10 +517,15 @@ class SessionManager:
             })
 
         try:
+            if self._is_deleted(session.id):
+                return
+
             # --- Agent system ---
             from caribou.agents.AgentSystem import AgentSystem
             blueprint_path = _find_blueprint(session.config.agent_system)
             agent_sys = AgentSystem.load_from_json(str(blueprint_path))
+            if self._is_deleted(session.id):
+                return
             session.agent_system = agent_sys
 
             # Pick driver agent: first agent in the system
@@ -507,6 +535,8 @@ class SessionManager:
 
             # --- LLM client ---
             llm_client, model_name = _build_llm_client(session.config.llm_backend)
+            if self._is_deleted(session.id):
+                return
             session.llm_client = llm_client
             session.model_name = model_name
 
@@ -531,6 +561,12 @@ class SessionManager:
             sandbox_manager = await asyncio.to_thread(
                 _build_sandbox, session.config, session.output_dir
             )
+            if self._is_deleted(session.id):
+                try:
+                    await asyncio.to_thread(sandbox_manager.stop_container)
+                except Exception:
+                    pass
+                return
             session.sandbox_manager = sandbox_manager
 
             session.status = SessionStatus.idle
