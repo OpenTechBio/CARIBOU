@@ -11,6 +11,10 @@ import { DatasetService } from '../../core/services/dataset.service';
 import { Session, SessionCreateRequest, Dataset, AgentBlueprint, LLMBackend } from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 
+type DatasetSource = 'existing' | 'upload' | 'hpc';
+
+const DEFAULT_AGENT_SYSTEM = 'caribou_fully_connected_v2';
+
 @Component({
   selector: 'app-dashboard',
   standalone: true,
@@ -29,6 +33,11 @@ export class DashboardComponent implements OnInit {
   creating = signal(false);
   createError = signal<string | null>(null);
   pendingDeleteId = signal<string | null>(null);
+  datasetSource = signal<DatasetSource>('existing');
+  hpcDatasetPath = signal('');
+  hpcDataset = signal<Dataset | null>(null);
+  hpcPathError = signal<string | null>(null);
+  hpcValidating = signal(false);
 
   get pendingDeleteSession() {
     return this.sessionSvc.sessions().find(s => s.id === this.pendingDeleteId());
@@ -53,7 +62,8 @@ export class DashboardComponent implements OnInit {
   ngOnInit(): void {
     this.sessionSvc.loadSessions().subscribe();
     this.configSvc.loadAll().subscribe(() => {
-      const bp = this.configSvc.blueprints()[0];
+      const bp = this.configSvc.blueprints().find(b => b.name === DEFAULT_AGENT_SYSTEM)
+        ?? this.configSvc.blueprints()[0];
       if (bp) this.form.agent_system = bp.name;
       const be = this.availableBackends()[0];
       if (be) this.form.llm_backend = be.id;
@@ -71,6 +81,10 @@ export class DashboardComponent implements OnInit {
   }
 
   submitCreate(): void {
+    if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
+      this.createError.set('Validate the HPC dataset path before creating a session.');
+      return;
+    }
     if (!this.form.agent_system || !this.form.llm_backend || !this.form.dataset_path) {
       this.createError.set('Blueprint, backend, and dataset are required.');
       return;
@@ -118,7 +132,50 @@ export class DashboardComponent implements OnInit {
       if (ev.dataset) {
         this.datasets.update(d => [...d, ev.dataset!]);
         this.form.dataset_path = ev.dataset!.path;
+        this.datasetSource.set('existing');
       }
+    });
+  }
+
+  onDatasetSourceChange(source: DatasetSource): void {
+    this.datasetSource.set(source);
+    this.createError.set(null);
+    if (source === 'hpc') {
+      this.form.dataset_path = this.hpcDataset()?.path ?? '';
+    } else {
+      this.form.dataset_path = '';
+      this.hpcPathError.set(null);
+      this.hpcValidating.set(false);
+    }
+  }
+
+  onHpcPathInput(value: string): void {
+    this.hpcDatasetPath.set(value);
+    this.hpcDataset.set(null);
+    this.hpcPathError.set(null);
+    this.form.dataset_path = '';
+  }
+
+  validateHpcPath(): void {
+    const path = this.hpcDatasetPath().trim();
+    if (!path) {
+      this.hpcPathError.set('Enter an absolute HPC path to a .h5ad file.');
+      return;
+    }
+    this.hpcValidating.set(true);
+    this.hpcPathError.set(null);
+    this.datasetSvc.validateHpcPath(path).subscribe({
+      next: (dataset) => {
+        this.hpcValidating.set(false);
+        this.hpcDataset.set(dataset);
+        this.form.dataset_path = dataset.path;
+      },
+      error: (err) => {
+        this.hpcValidating.set(false);
+        this.hpcDataset.set(null);
+        this.form.dataset_path = '';
+        this.hpcPathError.set(err?.error?.detail ?? 'Path is not a readable .h5ad file.');
+      },
     });
   }
 

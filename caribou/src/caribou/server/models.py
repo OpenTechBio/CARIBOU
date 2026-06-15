@@ -155,6 +155,10 @@ class DatasetRecord(BaseModel):
     uploaded_at: datetime
 
 
+class DatasetPathValidationRequest(BaseModel):
+    path: str
+
+
 # ---------------------------------------------------------------------------
 # WebSocket messages (client → server)
 # ---------------------------------------------------------------------------

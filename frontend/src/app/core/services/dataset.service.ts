@@ -11,6 +11,10 @@ export class DatasetService {
     return this.http.get<Dataset[]>('api/datasets');
   }
 
+  validateHpcPath(path: string): Observable<Dataset> {
+    return this.http.post<Dataset>('api/datasets/validate-path', { path });
+  }
+
   uploadDataset(file: File): Observable<{ progress: number; dataset?: Dataset }> {
     const form = new FormData();
     form.append('file', file, file.name);

@@ -108,17 +108,52 @@
         <input type="number" [(ngModel)]="form.max_turns" min="1" max="100" />
 
         <label>Dataset</label>
-        <div class="dataset-row">
-          <select [(ngModel)]="form.dataset_path">
-            <option value="">— select uploaded dataset —</option>
-            @for (ds of datasets(); track ds.filename) {
-              <option [value]="ds.path">{{ ds.filename }} ({{ formatSize(ds.size_bytes) }})</option>
-            }
-          </select>
-          <label class="upload-btn">
-            Upload
-            <input type="file" accept=".h5ad" (change)="onFileSelected($event)" hidden />
-          </label>
+        <div class="dataset-picker">
+          <div class="source-tabs">
+            <button type="button" class="source-tab" [class.active]="datasetSource() === 'existing'"
+              (click)="onDatasetSourceChange('existing')">Existing</button>
+            <button type="button" class="source-tab" [class.active]="datasetSource() === 'upload'"
+              (click)="onDatasetSourceChange('upload')">Upload</button>
+            <button type="button" class="source-tab" [class.active]="datasetSource() === 'hpc'"
+              (click)="onDatasetSourceChange('hpc')">HPC path</button>
+          </div>
+
+          @if (datasetSource() === 'existing') {
+            <select [(ngModel)]="form.dataset_path">
+              <option value="">— select dataset —</option>
+              @for (ds of datasets(); track ds.path) {
+                <option [value]="ds.path">{{ ds.filename }} ({{ formatSize(ds.size_bytes) }})</option>
+              }
+            </select>
+          }
+
+          @if (datasetSource() === 'upload') {
+            <label class="upload-drop">
+              <span>Choose .h5ad file</span>
+              <input type="file" accept=".h5ad" (change)="onFileSelected($event)" hidden />
+            </label>
+          }
+
+          @if (datasetSource() === 'hpc') {
+            <div class="hpc-path">
+              <div class="hpc-input-row">
+                <input type="text" [value]="hpcDatasetPath()"
+                  (input)="onHpcPathInput($any($event.target).value)"
+                  placeholder="/data1/project/dataset.h5ad" />
+                <button type="button" class="btn btn-ghost btn-sm" (click)="validateHpcPath()"
+                  [disabled]="hpcValidating()">
+                  {{ hpcValidating() ? 'Checking…' : 'Validate' }}
+                </button>
+              </div>
+              <p class="path-note">Paste an exact absolute path visible to this CARIBOU server.</p>
+              @if (hpcDataset(); as ds) {
+                <p class="path-valid">{{ ds.filename }} · {{ formatSize(ds.size_bytes) }}</p>
+              }
+              @if (hpcPathError(); as err) {
+                <p class="path-error">{{ err }}</p>
+              }
+            </div>
+          }
         </div>
 
         <label>Initial Prompt</label>
@@ -128,7 +163,7 @@
 
       <div class="dialog-actions">
         <button class="btn btn-ghost" (click)="cancelCreate()">Cancel</button>
-        <button class="btn btn-primary" (click)="submitCreate()" [disabled]="creating()">
+        <button class="btn btn-primary" (click)="submitCreate()" [disabled]="creating() || hpcValidating()">
           {{ creating() ? 'Creating…' : 'Create Session' }}
         </button>
       </div>
