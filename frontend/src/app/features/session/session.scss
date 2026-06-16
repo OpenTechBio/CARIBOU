@@ -56,6 +56,7 @@
 /* ── Fatal error banner ── */
 .error-banner {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: baseline;
   padding: 0.6rem 1.25rem;
@@ -66,6 +67,15 @@
 
   strong { color: var(--error); font-weight: 700; white-space: nowrap; }
   span   { color: var(--text); }
+  code {
+    width: 100%;
+    background: rgba(255,255,255,0.6);
+    border: 1px solid var(--error-border);
+    border-radius: 4px;
+    padding: 0.25rem 0.4rem;
+    color: var(--error);
+    word-break: break-word;
+  }
 }
 
 /* ── Body ── */
@@ -279,6 +289,19 @@ pre.error-message {
   word-break: break-word;
   color: var(--text);
   font-family: monospace;
+}
+
+.error-fix,
+.sidebar-error-fix {
+  display: block;
+  margin-top: 0.45rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.6);
+  border: 1px solid var(--error-border);
+  color: var(--error);
+  font-size: 0.72rem;
+  word-break: break-word;
 }
 
 /* ── Sidebar ── */

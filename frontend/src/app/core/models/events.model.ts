@@ -49,6 +49,7 @@ export interface CodeResultData {
   stderr: string;
   success: boolean;
   duration_ms: number;
+  block_index: number;
 }
 
 export interface ArtifactEventData {
@@ -64,6 +65,7 @@ export interface ErrorData {
   code: string;
   message: string;
   fatal: boolean;
+  suggested_fix?: string | null;
 }
 
 export type AgentEvent =

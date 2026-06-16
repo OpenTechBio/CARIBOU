@@ -113,7 +113,9 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
             content = msg.get("content", "")
             if not content:
                 continue
-            await session_manager.start_run(session.id, content)
+            started = await session_manager.start_run(session.id, content)
+            if not started and session.config.mode.value == "interactive":
+                await session_manager.send_user_message(session.id, content)
 
         elif msg_type == "user_message":
             content = msg.get("content", "")

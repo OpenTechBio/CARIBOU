@@ -38,6 +38,16 @@
   code { background: var(--surface-2); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.78rem; }
 }
 
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
+
+  h2 { margin: 0; }
+}
+
 .field {
   margin-bottom: 1.1rem;
   &:last-child { margin-bottom: 0; }
@@ -100,6 +110,35 @@
   font-family: monospace;
   color: var(--text);
   &:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(49,68,107,0.1); }
+}
+
+.model-select,
+.model-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.82rem;
+  color: var(--text);
+  &:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(49,68,107,0.1); }
+}
+
+.model-input {
+  font-family: monospace;
+}
+
+.ollama-status {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+
+  strong { text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.06em; }
+  code { background: rgba(255,255,255,0.55); border-radius: 4px; padding: 0.2rem 0.35rem; width: fit-content; }
+  &.ok { background: var(--success-bg); color: var(--success); border: 1px solid #B8DCC4; }
+  &.warn { background: #FFF7D6; color: #6B5700; border: 1px solid #E7D7A1; }
 }
 
 .path-note {

@@ -277,6 +277,7 @@ def run_session_sync(
                         "stderr": exec_result.get("stderr", ""),
                         "success": success,
                         "duration_ms": duration_ms,
+                        "block_index": idx,
                     }, turn=turn)
 
                     _scan_new_artifacts(turn)
@@ -290,7 +291,7 @@ def run_session_sync(
                     history.append({"role": "system", "content": action_space.to_message()})
                     history.append({"role": "assistant", "content": feedback})
 
-            if _delegated:
+            if _delegated and is_auto:
                 continue
 
             if is_auto and not _action_fired:

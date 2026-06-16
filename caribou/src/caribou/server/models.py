@@ -53,6 +53,7 @@ class SessionCreateRequest(BaseModel):
     run_mode: RunMode = RunMode.full_system
     agent_system: str
     llm_backend: str
+    ollama_model: Optional[str] = None
     sandbox_type: SandboxType = SandboxType.singularity
     dataset_path: str
     reference_dataset_path: Optional[str] = None
@@ -128,6 +129,9 @@ class LLMBackend(BaseModel):
     provider: str
     display_name: str
     available: bool
+    status: Optional[str] = None
+    message: Optional[str] = None
+    suggested_fix: Optional[str] = None
 
 
 class AgentBlueprint(BaseModel):
@@ -136,12 +140,52 @@ class AgentBlueprint(BaseModel):
     agents: List[str]
     has_rag: bool
     path: str
+    is_package_default: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Blueprint editor
+# ---------------------------------------------------------------------------
+
+class CommandConfig(BaseModel):
+    target_agent: str
+    description: str
+
+
+class AgentConfig(BaseModel):
+    prompt: str
+    rag_enabled: bool = False
+    neighbors: Dict[str, CommandConfig] = {}
+    code_samples: List[str] = []
+
+
+class BlueprintContent(BaseModel):
+    name: str
+    global_policy: str
+    agents: Dict[str, AgentConfig]
+    is_package_default: bool
+
+
+class SaveBlueprintRequest(BaseModel):
+    name: str
+    global_policy: str
+    agents: Dict[str, AgentConfig]
 
 
 class ServerStatus(BaseModel):
     version: str = "0.1.0"
     sandbox_type: str
     active_sessions: int
+
+
+class OllamaModelsResponse(BaseModel):
+    host: str
+    running: bool
+    models: List[str]
+    default_model: str
+    status: str
+    message: str
+    suggested_fix: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

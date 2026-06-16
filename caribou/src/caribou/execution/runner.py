@@ -356,9 +356,9 @@ def run_agent_session(
             if rag_short_circuit:
                 continue
 
-        # If delegation happened (with or without a code block), let the new agent
-        # reply immediately rather than waiting for user input.
-        if _delegated:
+        # In auto mode, delegation immediately hands execution to the new agent.
+        # In interactive mode, the user gets control back after the handoff.
+        if _delegated and is_auto:
             continue
 
         if is_auto and not _action_fired:

@@ -27,6 +27,7 @@ export interface SessionCreateRequest {
   run_mode: RunMode;
   agent_system: string;
   llm_backend: string;
+  ollama_model?: string;
   sandbox_type: SandboxType;
   dataset_path: string;
   reference_dataset_path?: string;
@@ -77,6 +78,19 @@ export interface LLMBackend {
   provider: string;
   display_name: string;
   available: boolean;
+  status?: string | null;
+  message?: string | null;
+  suggested_fix?: string | null;
+}
+
+export interface OllamaModelsResponse {
+  host: string;
+  running: boolean;
+  models: string[];
+  default_model: string;
+  status: string;
+  message: string;
+  suggested_fix?: string | null;
 }
 
 export interface AgentBlueprint {
@@ -85,6 +99,7 @@ export interface AgentBlueprint {
   agents: string[];
   has_rag: boolean;
   path: string;
+  is_package_default: boolean;
 }
 
 export interface ServerStatus {

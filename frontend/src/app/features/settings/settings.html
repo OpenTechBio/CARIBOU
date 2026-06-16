@@ -90,6 +90,59 @@
         }
       </section>
 
+      <!-- Ollama -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2>Ollama</h2>
+          <button class="btn btn-ghost btn-xs" (click)="refreshOllamaModels()" [disabled]="loadingOllama()">
+            {{ loadingOllama() ? 'Checking…' : 'Refresh' }}
+          </button>
+        </div>
+        <p class="section-desc">
+          CARIBOU queries downloaded Ollama models from the server configured here.
+          If Ollama is not running, CARIBOU will try to start it when an Ollama session is created.
+        </p>
+
+        <div class="field">
+          <label>Host <span class="editable-tag">editable</span></label>
+          <div class="path-edit">
+            <input
+              type="text"
+              [value]="ollamaHost()"
+              (input)="ollamaHost.set($any($event.target).value)"
+              placeholder="http://localhost:11434" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Default model <span class="editable-tag">editable</span></label>
+          @if (ollamaModels()?.models?.length) {
+            <select class="model-select" [value]="ollamaModel()" (change)="ollamaModel.set($any($event.target).value)">
+              @for (model of ollamaModels()!.models; track model) {
+                <option [value]="model">{{ model }}</option>
+              }
+            </select>
+          } @else {
+            <input
+              class="model-input"
+              type="text"
+              [value]="ollamaModel()"
+              (input)="ollamaModel.set($any($event.target).value)"
+              placeholder="llama3" />
+          }
+        </div>
+
+        @if (ollamaModels(); as o) {
+          <div class="ollama-status" [class.ok]="o.status === 'ready'" [class.warn]="o.status !== 'ready'">
+            <strong>{{ o.status }}</strong>
+            <span>{{ o.message }}</span>
+            @if (o.suggested_fix) {
+              <code>{{ o.suggested_fix }}</code>
+            }
+          </div>
+        }
+      </section>
+
       <!-- Save -->
       @if (saveResult(); as r) {
         <div class="save-result" [class.ok]="r.ok" [class.err]="!r.ok">
