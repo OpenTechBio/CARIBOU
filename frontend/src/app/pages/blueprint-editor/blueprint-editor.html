@@ -241,6 +241,24 @@
                         }
                       </div>
                     }
+
+                    @if (!isPackageDefault()) {
+                      <div class="import-path-row">
+                        <input class="form-input code-input flex-1"
+                          [value]="importPaths()[i]"
+                          (input)="updateImportPath(i, $any($event.target).value)"
+                          (keydown.enter)="importCodeSample(i)"
+                          placeholder="/absolute/path/to/file.py" />
+                        <button class="btn btn-ghost btn-sm"
+                          (click)="importCodeSample(i)"
+                          [disabled]="importing()[i] || !importPaths()[i].trim()">
+                          {{ importing()[i] ? 'Importing…' : '↑ Import' }}
+                        </button>
+                      </div>
+                      @if (importErrors()[i]) {
+                        <div class="import-error">⚠ {{ importErrors()[i] }}</div>
+                      }
+                    }
                   </div>
 
                 </div>
@@ -295,6 +313,9 @@
           }
 
           <div class="action-bar-btns">
+            <button class="btn btn-ghost" (click)="downloadJson()" title="Download blueprint as JSON">
+              ↓ Download JSON
+            </button>
             @if (!isPackageDefault()) {
               @if (selectedName()) {
                 <button class="btn btn-ghost" (click)="deleteBlueprint()" [disabled]="deleting() || saving()">

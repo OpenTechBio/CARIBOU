@@ -130,6 +130,26 @@ def ensure_ollama_ready(host: str | None, requested_model: str | None) -> tuple[
     return host, model
 
 
+def start_ollama(host: str | None) -> OllamaStatus:
+    host = normalize_host(host)
+    if not is_local_host(host):
+        raise OllamaStartupError(
+            "OLLAMA_REMOTE_START_UNSUPPORTED",
+            f"CARIBOU cannot start a remote Ollama host at {host}.",
+            "Start Ollama on that host, then refresh the model list.",
+        )
+
+    status = probe_ollama(host)
+    if status.running:
+        return status
+
+    if status.status == "not_installed":
+        raise OllamaStartupError("OLLAMA_NOT_INSTALLED", status.message, status.suggested_fix)
+
+    _start_ollama_process()
+    return _wait_for_ollama(host)
+
+
 def shutdown_owned_ollama() -> None:
     global _owned_process
     proc = _owned_process

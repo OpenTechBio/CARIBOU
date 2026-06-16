@@ -50,4 +50,10 @@ export class ConfigService {
       tap(o => this.ollamaModels.set(o))
     );
   }
+
+  startOllama(): Observable<OllamaModelsResponse> {
+    return this.http.post<OllamaModelsResponse>('api/config/ollama/start', {}).pipe(
+      tap(o => this.ollamaModels.set(o))
+    );
+  }
 }

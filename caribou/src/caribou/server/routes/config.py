@@ -10,6 +10,8 @@ from dotenv import load_dotenv, set_key
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import shutil
+
 from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
 from caribou.server.models import (
     AgentBlueprint, AgentConfig, BlueprintContent, CommandConfig,
@@ -17,8 +19,10 @@ from caribou.server.models import (
 )
 from caribou.server.ollama_service import (
     DEFAULT_OLLAMA_MODEL,
+    OllamaStartupError,
     normalize_host,
     probe_ollama,
+    start_ollama,
 )
 from caribou.server.session_manager import session_manager, _SESSIONS_DIR
 
@@ -198,6 +202,34 @@ async def get_ollama_models() -> OllamaModelsResponse:
     )
 
 
+@router.post("/config/ollama/start", response_model=OllamaModelsResponse)
+async def start_ollama_server() -> OllamaModelsResponse:
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+    default_model = os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    try:
+        status = start_ollama(os.environ.get("OLLAMA_HOST"))
+    except OllamaStartupError as exc:
+        raise HTTPException(
+            400,
+            {
+                "code": exc.code,
+                "message": str(exc),
+                "suggested_fix": exc.suggested_fix,
+            },
+        )
+    if default_model not in status.models and status.models:
+        default_model = status.models[0]
+    return OllamaModelsResponse(
+        host=status.host,
+        running=status.running,
+        models=status.models,
+        default_model=default_model,
+        status=status.status,
+        message=status.message,
+        suggested_fix=status.suggested_fix,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Blueprint CRUD helpers
 # ---------------------------------------------------------------------------
@@ -345,8 +377,38 @@ async def delete_blueprint(name: str) -> None:
     user_path.unlink()
 
 
+_USER_CODE_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
+
+
+class ImportCodeSampleRequest(BaseModel):
+    source_path: str
+
+
+class ImportCodeSampleResponse(BaseModel):
+    filename: str
+    destination: str
+
+
+@router.post("/config/code-samples/import", response_model=ImportCodeSampleResponse)
+async def import_code_sample(req: ImportCodeSampleRequest) -> ImportCodeSampleResponse:
+    src = Path(req.source_path)
+    if not src.is_absolute():
+        raise HTTPException(400, "source_path must be an absolute path.")
+    if not src.exists():
+        raise HTTPException(404, f"File not found: {src}")
+    if not src.is_file():
+        raise HTTPException(400, f"Path is not a regular file: {src}")
+
+    _USER_CODE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _USER_CODE_SAMPLES_DIR / src.name
+    if dest.exists():
+        raise HTTPException(409, f"A code sample named '{src.name}' already exists. Rename the source file or remove the existing sample.")
+
+    shutil.copy2(src, dest)
+    return ImportCodeSampleResponse(filename=src.name, destination=str(dest))
+
+
 def _detect_sandbox() -> str:
-    import shutil
     if shutil.which("singularity"):
         return "singularity"
     if shutil.which("docker"):

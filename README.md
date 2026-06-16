@@ -82,7 +82,7 @@ The web UI provides a full browser-based interface to CARIBOU running on HPC.
 ```bash
 cd frontend
 npm install
-npm run build          # outputs to frontend/dist/frontend/browser/
+npm run build          # outputs to caribou/src/caribou/frontend/browser/
 ```
 
 ### Start the server

@@ -66,6 +66,11 @@ export class SessionService {
     return `${base}/api/sessions/${sessionId}/artifacts/${artifactId}/download`;
   }
 
+  notebookDownloadUrl(sessionId: string): string {
+    const base = document.baseURI.replace(/\/$/, '');
+    return `${base}/api/sessions/${sessionId}/notebook`;
+  }
+
   extendSession(id: string, additionalTurns: number): Observable<Session> {
     return this.http.post<Session>(`api/sessions/${id}/extend`, { additional_turns: additionalTurns }).pipe(
       tap(s => this.updateLocal(s))

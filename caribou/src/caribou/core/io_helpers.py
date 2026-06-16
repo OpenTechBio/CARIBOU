@@ -309,8 +309,8 @@ def save_chat_history_as_json(console: Console, history: list, file_path: Path):
     except Exception as e:
         console.print(f"\n[bold red]Error saving chat history: {e}[/bold red]")
 
-def save_chat_history_as_notebook(console: Console, history: list, file_path: Path):
-    """Parses an CARIBOU chat log and converts it into a Jupyter Notebook (.ipynb)."""
+def chat_history_to_notebook(history: list) -> dict:
+    """Parse a CARIBOU chat log into a Jupyter Notebook dictionary."""
     notebook = {
         "cells": [],
         "metadata": {
@@ -325,7 +325,17 @@ def save_chat_history_as_notebook(console: Console, history: list, file_path: Pa
         "nbformat_minor": 5
     }
     for message in history:
-        if message.get("role") and "assistant" in message.get("role", ""):
+        role = message.get("role", "")
+        content = message.get("content", "")
+        if role == "user":
+            if content.startswith("Code execution result:"):
+                continue
+            notebook["cells"].append({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": f"**User prompt:**\n\n{content}",
+            })
+        elif "assistant" in role:
             content = message.get("content", "")
             parts = split_message_by_fence(content)
             for kind, part in parts:
@@ -340,7 +350,11 @@ def save_chat_history_as_notebook(console: Console, history: list, file_path: Pa
                 else:
                     cell = {"cell_type": "markdown", "metadata": {}, "source": part}
                 notebook["cells"].append(cell)
+    return notebook
 
+def save_chat_history_as_notebook(console: Console, history: list, file_path: Path):
+    """Parses a CARIBOU chat log and converts it into a Jupyter Notebook (.ipynb)."""
+    notebook = chat_history_to_notebook(history)
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(file_path, 'w', encoding='utf-8') as f:

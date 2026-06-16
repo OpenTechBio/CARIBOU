@@ -12,6 +12,7 @@ bin/
 benchmarking/datasets/*.h5ad
 dev/
 */dist/
+caribou/src/caribou/frontend/
 *.log
 benchmarking/auto_runs/*
 benchmarking/metadata_benchmarks/benchmark_data/

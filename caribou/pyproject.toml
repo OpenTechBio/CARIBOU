@@ -43,6 +43,11 @@ dev = [
   "ipykernel"
 ]
 
+[tool.hatch.build]
+artifacts = [
+  "src/caribou/frontend/**",
+]
+
 # If you’re using a src/ layout, tell Hatch where packages live.
 [tool.hatch.build.targets.wheel]
 packages = ["src/caribou"]

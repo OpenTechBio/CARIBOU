@@ -38,6 +38,8 @@ export class DashboardComponent implements OnInit {
   hpcDataset = signal<Dataset | null>(null);
   hpcPathError = signal<string | null>(null);
   hpcValidating = signal(false);
+  startingOllama = signal(false);
+  ollamaStartError = signal<string | null>(null);
 
   get pendingDeleteSession() {
     return this.sessionSvc.sessions().find(s => s.id === this.pendingDeleteId());
@@ -45,7 +47,7 @@ export class DashboardComponent implements OnInit {
 
   // Create form state
   form: SessionCreateRequest = {
-    mode: 'auto',
+    mode: 'interactive',
     run_mode: 'full_system',
     agent_system: '',
     llm_backend: '',
@@ -113,9 +115,13 @@ export class DashboardComponent implements OnInit {
       this.createError.set('Blueprint, backend, and dataset are required.');
       return;
     }
+    const request: SessionCreateRequest = {
+      ...this.form,
+      max_turns: this.form.mode === 'auto' ? this.form.max_turns : undefined,
+    };
     this.creating.set(true);
     this.createError.set(null);
-    this.sessionSvc.createSession(this.form).subscribe({
+    this.sessionSvc.createSession(request).subscribe({
       next: (s) => {
         this.creating.set(false);
         this.showCreateDialog.set(false);
@@ -132,11 +138,30 @@ export class DashboardComponent implements OnInit {
     this.form.llm_backend = backend;
     this.createError.set(null);
     if (backend === 'ollama') {
+      this.ollamaStartError.set(null);
       this.configSvc.getOllamaModels().subscribe({
         next: () => this.applyOllamaDefaultModel(),
         error: () => this.applyOllamaDefaultModel(),
       });
     }
+  }
+
+  startOllama(): void {
+    this.startingOllama.set(true);
+    this.ollamaStartError.set(null);
+    this.configSvc.startOllama().subscribe({
+      next: () => {
+        this.startingOllama.set(false);
+        this.applyOllamaDefaultModel();
+      },
+      error: (err) => {
+        this.startingOllama.set(false);
+        const detail = err?.error?.detail;
+        this.ollamaStartError.set(
+          detail?.suggested_fix ?? detail?.message ?? err?.error?.detail ?? 'Unable to start Ollama.'
+        );
+      },
+    });
   }
 
   applyOllamaDefaultModel(): void {

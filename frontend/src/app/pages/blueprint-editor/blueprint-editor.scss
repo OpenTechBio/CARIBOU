@@ -509,6 +509,19 @@
 
 .flex-1 { flex: 1; }
 
+.import-path-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.import-error {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--color-error, #e05252);
+}
+
 /* ── Add agent button ───────────────────────────────── */
 .add-agent-btn {
   display: flex;

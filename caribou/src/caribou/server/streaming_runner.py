@@ -36,11 +36,43 @@ def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
         stream = llm_client.chat.completions.create(
             model=model, messages=messages, temperature=0.0, stream=True
         )
+        if hasattr(stream, "choices"):
+            content = stream.choices[0].message.content
+            if content:
+                yield content
+            return
         for chunk in stream:
             delta = chunk.choices[0].delta
             token = getattr(delta, "content", None)
             if token:
                 yield token
+
+
+def _complete_without_streaming(llm_client, model: str, messages: List[Dict]) -> str:
+    response = llm_client.chat.completions.create(
+        model=model, messages=messages, temperature=0.0
+    )
+    return response.choices[0].message.content or ""
+
+
+def _stream_tokens_with_fallback(llm_client, model: str, messages: List[Dict]) -> Any:
+    """
+    Stream tokens when possible, but recover from transient chunked-read
+    failures by retrying once with a non-streaming request.
+    """
+    emitted_any = False
+    try:
+        for token in _stream_tokens(llm_client, model, messages):
+            emitted_any = True
+            yield token
+        return
+    except Exception:
+        if emitted_any:
+            yield "\n\n[Streaming connection interrupted. Retrying request without streaming...]\n\n"
+
+    content = _complete_without_streaming(llm_client, model, messages)
+    if content:
+        yield content
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +199,7 @@ def run_session_sync(
             # --- LLM call (streaming) ---
             try:
                 full_msg = ""
-                for token in _stream_tokens(llm_client, model_name, cleaned_context):
+                for token in _stream_tokens_with_fallback(llm_client, model_name, cleaned_context):
                     if stop_flag.is_set():
                         break
                     full_msg += token
@@ -320,6 +352,17 @@ def run_session_sync(
                 try:
                     user_msg = user_input_queue.get(timeout=1.0)
                     history.append({"role": "user", "content": user_msg})
+                    next_turn = turns_completed + 1
+                    _emit("message_complete", {
+                        "message": {
+                            "id": f"msg_{session_id}_user_{next_turn}",
+                            "turn": next_turn,
+                            "role": "user",
+                            "agent_name": "",
+                            "content": user_msg,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                    }, turn=next_turn)
                     break
                 except queue.Empty:
                     continue
