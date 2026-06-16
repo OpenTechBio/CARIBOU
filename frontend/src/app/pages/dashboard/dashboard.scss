@@ -207,6 +207,10 @@
   }
 }
 
+.ollama-start-btn {
+  align-self: flex-start;
+}
+
 .source-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

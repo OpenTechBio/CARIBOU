@@ -3,7 +3,11 @@ import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-from caribou.server.streaming_runner import run_session_sync
+from caribou.server.streaming_runner import (
+    _stream_tokens,
+    _stream_tokens_with_fallback,
+    run_session_sync,
+)
 
 
 class FakeAgent:
@@ -46,6 +50,70 @@ class FakeLLM:
 class FakeSandbox:
     def exec_code(self, _code, timeout):
         return {"status": "ok", "stdout": "", "stderr": ""}
+
+
+class FakeNonStreamingLLM:
+    def __init__(self, text):
+        self.text = text
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create)
+        )
+
+    def _create(self, **_kwargs):
+        message = SimpleNamespace(content=self.text, role="assistant")
+        choice = SimpleNamespace(message=message, index=0, finish_reason="stop")
+        return SimpleNamespace(choices=[choice])
+
+
+class FakeFailingStreamingLLM:
+    def __init__(self, *, fail_after_token=False):
+        self.fail_after_token = fail_after_token
+        self.calls = []
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create)
+        )
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+
+        if kwargs.get("stream"):
+            def chunks():
+                if self.fail_after_token:
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="partial"))])
+                raise RuntimeError("incomplete chunked read")
+            return chunks()
+
+        message = SimpleNamespace(content="fallback response", role="assistant")
+        choice = SimpleNamespace(message=message, index=0, finish_reason="stop")
+        return SimpleNamespace(choices=[choice])
+
+
+def test_stream_tokens_accepts_non_streaming_openai_compatible_response():
+    llm = FakeNonStreamingLLM("loaded")
+
+    assert list(_stream_tokens(llm, "llama3", [{"role": "user", "content": "load"}])) == ["loaded"]
+
+
+def test_stream_tokens_with_fallback_retries_non_streaming_before_any_tokens():
+    llm = FakeFailingStreamingLLM()
+
+    assert list(_stream_tokens_with_fallback(llm, "deepseek-chat", [{"role": "user", "content": "hi"}])) == [
+        "fallback response"
+    ]
+    assert llm.calls[0]["stream"] is True
+    assert "stream" not in llm.calls[1]
+
+
+def test_stream_tokens_with_fallback_recovers_after_partial_stream():
+    llm = FakeFailingStreamingLLM(fail_after_token=True)
+
+    chunks = list(_stream_tokens_with_fallback(llm, "deepseek-chat", [{"role": "user", "content": "hi"}]))
+
+    assert chunks == [
+        "partial",
+        "\n\n[Streaming connection interrupted. Retrying request without streaming...]\n\n",
+        "fallback response",
+    ]
 
 
 def test_interactive_delegation_waits_for_user_before_next_agent_turn(tmp_path: Path, monkeypatch):

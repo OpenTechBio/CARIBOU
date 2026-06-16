@@ -92,6 +92,37 @@ def test_ensure_starts_local_ollama_when_installed(monkeypatch):
     assert ollama_service._owned_process is process
 
 
+def test_start_ollama_returns_running_status_without_spawning(monkeypatch):
+    monkeypatch.setattr(
+        ollama_service.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse({"models": [{"name": "llama3"}]}),
+    )
+    monkeypatch.setattr(
+        ollama_service.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn")),
+    )
+
+    status = ollama_service.start_ollama("http://localhost:11434")
+
+    assert status.status == "ready"
+    assert status.models == ["llama3"]
+
+
+def test_start_ollama_rejects_remote_host(monkeypatch):
+    monkeypatch.setattr(
+        ollama_service.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn")),
+    )
+
+    with pytest.raises(OllamaStartupError) as exc:
+        ollama_service.start_ollama("http://ollama.example:11434")
+
+    assert exc.value.code == "OLLAMA_REMOTE_START_UNSUPPORTED"
+
+
 def test_ensure_missing_executable_raises_not_installed(monkeypatch):
     monkeypatch.setattr(
         ollama_service.requests,

@@ -4,7 +4,7 @@ CARIBOU web server entry point.
 Serves:
   - REST API at /api/*
   - WebSocket at /ws/sessions/{id}
-  - Angular SPA at /* (static files from frontend/dist/frontend/browser/)
+  - Angular SPA at /* (static files packaged in caribou/frontend/browser/)
 
 OOD note: Open OnDemand's Apache proxy forwards /node/<host>/<port>/foo to the
 server WITHOUT stripping the prefix. OodPathMiddleware auto-detects this pattern
@@ -30,8 +30,8 @@ from caribou.server.routes.websocket import router as ws_router
 from caribou.server.ollama_service import shutdown_owned_ollama
 from caribou.server.session_manager import session_manager
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-_FRONTEND_DIST = _PACKAGE_ROOT / "frontend" / "dist" / "frontend" / "browser"
+_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+_FRONTEND_DIST = _PACKAGE_DIR / "frontend" / "browser"
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")

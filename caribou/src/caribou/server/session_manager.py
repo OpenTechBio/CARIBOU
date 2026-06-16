@@ -348,6 +348,23 @@ class SessionManager:
         # Store on session so extend_run can resume from here
         session.live_history = history
 
+        self._on_event(session, {
+            "type": "message_complete",
+            "session_id": session.id,
+            "turn": 1,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {
+                "message": {
+                    "id": f"msg_{session.id}_user_0",
+                    "turn": 1,
+                    "role": "user",
+                    "agent_name": "",
+                    "content": initial_prompt,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            },
+        })
+
         return await self._launch_runner(session, history)
 
     async def extend_run(self, session_id: str, additional_turns: int) -> bool:

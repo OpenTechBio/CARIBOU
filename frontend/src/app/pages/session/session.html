@@ -11,6 +11,11 @@
       <span class="turn-counter" *ngIf="session()">
         Turn {{ session()!.current_turn }}{{ session()!.max_turns ? ' / ' + session()!.max_turns : '' }}
       </span>
+      @if (session(); as s) {
+        <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download>
+          Notebook
+        </a>
+      }
       <app-status-indicator [status]="status()" />
       <button class="btn btn-danger btn-sm" *ngIf="isRunning()" (click)="stopSession()">Stop</button>
     </div>
@@ -33,7 +38,17 @@
     <main class="chat-panel" (scroll)="onScroll($event)">
       <div class="chat-content">
 
-        @for (item of chatItems(); track $index) {
+        @if (hiddenChatItemCount() > 0) {
+          <button type="button" class="conversation-compact-toggle" (click)="toggleOlderConversation()">
+            Show {{ hiddenChatItemCount() }} earlier items
+          </button>
+        } @else if (olderConversationExpanded() && chatItems().length > COMPACT_AFTER_ITEMS) {
+          <button type="button" class="conversation-compact-toggle" (click)="toggleOlderConversation()">
+            Collapse earlier conversation
+          </button>
+        }
+
+        @for (item of visibleChatItems(); track $index) {
           @if (item.kind === 'message' && item.message) {
             <app-message-bubble [message]="item.message" [streaming]="false" />
           }
@@ -92,7 +107,7 @@
         <!-- Waiting indicator: user sent message, server not yet running -->
         @if (waitingForAgent()) {
           <div class="thinking-indicator">
-            <span class="thinking-label">Waiting for agent…</span>
+            <span class="thinking-label">{{ waitingLabel() }}</span>
             <div class="thinking-dots">
               <span></span><span></span><span></span>
             </div>
@@ -102,7 +117,7 @@
         <!-- Thinking indicator: running but no tokens yet -->
         @if (isThinking()) {
           <div class="thinking-indicator">
-            <span class="thinking-label">{{ currentAgent() || 'Agent' }}</span>
+            <span class="thinking-label">{{ thinkingLabel() }}</span>
             <div class="thinking-dots">
               <span></span><span></span><span></span>
             </div>

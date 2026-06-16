@@ -104,6 +104,25 @@
   width: 100%;
 }
 
+.conversation-compact-toggle {
+  align-self: center;
+  width: min(100%, 420px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  padding: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-bg);
+  }
+}
+
 /* ── Thinking / loading indicator ── */
 .thinking-indicator {
   display: flex;

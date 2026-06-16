@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import List
 
 import aiofiles
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from caribou.server.models import (
@@ -75,6 +76,28 @@ async def get_messages(
     if not s:
         raise HTTPException(404, "Session not found")
     return s.messages[offset : offset + limit]
+
+
+@router.get("/{session_id}/notebook")
+async def download_notebook(session_id: str):
+    s = session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    from caribou.core.io_helpers import chat_history_to_notebook
+
+    history = [
+        {"role": message.role, "content": message.content}
+        for message in s.messages
+        if message.role in ("user", "assistant")
+    ]
+    notebook = chat_history_to_notebook(history)
+    filename = f"caribou-session-{session_id[:8]}.ipynb"
+    return Response(
+        content=json.dumps(notebook, indent=2),
+        media_type="application/x-ipynb+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{session_id}/artifacts", response_model=List[ArtifactRecord])

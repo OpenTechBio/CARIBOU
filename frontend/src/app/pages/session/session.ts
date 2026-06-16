@@ -40,6 +40,9 @@ interface ChatItem {
   error?: ErrorRecord;
 }
 
+const COMPACT_AFTER_ITEMS = 40;
+const VISIBLE_RECENT_ITEMS = 20;
+
 @Component({
   selector: 'app-session',
   standalone: true,
@@ -52,6 +55,7 @@ interface ChatItem {
 })
 export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   @ViewChild('chatBottom') chatBottom!: ElementRef;
+  readonly COMPACT_AFTER_ITEMS = COMPACT_AFTER_ITEMS;
 
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -59,6 +63,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   stream = inject(AgentStreamService);
 
   chatItems = signal<ChatItem[]>([]);
+  olderConversationExpanded = signal(false);
   artifacts = signal<Artifact[]>([]);
   userInput = signal('');
   pendingCode = signal<Map<string, CodeSubmittedData>>(new Map());
@@ -82,9 +87,29 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isInitializing = computed(() => this.status() === 'initializing');
   // Thinking = running but no token has arrived yet (LLM is processing)
   isThinking = computed(() => this.isRunning() && !this.stream.isStreaming());
+  isInitialInteractiveTurn = computed(() =>
+    this.session()?.mode === 'interactive' && (this.session()?.current_turn ?? 0) <= 1
+  );
+  waitingLabel = computed(() =>
+    this.isInitialInteractiveTurn() ? 'Getting environment set up…' : 'Waiting for agent…'
+  );
+  thinkingLabel = computed(() =>
+    this.isInitialInteractiveTurn() ? 'Getting environment set up…' : (this.currentAgent() || 'Agent')
+  );
   lastError = computed(() => {
     const errs = this.errorLog();
     return errs.length ? errs[errs.length - 1] : null;
+  });
+  hiddenChatItemCount = computed(() => {
+    const count = this.chatItems().length;
+    return !this.olderConversationExpanded() && count > COMPACT_AFTER_ITEMS
+      ? count - VISIBLE_RECENT_ITEMS
+      : 0;
+  });
+  visibleChatItems = computed(() => {
+    const items = this.chatItems();
+    const hidden = this.hiddenChatItemCount();
+    return hidden ? items.slice(hidden) : items;
   });
 
   ngOnInit(): void {
@@ -102,7 +127,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     this.subs.add(this.stream.messageComplete$.subscribe(ev => {
       const d = ev.data as MessageCompleteData;
-      this.chatItems.update(items => [...items, { kind: 'message', message: d.message }]);
+      this.upsertMessage(d.message);
       this.shouldScrollToBottom = true;
     }));
 
@@ -211,6 +236,33 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   stopSession(): void {
     this.stream.stop();
+  }
+
+  private upsertMessage(message: Message): void {
+    this.chatItems.update(items => {
+      if (items.some(item => item.kind === 'message' && item.message?.id === message.id)) {
+        return items;
+      }
+
+      const pendingIndex = items.findIndex(item =>
+        item.kind === 'message' &&
+        item.message?.id.startsWith('pending-') &&
+        item.message.role === message.role &&
+        item.message.content === message.content
+      );
+
+      if (pendingIndex >= 0) {
+        return items.map((item, index) =>
+          index === pendingIndex ? { kind: 'message', message } : item
+        );
+      }
+
+      return [...items, { kind: 'message', message }];
+    });
+  }
+
+  toggleOlderConversation(): void {
+    this.olderConversationExpanded.update(v => !v);
   }
 
   canExtend = computed(() =>

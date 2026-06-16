@@ -43,6 +43,11 @@ export class BlueprintEditorComponent implements OnInit {
   deleting = signal(false);
   saveResult = signal<{ ok: boolean; message: string } | null>(null);
 
+  // Per-agent import-from-path state
+  importPaths = signal<string[]>([]);
+  importErrors = signal<(string | null)[]>([]);
+  importing = signal<boolean[]>([]);
+
   // Validation
   validationErrors = computed(() => this._validate(this.agents(), this.blueprintName()));
 
@@ -68,7 +73,9 @@ export class BlueprintEditorComponent implements OnInit {
         this.isPackageDefault.set(bp.is_package_default);
         this.blueprintName.set(bp.name);
         this.globalPolicy.set(bp.global_policy);
-        this.agents.set(this._toAgentEntries(bp.agents));
+        const entries = this._toAgentEntries(bp.agents);
+        this.agents.set(entries);
+        this._resetImportState(entries.length);
         this.activeTab.set('form');
         this.router.navigate(['/blueprints', name], { replaceUrl: true });
       },
@@ -84,6 +91,7 @@ export class BlueprintEditorComponent implements OnInit {
     this.blueprintName.set('');
     this.globalPolicy.set('');
     this.agents.set([]);
+    this._resetImportState(0);
     this.activeTab.set('form');
     this.rawJson.set('');
     this.saveResult.set(null);
@@ -95,7 +103,18 @@ export class BlueprintEditorComponent implements OnInit {
     this.isPackageDefault.set(false);
     this.blueprintName.set('');
     this.saveResult.set(null);
-    this.router.navigate(['/blueprints'], { replaceUrl: true });
+    this._resetImportState(this.agents().length);
+  }
+
+  downloadJson(): void {
+    const json = this.activeTab() === 'json' ? this.rawJson() : this._serializeToJson();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (this.blueprintName() || 'blueprint') + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   switchTab(tab: 'form' | 'json'): void {
@@ -181,10 +200,16 @@ export class BlueprintEditorComponent implements OnInit {
     this.agents.update(list => [...list, {
       key: '', prompt: '', ragEnabled: false, commands: [], codeSamples: [],
     }]);
+    this.importPaths.update(p => [...p, '']);
+    this.importErrors.update(e => [...e, null]);
+    this.importing.update(f => [...f, false]);
   }
 
   removeAgent(index: number): void {
     this.agents.update(list => list.filter((_, i) => i !== index));
+    this.importPaths.update(p => p.filter((_, i) => i !== index));
+    this.importErrors.update(e => e.filter((_, i) => i !== index));
+    this.importing.update(f => f.filter((_, i) => i !== index));
   }
 
   addCommand(agentIndex: number): void {
@@ -259,6 +284,38 @@ export class BlueprintEditorComponent implements OnInit {
     });
   }
 
+  updateImportPath(agentIndex: number, value: string): void {
+    this.importPaths.update(p => { const n = [...p]; n[agentIndex] = value; return n; });
+    this.importErrors.update(e => { const n = [...e]; n[agentIndex] = null; return n; });
+  }
+
+  importCodeSample(agentIndex: number): void {
+    const path = (this.importPaths()[agentIndex] ?? '').trim();
+    if (!path) return;
+
+    this.importing.update(f => { const n = [...f]; n[agentIndex] = true; return n; });
+    this.importErrors.update(e => { const n = [...e]; n[agentIndex] = null; return n; });
+
+    this.http.post<{ filename: string; destination: string }>(
+      'api/config/code-samples/import',
+      { source_path: path },
+    ).subscribe({
+      next: (res) => {
+        this.importing.update(f => { const n = [...f]; n[agentIndex] = false; return n; });
+        this.importPaths.update(p => { const n = [...p]; n[agentIndex] = ''; return n; });
+        this.addCodeSampleValue(agentIndex, res.filename);
+      },
+      error: (err) => {
+        this.importing.update(f => { const n = [...f]; n[agentIndex] = false; return n; });
+        this.importErrors.update(e => {
+          const n = [...e];
+          n[agentIndex] = err?.error?.detail ?? 'Import failed.';
+          return n;
+        });
+      },
+    });
+  }
+
   agentKeys = computed(() => this.agents().map(a => a.key));
 
   goBack(): void {
@@ -268,6 +325,23 @@ export class BlueprintEditorComponent implements OnInit {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  addCodeSampleValue(agentIndex: number, value: string): void {
+    this.agents.update(list => {
+      const updated = [...list];
+      updated[agentIndex] = {
+        ...updated[agentIndex],
+        codeSamples: [...updated[agentIndex].codeSamples, value],
+      };
+      return updated;
+    });
+  }
+
+  private _resetImportState(count: number): void {
+    this.importPaths.set(Array(count).fill(''));
+    this.importErrors.set(Array(count).fill(null));
+    this.importing.set(Array(count).fill(false));
+  }
 
   private _isUserBlueprint(name: string): boolean {
     const bp = this.allBlueprints().find(b => b.name === name);
@@ -319,7 +393,9 @@ export class BlueprintEditorComponent implements OnInit {
       if (parsed.name !== undefined) this.blueprintName.set(parsed.name);
       if (parsed.global_policy !== undefined) this.globalPolicy.set(parsed.global_policy);
       if (parsed.agents && typeof parsed.agents === 'object') {
-        this.agents.set(this._toAgentEntries(parsed.agents));
+        const entries = this._toAgentEntries(parsed.agents);
+        this.agents.set(entries);
+        this._resetImportState(entries.length);
       }
       return null;
     } catch (e) {
