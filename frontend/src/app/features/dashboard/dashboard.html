@@ -5,6 +5,7 @@
       <span class="brand-sub">Multi-Agent Bioinformatics</span>
     </div>
     <div class="header-actions">
+      <a class="btn btn-ghost btn-sm" routerLink="/blueprints">Blueprints</a>
       <a class="btn btn-ghost btn-sm" routerLink="/settings">⚙ Settings</a>
       <button class="btn btn-primary" (click)="openCreate()">+ New Session</button>
     </div>
@@ -85,11 +86,34 @@
         </select>
 
         <label>LLM Backend</label>
-        <select [(ngModel)]="form.llm_backend">
+        <select [ngModel]="form.llm_backend" (ngModelChange)="onBackendChange($event)">
           @for (be of availableBackends(); track be.id) {
-            <option [value]="be.id">{{ be.display_name }}</option>
+            <option [value]="be.id">{{ be.display_name }}{{ be.id === 'ollama' && be.status ? ' · ' + be.status : '' }}</option>
           }
         </select>
+
+        @if (form.llm_backend === 'ollama') {
+          <label>Ollama Model</label>
+          <div class="ollama-picker">
+            @if (selectedOllamaStatus()?.models?.length) {
+              <select [(ngModel)]="form.ollama_model">
+                @for (model of selectedOllamaStatus()!.models; track model) {
+                  <option [value]="model">{{ model }}</option>
+                }
+              </select>
+            } @else {
+              <input type="text" [(ngModel)]="form.ollama_model" placeholder="llama3" />
+            }
+            @if (selectedOllamaStatus(); as o) {
+              <p class="ollama-note" [class.ok]="o.status === 'ready'" [class.warn]="o.status !== 'ready'">
+                {{ o.message }}
+                @if (o.suggested_fix) {
+                  <code>{{ o.suggested_fix }}</code>
+                }
+              </p>
+            }
+          </div>
+        }
 
         <label>Sandbox</label>
         <select [(ngModel)]="form.sandbox_type">

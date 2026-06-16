@@ -49,6 +49,7 @@ export class DashboardComponent implements OnInit {
     run_mode: 'full_system',
     agent_system: '',
     llm_backend: '',
+    ollama_model: '',
     sandbox_type: 'singularity',
     dataset_path: '',
     max_turns: 20,
@@ -56,7 +57,15 @@ export class DashboardComponent implements OnInit {
   };
 
   availableBackends = computed(() =>
-    this.configSvc.backends().filter(b => b.available)
+    this.configSvc.backends().filter(b => b.available || b.id === 'ollama')
+  );
+
+  selectedBackend = computed(() =>
+    this.configSvc.backends().find(b => b.id === this.form.llm_backend) ?? null
+  );
+
+  selectedOllamaStatus = computed(() =>
+    this.form.llm_backend === 'ollama' ? this.configSvc.ollamaModels() : null
   );
 
   ngOnInit(): void {
@@ -67,6 +76,7 @@ export class DashboardComponent implements OnInit {
       if (bp) this.form.agent_system = bp.name;
       const be = this.availableBackends()[0];
       if (be) this.form.llm_backend = be.id;
+      this.applyOllamaDefaultModel();
     });
     this.datasetSvc.getDatasets().subscribe(d => this.datasets.set(d));
   }
@@ -81,6 +91,20 @@ export class DashboardComponent implements OnInit {
   }
 
   submitCreate(): void {
+    if (this.form.llm_backend === 'ollama') {
+      const ollama = this.configSvc.ollamaModels();
+      if (ollama?.status === 'no_models') {
+        this.createError.set(ollama.suggested_fix ?? 'Download an Ollama model before creating a session.');
+        return;
+      }
+      if (ollama?.status === 'not_installed' || ollama?.status === 'unreachable') {
+        this.createError.set(ollama.suggested_fix ?? ollama.message);
+        return;
+      }
+      this.form.ollama_model = this.form.ollama_model || (ollama?.models.length ? ollama.default_model : undefined);
+    } else {
+      this.form.ollama_model = undefined;
+    }
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       this.createError.set('Validate the HPC dataset path before creating a session.');
       return;
@@ -102,6 +126,25 @@ export class DashboardComponent implements OnInit {
         this.createError.set(err?.error?.detail ?? 'Failed to create session.');
       },
     });
+  }
+
+  onBackendChange(backend: string): void {
+    this.form.llm_backend = backend;
+    this.createError.set(null);
+    if (backend === 'ollama') {
+      this.configSvc.getOllamaModels().subscribe({
+        next: () => this.applyOllamaDefaultModel(),
+        error: () => this.applyOllamaDefaultModel(),
+      });
+    }
+  }
+
+  applyOllamaDefaultModel(): void {
+    if (this.form.llm_backend !== 'ollama') return;
+    const ollama = this.configSvc.ollamaModels();
+    if (!ollama) return;
+    if (this.form.ollama_model && ollama.models.includes(this.form.ollama_model)) return;
+    this.form.ollama_model = ollama.models.length ? (ollama.default_model || ollama.models[0]) : '';
   }
 
   openSession(id: string): void {

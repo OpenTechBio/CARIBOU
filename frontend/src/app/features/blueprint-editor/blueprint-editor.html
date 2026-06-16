@@ -1,0 +1,320 @@
+<div class="bpe-page">
+
+  <!-- ── Header ── -->
+  <header class="bpe-header">
+    <button class="btn btn-ghost btn-sm" (click)="goBack()">← Back</button>
+    <div class="bpe-header-title">
+      <span class="bpe-title">Blueprint Editor</span>
+      @if (selectedName()) {
+        <span class="bpe-subtitle">{{ isPackageDefault() ? 'Package Default — read only' : selectedName() }}</span>
+      }
+    </div>
+    <button class="btn btn-ghost btn-sm" (click)="newBlueprint()">+ New Blueprint</button>
+  </header>
+
+  <div class="bpe-body">
+
+    <!-- ── Sidebar ── -->
+    <aside class="bpe-sidebar">
+
+      @if (packageBlueprints().length > 0) {
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Package Defaults</div>
+          @for (bp of packageBlueprints(); track bp.name) {
+            <button class="sidebar-item" [class.active]="selectedName() === bp.name"
+              (click)="loadBlueprint(bp.name)">
+              <div class="sidebar-item-icon pkg-icon">D</div>
+              <div class="sidebar-item-body">
+                <span class="sidebar-item-name">{{ bp.name }}</span>
+                <span class="sidebar-item-meta">{{ bp.agents.length }} agents{{ bp.has_rag ? ' · RAG' : '' }}</span>
+              </div>
+            </button>
+          }
+        </div>
+      }
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">My Blueprints</div>
+        @for (bp of userBlueprints(); track bp.name) {
+          <button class="sidebar-item" [class.active]="selectedName() === bp.name"
+            (click)="loadBlueprint(bp.name)">
+            <div class="sidebar-item-icon user-icon">U</div>
+            <div class="sidebar-item-body">
+              <span class="sidebar-item-name">{{ bp.name }}</span>
+              <span class="sidebar-item-meta">{{ bp.agents.length }} agents{{ bp.has_rag ? ' · RAG' : '' }}</span>
+            </div>
+          </button>
+        }
+        @if (userBlueprints().length === 0) {
+          <p class="sidebar-empty">No custom blueprints yet.</p>
+        }
+      </div>
+
+    </aside>
+
+    <!-- ── Main editor ── -->
+    <main class="bpe-main">
+
+      <!-- Empty state -->
+      @if (!selectedName() && agents().length === 0) {
+        <div class="bpe-welcome">
+          <div class="welcome-icon">🧩</div>
+          <h2>Choose a starting point</h2>
+          <p>Select a package default from the sidebar to use as a template, or start fresh.</p>
+          <button class="btn btn-primary" (click)="addAgent(); blueprintName.set('my-blueprint')">
+            Start from Scratch
+          </button>
+        </div>
+      } @else {
+
+        <!-- Read-only banner -->
+        @if (isPackageDefault()) {
+          <div class="readonly-banner">
+            <div class="readonly-banner-text">
+              <strong>Read-only</strong>
+              Package defaults cannot be edited. Fork a copy to make changes.
+            </div>
+            <button class="btn btn-primary btn-sm" (click)="useAsTemplate()">
+              Use as Template →
+            </button>
+          </div>
+        }
+
+        <!-- Tabs -->
+        <div class="bpe-tabs">
+          <button class="bpe-tab" [class.active]="activeTab() === 'form'" (click)="switchTab('form')">
+            Form Editor
+          </button>
+          <button class="bpe-tab" [class.active]="activeTab() === 'json'" (click)="switchTab('json')">
+            Raw JSON
+          </button>
+        </div>
+
+        <!-- ── Form tab ── -->
+        @if (activeTab() === 'form') {
+          <div class="bpe-form">
+
+            <!-- Identity card -->
+            <div class="bpe-card">
+              <div class="bpe-card-header">
+                <span class="bpe-card-title">Blueprint Identity</span>
+              </div>
+              <div class="bpe-card-body">
+                <div class="form-field">
+                  <label class="form-label">Name <span class="form-hint">Used as the filename — no spaces or .json extension</span></label>
+                  <input class="form-input"
+                    [value]="blueprintName()"
+                    (input)="blueprintName.set($any($event.target).value)"
+                    [disabled]="isPackageDefault()"
+                    placeholder="e.g. my-scrna-system" />
+                </div>
+                <div class="form-field">
+                  <label class="form-label">Global Policy <span class="form-hint">Shared instructions prepended to every agent's prompt</span></label>
+                  <textarea class="form-input form-textarea"
+                    [value]="globalPolicy()"
+                    (input)="globalPolicy.set($any($event.target).value)"
+                    [disabled]="isPackageDefault()"
+                    rows="4"
+                    placeholder="e.g. Be concise. Always wrap code in triple backticks. Never refuse a scientific request."></textarea>
+                </div>
+              </div>
+            </div>
+
+            <!-- Agents -->
+            @for (agent of agents(); track $index; let i = $index) {
+              <div class="bpe-card agent-card">
+
+                <!-- Agent header -->
+                <div class="bpe-card-header agent-card-header">
+                  <div class="agent-header-left">
+                    <div class="agent-number">{{ i + 1 }}</div>
+                    <input class="agent-name-input"
+                      [value]="agent.key"
+                      (input)="updateAgentField(i, 'key', $any($event.target).value)"
+                      [disabled]="isPackageDefault()"
+                      placeholder="agent_name" />
+                  </div>
+                  <div class="agent-header-right">
+                    <label class="rag-toggle" [class.enabled]="agent.ragEnabled">
+                      <input type="checkbox"
+                        [checked]="agent.ragEnabled"
+                        (change)="updateAgentField(i, 'ragEnabled', $any($event.target).checked)"
+                        [disabled]="isPackageDefault()" />
+                      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      <span class="toggle-label">RAG</span>
+                    </label>
+                    @if (!isPackageDefault()) {
+                      <button class="btn btn-ghost btn-sm" (click)="removeAgent(i)"
+                        title="Remove agent">✕ Remove</button>
+                    }
+                  </div>
+                </div>
+
+                <div class="bpe-card-body">
+
+                  <!-- Prompt -->
+                  <div class="form-field">
+                    <label class="form-label">System Prompt</label>
+                    <textarea class="form-input form-textarea agent-prompt"
+                      [value]="agent.prompt"
+                      (input)="updateAgentField(i, 'prompt', $any($event.target).value)"
+                      [disabled]="isPackageDefault()"
+                      rows="7"
+                      placeholder="Describe this agent's role, responsibilities, and behavior…"></textarea>
+                  </div>
+
+                  <!-- Delegation commands -->
+                  <div class="form-field">
+                    <div class="field-row-header">
+                      <label class="form-label">Delegation Commands</label>
+                      @if (!isPackageDefault()) {
+                        <button class="btn btn-ghost btn-sm" (click)="addCommand(i)">+ Add Command</button>
+                      }
+                    </div>
+
+                    @if (agent.commands.length === 0) {
+                      <div class="empty-hint">No delegation commands — this agent cannot hand off to others.</div>
+                    } @else {
+                      <div class="commands-list">
+                        <div class="cmd-header-row">
+                          <span>Command key</span>
+                          <span>Hands off to</span>
+                          <span>When to use</span>
+                          @if (!isPackageDefault()) { <span></span> }
+                        </div>
+                        @for (cmd of agent.commands; track $index; let ci = $index) {
+                          <div class="cmd-row">
+                            <input class="cmd-input code-input"
+                              [value]="cmd.key"
+                              (input)="updateCommandField(i, ci, 'key', $any($event.target).value)"
+                              [disabled]="isPackageDefault()"
+                              placeholder="delegate_to_x" />
+                            <select class="cmd-input"
+                              [ngModel]="cmd.target_agent"
+                              (ngModelChange)="updateCommandField(i, ci, 'target_agent', $event)"
+                              [disabled]="isPackageDefault()">
+                              <option value="">— pick agent —</option>
+                              @for (key of agentKeys(); track key) {
+                                <option [value]="key">{{ key }}</option>
+                              }
+                            </select>
+                            <input class="cmd-input"
+                              [value]="cmd.description"
+                              (input)="updateCommandField(i, ci, 'description', $any($event.target).value)"
+                              [disabled]="isPackageDefault()"
+                              placeholder="When to use this handoff…" />
+                            @if (!isPackageDefault()) {
+                              <button class="btn btn-ghost btn-xs cmd-remove" (click)="removeCommand(i, ci)"
+                                title="Remove command">✕</button>
+                            }
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  <!-- Code samples -->
+                  <div class="form-field">
+                    <div class="field-row-header">
+                      <label class="form-label">Code Samples
+                        <span class="form-hint">Filenames that must exist in the server's code_samples/ directory</span>
+                      </label>
+                      @if (!isPackageDefault()) {
+                        <button class="btn btn-ghost btn-sm" (click)="addCodeSample(i)">+ Add</button>
+                      }
+                    </div>
+
+                    @if (agent.codeSamples.length > 0) {
+                      <div class="code-samples-list">
+                        @for (sample of agent.codeSamples; track $index; let si = $index) {
+                          <div class="code-sample-row">
+                            <span class="code-sample-icon">📄</span>
+                            <input class="form-input code-input flex-1"
+                              [value]="sample"
+                              (input)="updateCodeSample(i, si, $any($event.target).value)"
+                              [disabled]="isPackageDefault()"
+                              placeholder="example.py" />
+                            @if (!isPackageDefault()) {
+                              <button class="btn btn-ghost btn-xs" (click)="removeCodeSample(i, si)">✕</button>
+                            }
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                </div>
+              </div>
+            }
+
+            <!-- Add agent button -->
+            @if (!isPackageDefault()) {
+              <button class="add-agent-btn" (click)="addAgent()">
+                <span class="add-agent-icon">＋</span>
+                Add Agent
+              </button>
+            }
+
+          </div>
+        }
+
+        <!-- ── JSON tab ── -->
+        @if (activeTab() === 'json') {
+          <div class="json-panel">
+            <div class="json-panel-hint">
+              Edit the raw JSON below. Switch back to Form to apply changes.
+              @if (isPackageDefault()) { <strong>Read-only.</strong> }
+            </div>
+            @if (jsonError()) {
+              <div class="json-error-banner">⚠ {{ jsonError() }}</div>
+            }
+            <textarea class="json-textarea"
+              [value]="rawJson()"
+              (input)="rawJson.set($any($event.target).value)"
+              [disabled]="isPackageDefault()"
+              spellcheck="false"></textarea>
+          </div>
+        }
+
+        <!-- Validation errors -->
+        @if (validationErrors().length > 0) {
+          <div class="validation-panel">
+            <div class="validation-title">⚠ Fix before saving</div>
+            @for (err of validationErrors(); track $index) {
+              <div class="validation-item">{{ err }}</div>
+            }
+          </div>
+        }
+
+        <!-- ── Action bar ── -->
+        <div class="bpe-action-bar">
+          @if (saveResult(); as r) {
+            <span class="save-feedback" [class.ok]="r.ok" [class.err]="!r.ok">
+              {{ r.ok ? '✓' : '✗' }} {{ r.message }}
+            </span>
+          }
+
+          <div class="action-bar-btns">
+            @if (!isPackageDefault()) {
+              @if (selectedName()) {
+                <button class="btn btn-ghost" (click)="deleteBlueprint()" [disabled]="deleting() || saving()">
+                  {{ deleting() ? 'Deleting…' : 'Delete Blueprint' }}
+                </button>
+              }
+              <button class="btn btn-primary"
+                (click)="save()"
+                [disabled]="saving() || deleting() || validationErrors().length > 0">
+                {{ saving() ? 'Saving…' : (selectedName() ? 'Save Changes' : 'Create Blueprint') }}
+              </button>
+            } @else {
+              <button class="btn btn-primary" (click)="useAsTemplate()">
+                Use as Template →
+              </button>
+            }
+          </div>
+        </div>
+
+      }
+    </main>
+  </div>
+</div>

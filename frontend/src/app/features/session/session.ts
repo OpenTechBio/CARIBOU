@@ -22,6 +22,7 @@ export interface ErrorRecord {
   message: string;
   fatal: boolean;
   timestamp: string;
+  suggested_fix?: string | null;
 }
 
 export interface StatusEntry {
@@ -63,6 +64,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   pendingCode = signal<Map<string, CodeSubmittedData>>(new Map());
   errorLog = signal<ErrorRecord[]>([]);
   statusLog = signal<StatusEntry[]>([]);
+  waitingForAgent = signal(false);
   showExtend = signal(false);
   extendTurns = signal(10);
   extending = signal(false);
@@ -120,7 +122,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     this.subs.add(this.stream.codeResult$.subscribe(ev => {
       const result = ev.data as CodeResultData;
-      const key = `${ev.turn}-1`;
+      const key = `${ev.turn}-${result.block_index}`;
       const pending = this.pendingCode();
       const submitted = pending.get(key);
       if (submitted) {
@@ -136,12 +138,14 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     // Error tracking — show inline in chat and persist in error log
     this.subs.add(this.stream.errors$.subscribe(ev => {
+      this.waitingForAgent.set(false);
       const d = ev.data as ErrorData;
       const record: ErrorRecord = {
         code: d.code,
         message: d.message,
         fatal: d.fatal,
         timestamp: ev.timestamp,
+        suggested_fix: d.suggested_fix ?? null,
       };
       this.errorLog.update(errs => [...errs, record]);
       this.chatItems.update(items => [...items, { kind: 'error', error: record }]);
@@ -150,6 +154,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     // Status change log — collapse consecutive identical entries
     this.subs.add(this.stream.statusChanges$.subscribe(ev => {
+      this.waitingForAgent.set(false);
       const d = ev.data as StatusChangeData;
       this.statusLog.update(log => {
         const last = log[log.length - 1];
@@ -186,6 +191,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     } else {
       this.stream.sendUserMessage(content);
     }
+    this.waitingForAgent.set(true);
     this.userInput.set('');
     this.chatItems.update(items => [...items, {
       kind: 'message',

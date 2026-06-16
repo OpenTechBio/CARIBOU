@@ -21,6 +21,9 @@
     <div class="error-banner">
       <strong>{{ lastError()!.code }}</strong>
       <span>{{ lastError()!.message }}</span>
+      @if (lastError()!.suggested_fix) {
+        <code>{{ lastError()!.suggested_fix }}</code>
+      }
     </div>
   }
 
@@ -71,6 +74,9 @@
                 <span class="error-severity">{{ item.error.fatal ? 'fatal' : 'non-fatal' }}</span>
               </div>
               <pre class="error-message">{{ item.error.message }}</pre>
+              @if (item.error.suggested_fix) {
+                <code class="error-fix">{{ item.error.suggested_fix }}</code>
+              }
             </div>
           }
         }
@@ -80,6 +86,16 @@
           <div class="init-indicator">
             <div class="spinner"></div>
             <span>Starting sandbox — this may take up to 30 seconds…</span>
+          </div>
+        }
+
+        <!-- Waiting indicator: user sent message, server not yet running -->
+        @if (waitingForAgent()) {
+          <div class="thinking-indicator">
+            <span class="thinking-label">Waiting for agent…</span>
+            <div class="thinking-dots">
+              <span></span><span></span><span></span>
+            </div>
           </div>
         }
 
@@ -126,6 +142,9 @@
                 <span class="error-ts">{{ err.timestamp | date:'HH:mm:ss' }}</span>
               </div>
               <p class="sidebar-error-msg">{{ err.message }}</p>
+              @if (err.suggested_fix) {
+                <code class="sidebar-error-fix">{{ err.suggested_fix }}</code>
+              }
             </div>
           }
         </section>

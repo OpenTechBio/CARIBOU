@@ -3,6 +3,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
+import { ConfigService } from '../../core/services/config.service';
+import { OllamaModelsResponse } from '../../core/models/session.model';
 
 interface ServerSettings {
   caribou_home: string;
@@ -10,6 +12,8 @@ interface ServerSettings {
   uploads_dir: string;
   env_file: string;
   api_keys: Record<string, string>;
+  ollama_host: string;
+  ollama_model: string;
 }
 
 @Component({
@@ -22,9 +26,12 @@ interface ServerSettings {
 export class SettingsComponent implements OnInit {
   private http = inject(HttpClient);
   private router = inject(Router);
+  configSvc = inject(ConfigService);
 
   settings = signal<ServerSettings | null>(null);
+  ollamaModels = signal<OllamaModelsResponse | null>(null);
   loading = signal(true);
+  loadingOllama = signal(false);
   saving = signal(false);
   saveResult = signal<{ ok: boolean; message: string } | null>(null);
 
@@ -33,6 +40,8 @@ export class SettingsComponent implements OnInit {
   openaiKey = signal('');
   anthropicKey = signal('');
   deepseekKey = signal('');
+  ollamaHost = signal('');
+  ollamaModel = signal('');
 
   showKeys: Record<string, boolean> = {
     openai: false, anthropic: false, deepseek: false,
@@ -43,7 +52,10 @@ export class SettingsComponent implements OnInit {
       next: (s) => {
         this.settings.set(s);
         this.sessionsDir.set(s.sessions_dir);
+        this.ollamaHost.set(s.ollama_host);
+        this.ollamaModel.set(s.ollama_model);
         this.loading.set(false);
+        this.refreshOllamaModels();
       },
       error: () => this.loading.set(false),
     });
@@ -59,6 +71,12 @@ export class SettingsComponent implements OnInit {
     if (this.openaiKey()) body['openai_api_key'] = this.openaiKey();
     if (this.anthropicKey()) body['anthropic_api_key'] = this.anthropicKey();
     if (this.deepseekKey()) body['deepseek_api_key'] = this.deepseekKey();
+    if (this.ollamaHost() !== this.settings()?.ollama_host) {
+      body['ollama_host'] = this.ollamaHost();
+    }
+    if (this.ollamaModel() !== this.settings()?.ollama_model) {
+      body['ollama_model'] = this.ollamaModel();
+    }
 
     if (Object.keys(body).length === 0) {
       this.saving.set(false);
@@ -74,7 +92,12 @@ export class SettingsComponent implements OnInit {
         this.deepseekKey.set('');
         this.saveResult.set({ ok: true, message: `Saved: ${r.updated.join(', ')}` });
         // Reload settings to show updated masks
-        this.http.get<ServerSettings>('api/settings').subscribe(s => this.settings.set(s));
+        this.http.get<ServerSettings>('api/settings').subscribe(s => {
+          this.settings.set(s);
+          this.ollamaHost.set(s.ollama_host);
+          this.ollamaModel.set(s.ollama_model);
+          this.refreshOllamaModels();
+        });
       },
       error: (err) => {
         this.saving.set(false);
@@ -85,5 +108,22 @@ export class SettingsComponent implements OnInit {
 
   goBack(): void {
     this.router.navigate(['/']);
+  }
+
+  refreshOllamaModels(): void {
+    this.loadingOllama.set(true);
+    this.configSvc.getOllamaModels().subscribe({
+      next: (models) => {
+        this.loadingOllama.set(false);
+        this.ollamaModels.set(models);
+        if (models.models.length && !models.models.includes(this.ollamaModel())) {
+          this.ollamaModel.set(models.default_model);
+        }
+      },
+      error: () => {
+        this.loadingOllama.set(false);
+        this.ollamaModels.set(null);
+      },
+    });
   }
 }

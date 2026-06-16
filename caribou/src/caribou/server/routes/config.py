@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -9,7 +11,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
-from caribou.server.models import AgentBlueprint, LLMBackend, ServerStatus
+from caribou.server.models import (
+    AgentBlueprint, AgentConfig, BlueprintContent, CommandConfig,
+    LLMBackend, OllamaModelsResponse, SaveBlueprintRequest, ServerStatus,
+)
+from caribou.server.ollama_service import (
+    DEFAULT_OLLAMA_MODEL,
+    normalize_host,
+    probe_ollama,
+)
 from caribou.server.session_manager import session_manager, _SESSIONS_DIR
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -46,8 +56,18 @@ async def get_backends() -> List[LLMBackend]:
     result = []
     for b in _BACKENDS:
         key_name = _KEY_MAP.get(b.id)
-        available = True if key_name is None else bool(os.environ.get(key_name))
-        result.append(b.copy(update={"available": available}))
+        if b.id == "ollama":
+            ollama = probe_ollama(os.environ.get("OLLAMA_HOST"))
+            available = ollama.status in {"ready", "not_running"}
+            result.append(b.copy(update={
+                "available": available,
+                "status": ollama.status,
+                "message": ollama.message,
+                "suggested_fix": ollama.suggested_fix,
+            }))
+        else:
+            available = bool(os.environ.get(key_name)) if key_name else True
+            result.append(b.copy(update={"available": available}))
     return result
 
 
@@ -57,11 +77,15 @@ async def get_blueprints() -> List[AgentBlueprint]:
     from caribou.cli.run_cli import PACKAGE_AGENTS_DIR
 
     blueprints = []
-    for search_dir in (DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR):
+    seen_names: set = set()
+    for search_dir, is_pkg in ((DEFAULT_AGENT_DIR, False), (Path(PACKAGE_AGENTS_DIR), True)):
         p = Path(search_dir)
         if not p.exists():
             continue
         for json_file in sorted(p.glob("*.json")):
+            if json_file.stem in seen_names:
+                continue
+            seen_names.add(json_file.stem)
             try:
                 sys = AgentSystem.load_from_json(str(json_file))
                 blueprints.append(AgentBlueprint(
@@ -70,6 +94,7 @@ async def get_blueprints() -> List[AgentBlueprint]:
                     agents=list(sys.agents.keys()),
                     has_rag=any(a.is_rag_enabled for a in sys.agents.values()),
                     path=str(json_file),
+                    is_package_default=is_pkg,
                 ))
             except Exception:
                 pass
@@ -82,6 +107,8 @@ class ServerSettings(BaseModel):
     uploads_dir: str
     env_file: str
     api_keys: Dict[str, str]  # key name → masked value
+    ollama_host: str
+    ollama_model: str
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -89,6 +116,8 @@ class UpdateSettingsRequest(BaseModel):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
+    ollama_host: Optional[str] = None
+    ollama_model: Optional[str] = None
 
 
 @router.get("/settings", response_model=ServerSettings)
@@ -110,6 +139,8 @@ async def get_settings() -> ServerSettings:
             "ANTHROPIC_API_KEY": _mask(os.environ.get("ANTHROPIC_API_KEY", "")),
             "DEEPSEEK_API_KEY":  _mask(os.environ.get("DEEPSEEK_API_KEY", "")),
         },
+        ollama_host=normalize_host(os.environ.get("OLLAMA_HOST")),
+        ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
     )
 
 
@@ -129,6 +160,12 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
     if body.deepseek_api_key is not None:
         set_key(str(ENV_FILE), "DEEPSEEK_API_KEY", body.deepseek_api_key)
         updated.append("DEEPSEEK_API_KEY")
+    if body.ollama_host is not None:
+        set_key(str(ENV_FILE), "OLLAMA_HOST", normalize_host(body.ollama_host))
+        updated.append("OLLAMA_HOST")
+    if body.ollama_model is not None:
+        set_key(str(ENV_FILE), "OLLAMA_MODEL", body.ollama_model.strip())
+        updated.append("OLLAMA_MODEL")
 
     if body.sessions_dir is not None:
         p = Path(body.sessions_dir).expanduser()
@@ -141,6 +178,171 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
 
     load_dotenv(dotenv_path=ENV_FILE, override=True)
     return {"updated": updated}
+
+
+@router.get("/config/ollama/models", response_model=OllamaModelsResponse)
+async def get_ollama_models() -> OllamaModelsResponse:
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+    default_model = os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    status = probe_ollama(os.environ.get("OLLAMA_HOST"))
+    if default_model not in status.models and status.models:
+        default_model = status.models[0]
+    return OllamaModelsResponse(
+        host=status.host,
+        running=status.running,
+        models=status.models,
+        default_model=default_model,
+        status=status.status,
+        message=status.message,
+        suggested_fix=status.suggested_fix,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blueprint CRUD helpers
+# ---------------------------------------------------------------------------
+
+def _get_package_agents_dir() -> Path:
+    from caribou.cli.run_cli import PACKAGE_AGENTS_DIR
+    return Path(PACKAGE_AGENTS_DIR)
+
+
+def _is_package_default(name: str) -> bool:
+    return (_get_package_agents_dir() / f"{name}.json").exists()
+
+
+def _resolve_blueprint_path(name: str) -> Path:
+    """Return the path to a blueprint file, searching user dir then package dir."""
+    for search_dir in (DEFAULT_AGENT_DIR, _get_package_agents_dir()):
+        candidate = Path(search_dir) / f"{name}.json"
+        if candidate.exists():
+            return candidate
+    raise HTTPException(404, f"Blueprint '{name}' not found.")
+
+
+def _load_blueprint_content(name: str) -> BlueprintContent:
+    """Parse a blueprint JSON file into BlueprintContent."""
+    path = _resolve_blueprint_path(name)
+    with open(path) as f:
+        raw = json.load(f)
+
+    agents: Dict[str, AgentConfig] = {}
+    for agent_name, agent_raw in raw.get("agents", {}).items():
+        neighbors = {
+            cmd_name: CommandConfig(
+                target_agent=cmd_data["target_agent"],
+                description=cmd_data.get("description", ""),
+            )
+            for cmd_name, cmd_data in agent_raw.get("neighbors", {}).items()
+        }
+        agents[agent_name] = AgentConfig(
+            prompt=agent_raw.get("prompt", ""),
+            rag_enabled=agent_raw.get("rag", {}).get("enabled", False),
+            neighbors=neighbors,
+            code_samples=agent_raw.get("code_samples", []),
+        )
+
+    global_policy = raw.get("global_policy", "")
+    if not isinstance(global_policy, str):
+        global_policy = json.dumps(global_policy, indent=2)
+
+    return BlueprintContent(
+        name=name,
+        global_policy=global_policy,
+        agents=agents,
+        is_package_default=_is_package_default(name),
+    )
+
+
+def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
+    """Convert SaveBlueprintRequest to the on-disk JSON structure."""
+    agents_dict = {}
+    for agent_name, agent in req.agents.items():
+        agents_dict[agent_name] = {
+            "prompt": agent.prompt,
+            "rag": {"enabled": agent.rag_enabled},
+            "neighbors": {
+                cmd_name: {"target_agent": cmd.target_agent, "description": cmd.description}
+                for cmd_name, cmd in agent.neighbors.items()
+            },
+            **({"code_samples": agent.code_samples} if agent.code_samples else {}),
+        }
+    return {"global_policy": req.global_policy, "agents": agents_dict}
+
+
+def _validate_blueprint(req: SaveBlueprintRequest) -> None:
+    """Raise HTTPException 422 on structural validation failure."""
+    if not req.name or "/" in req.name or "\\" in req.name or req.name.endswith(".json"):
+        raise HTTPException(422, "Invalid blueprint name.")
+    if not req.agents:
+        raise HTTPException(422, "Blueprint must have at least one agent.")
+    agent_keys = set(req.agents.keys())
+    for agent_name, agent in req.agents.items():
+        if not agent_name:
+            raise HTTPException(422, "Agent names must be non-empty.")
+        for cmd_name, cmd in agent.neighbors.items():
+            if cmd.target_agent not in agent_keys:
+                raise HTTPException(
+                    422,
+                    f"Agent '{agent_name}' command '{cmd_name}' references unknown agent '{cmd.target_agent}'.",
+                )
+
+
+def _atomic_write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".json.tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Blueprint CRUD endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/config/blueprints/{name}", response_model=BlueprintContent)
+async def get_blueprint(name: str) -> BlueprintContent:
+    return _load_blueprint_content(name)
+
+
+@router.post("/config/blueprints", response_model=BlueprintContent, status_code=201)
+async def create_blueprint(req: SaveBlueprintRequest) -> BlueprintContent:
+    _validate_blueprint(req)
+    dest = DEFAULT_AGENT_DIR / f"{req.name}.json"
+    if dest.exists():
+        raise HTTPException(409, f"Blueprint '{req.name}' already exists.")
+    _atomic_write(dest, _to_disk_dict(req))
+    return _load_blueprint_content(req.name)
+
+
+@router.put("/config/blueprints/{name}", response_model=BlueprintContent)
+async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintContent:
+    if _is_package_default(name):
+        raise HTTPException(403, f"Blueprint '{name}' is a package default and cannot be modified.")
+    user_path = DEFAULT_AGENT_DIR / f"{name}.json"
+    if not user_path.exists():
+        raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
+    _validate_blueprint(req)
+    req = SaveBlueprintRequest(name=name, global_policy=req.global_policy, agents=req.agents)
+    _atomic_write(user_path, _to_disk_dict(req))
+    return _load_blueprint_content(name)
+
+
+@router.delete("/config/blueprints/{name}", status_code=204)
+async def delete_blueprint(name: str) -> None:
+    if _is_package_default(name):
+        raise HTTPException(403, f"Blueprint '{name}' is a package default and cannot be deleted.")
+    user_path = DEFAULT_AGENT_DIR / f"{name}.json"
+    if not user_path.exists():
+        raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
+    user_path.unlink()
 
 
 def _detect_sandbox() -> str:

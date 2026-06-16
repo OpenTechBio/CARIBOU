@@ -172,6 +172,41 @@
   gap: 0.55rem;
 }
 
+.ollama-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.ollama-note {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  line-height: 1.35;
+
+  code {
+    display: block;
+    margin-top: 0.25rem;
+    padding: 0.2rem 0.35rem;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.55);
+    word-break: break-word;
+  }
+
+  &.ok {
+    color: var(--success);
+    background: var(--success-bg);
+    border: 1px solid #B8DCC4;
+  }
+
+  &.warn {
+    color: #6B5700;
+    background: #FFF7D6;
+    border: 1px solid #E7D7A1;
+  }
+}
+
 .source-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

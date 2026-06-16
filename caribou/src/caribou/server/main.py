@@ -27,6 +27,7 @@ from caribou.server.routes.config import router as config_router
 from caribou.server.routes.sessions import router as sessions_router
 from caribou.server.routes.datasets import router as datasets_router
 from caribou.server.routes.websocket import router as ws_router
+from caribou.server.ollama_service import shutdown_owned_ollama
 from caribou.server.session_manager import session_manager
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
@@ -80,6 +81,7 @@ class OodPathMiddleware:
 async def lifespan(app: FastAPI):
     yield
     await session_manager.shutdown_all()
+    shutdown_owned_ollama()
 
 
 app = FastAPI(

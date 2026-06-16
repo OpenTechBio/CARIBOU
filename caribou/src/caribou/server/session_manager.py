@@ -534,7 +534,7 @@ class SessionManager:
             session.current_agent = driver_name
 
             # --- LLM client ---
-            llm_client, model_name = _build_llm_client(session.config.llm_backend)
+            llm_client, model_name = _build_llm_client(session.config)
             if self._is_deleted(session.id):
                 return
             session.llm_client = llm_client
@@ -578,7 +578,12 @@ class SessionManager:
 
         except Exception as exc:
             session.status = SessionStatus.error
-            _emit_init("error", {"code": "INIT_ERROR", "message": str(exc), "fatal": True})
+            _emit_init("error", {
+                "code": getattr(exc, "code", "INIT_ERROR"),
+                "message": str(exc),
+                "fatal": True,
+                "suggested_fix": getattr(exc, "suggested_fix", None),
+            })
             _emit_init("status_change", {"status": "error", "reason": str(exc)})
 
 
@@ -607,9 +612,11 @@ def _find_blueprint(name: str) -> Path:
     raise FileNotFoundError(f"Blueprint '{name}' not found in {DEFAULT_AGENT_DIR} or package agents dir.")
 
 
-def _build_llm_client(backend: str):
+def _build_llm_client(config: SessionCreateRequest):
     """Return (llm_client, model_name) for the given backend string."""
     from openai import OpenAI
+
+    backend = config.llm_backend
 
     if backend == "chatgpt":
         key = os.environ.get("OPENAI_API_KEY", "")
@@ -632,8 +639,12 @@ def _build_llm_client(backend: str):
 
     if backend.startswith("ollama"):
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        env_model = os.environ.get("OLLAMA_MODEL", "")
+        requested_model = config.ollama_model or env_model or ""
+        from caribou.server.ollama_service import ensure_ollama_ready
         from caribou.core.ollama_wrapper import OllamaClient
-        return OllamaClient(host=host), "llama3"
+        resolved_host, model_name = ensure_ollama_ready(host, requested_model)
+        return OllamaClient(host=resolved_host, model=model_name), model_name
 
     raise ValueError(f"Unknown LLM backend: {backend!r}")
 

@@ -110,8 +110,16 @@ export class AgentStreamService implements OnDestroy {
       this._startPing();
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
       this._clearPing();
+      // 4004 = session not found on server (e.g. after a server restart); no point retrying
+      if (ev.code === 4004) {
+        const session = this.sessionSvc.currentSession();
+        if (session) {
+          this.sessionSvc.updateLocal({ ...session, status: 'error' as SessionStatus });
+        }
+        return;
+      }
       const session = this.sessionSvc.currentSession();
       const dead = session?.status === 'stopped' || session?.status === 'error';
       if (!dead && this.retries < MAX_RETRIES) {
@@ -134,6 +142,15 @@ export class AgentStreamService implements OnDestroy {
         break;
       }
       case 'message_complete': {
+        const d = event.data as MessageCompleteData;
+        const session = this.sessionSvc.currentSession();
+        if (session) {
+          this.sessionSvc.updateLocal({
+            ...session,
+            current_turn: Math.max(session.current_turn, d.message.turn),
+            message_count: session.message_count + 1,
+          });
+        }
         this.streamingContent.set('');
         this.streamingAgent.set('');
         this.isStreaming.set(false);
@@ -152,6 +169,16 @@ export class AgentStreamService implements OnDestroy {
         const session = this.sessionSvc.currentSession();
         if (session) {
           this.sessionSvc.updateLocal({ ...session, current_agent: d.to_agent });
+        }
+        break;
+      }
+      case 'error': {
+        const d = event.data as ErrorData;
+        if (d.fatal) {
+          const session = this.sessionSvc.currentSession();
+          if (session) {
+            this.sessionSvc.updateLocal({ ...session, status: 'error' as SessionStatus });
+          }
         }
         break;
       }
