@@ -26,5 +26,10 @@ export const routes: Routes = [
     loadComponent: () =>
       import('./pages/blueprint-editor/blueprint-editor').then(m => m.BlueprintEditorComponent),
   },
+  {
+    path: 'code-samples',
+    loadComponent: () =>
+      import('./pages/code-samples/code-samples').then(m => m.CodeSamplesComponent),
+  },
   { path: '**', redirectTo: '' },
 ];

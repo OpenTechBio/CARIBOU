@@ -229,11 +229,30 @@
                         @for (sample of agent.codeSamples; track $index; let si = $index) {
                           <div class="code-sample-row">
                             <span class="code-sample-icon">📄</span>
-                            <input class="form-input code-input flex-1"
-                              [value]="sample"
-                              (input)="updateCodeSample(i, si, $any($event.target).value)"
-                              [disabled]="isPackageDefault()"
-                              placeholder="example.py" />
+                            <div class="cs-autocomplete-wrap flex-1">
+                              <input class="form-input code-input"
+                                [value]="sample"
+                                (input)="onSampleInput(i, si, $any($event.target).value)"
+                                (focus)="onSampleFocus(i, si, $any($event.target).value)"
+                                (blur)="onSampleBlur()"
+                                [disabled]="isPackageDefault()"
+                                placeholder="example.py"
+                                autocomplete="off" />
+                              @if (isSampleDropdownVisible(i, si)) {
+                                <div class="cs-dropdown">
+                                  @for (suggestion of filteredSuggestions(); track suggestion) {
+                                    <button class="cs-dropdown-item"
+                                      type="button"
+                                      (mousedown)="selectSuggestion(i, si, suggestion)">
+                                      <span class="cs-suggestion-name">{{ suggestion }}</span>
+                                      @if (isBuiltin(suggestion)) {
+                                        <span class="cs-suggestion-badge">built-in</span>
+                                      }
+                                    </button>
+                                  }
+                                </div>
+                              }
+                            </div>
                             @if (!isPackageDefault()) {
                               <button class="btn btn-ghost btn-xs" (click)="removeCodeSample(i, si)">✕</button>
                             }

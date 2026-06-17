@@ -378,6 +378,7 @@ async def delete_blueprint(name: str) -> None:
 
 
 _USER_CODE_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
+_PACKAGE_CODE_SAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "code_samples"
 
 
 class ImportCodeSampleRequest(BaseModel):
@@ -387,6 +388,31 @@ class ImportCodeSampleRequest(BaseModel):
 class ImportCodeSampleResponse(BaseModel):
     filename: str
     destination: str
+
+
+class CodeSampleInfo(BaseModel):
+    filename: str
+    size_bytes: int
+    is_builtin: bool
+
+
+class CodeSampleContent(BaseModel):
+    filename: str
+    content: str
+    is_builtin: bool
+
+
+class CreateCodeSampleRequest(BaseModel):
+    filename: str
+    content: str
+
+
+class UpdateCodeSampleRequest(BaseModel):
+    content: str
+
+
+def _is_builtin_sample(filename: str) -> bool:
+    return (_PACKAGE_CODE_SAMPLES_DIR / filename).exists() and not (_USER_CODE_SAMPLES_DIR / filename).exists()
 
 
 @router.post("/config/code-samples/import", response_model=ImportCodeSampleResponse)
@@ -406,6 +432,75 @@ async def import_code_sample(req: ImportCodeSampleRequest) -> ImportCodeSampleRe
 
     shutil.copy2(src, dest)
     return ImportCodeSampleResponse(filename=src.name, destination=str(dest))
+
+
+@router.get("/config/code-samples", response_model=List[CodeSampleInfo])
+async def list_code_samples() -> List[CodeSampleInfo]:
+    samples: dict[str, CodeSampleInfo] = {}
+
+    if _PACKAGE_CODE_SAMPLES_DIR.exists():
+        for f in sorted(_PACKAGE_CODE_SAMPLES_DIR.glob("*.py")):
+            samples[f.name] = CodeSampleInfo(
+                filename=f.name,
+                size_bytes=f.stat().st_size,
+                is_builtin=True,
+            )
+
+    if _USER_CODE_SAMPLES_DIR.exists():
+        for f in sorted(_USER_CODE_SAMPLES_DIR.glob("*.py")):
+            samples[f.name] = CodeSampleInfo(
+                filename=f.name,
+                size_bytes=f.stat().st_size,
+                is_builtin=False,
+            )
+
+    return list(samples.values())
+
+
+@router.get("/config/code-samples/{filename}", response_model=CodeSampleContent)
+async def get_code_sample(filename: str) -> CodeSampleContent:
+    user_path = _USER_CODE_SAMPLES_DIR / filename
+    if user_path.exists():
+        return CodeSampleContent(filename=filename, content=user_path.read_text(), is_builtin=False)
+
+    pkg_path = _PACKAGE_CODE_SAMPLES_DIR / filename
+    if pkg_path.exists():
+        return CodeSampleContent(filename=filename, content=pkg_path.read_text(), is_builtin=True)
+
+    raise HTTPException(404, f"Code sample '{filename}' not found.")
+
+
+@router.post("/config/code-samples", response_model=CodeSampleContent, status_code=201)
+async def create_code_sample(req: CreateCodeSampleRequest) -> CodeSampleContent:
+    if not req.filename or "/" in req.filename or "\\" in req.filename:
+        raise HTTPException(422, "Invalid filename.")
+    dest = _USER_CODE_SAMPLES_DIR / req.filename
+    if dest.exists():
+        raise HTTPException(409, f"A code sample named '{req.filename}' already exists.")
+    _USER_CODE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    dest.write_text(req.content)
+    return CodeSampleContent(filename=req.filename, content=req.content, is_builtin=False)
+
+
+@router.put("/config/code-samples/{filename}", response_model=CodeSampleContent)
+async def update_code_sample(filename: str, req: UpdateCodeSampleRequest) -> CodeSampleContent:
+    if _is_builtin_sample(filename):
+        raise HTTPException(403, f"'{filename}' is a built-in sample and cannot be modified. Clone it first.")
+    dest = _USER_CODE_SAMPLES_DIR / filename
+    if not dest.exists():
+        raise HTTPException(404, f"Code sample '{filename}' not found.")
+    dest.write_text(req.content)
+    return CodeSampleContent(filename=filename, content=req.content, is_builtin=False)
+
+
+@router.delete("/config/code-samples/{filename}", status_code=204)
+async def delete_code_sample(filename: str) -> None:
+    if _is_builtin_sample(filename):
+        raise HTTPException(403, f"'{filename}' is a built-in sample and cannot be deleted.")
+    dest = _USER_CODE_SAMPLES_DIR / filename
+    if not dest.exists():
+        raise HTTPException(404, f"Code sample '{filename}' not found.")
+    dest.unlink()
 
 
 def _detect_sandbox() -> str:
