@@ -509,6 +509,71 @@
 
 .flex-1 { flex: 1; }
 
+/* ── Code sample autocomplete ───────────────────────── */
+.cs-autocomplete-wrap {
+  position: relative;
+
+  input { width: 100%; box-sizing: border-box; }
+}
+
+.cs-dropdown {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  border: 1px solid var(--primary);
+  border-radius: 7px;
+  box-shadow: 0 4px 16px rgba(0,20,40,0.14);
+  z-index: 50;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.cs-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+
+  &:hover, &:focus {
+    background: var(--primary-bg);
+    outline: none;
+  }
+
+  & + & {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.cs-suggestion-name {
+  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: var(--text);
+  flex: 1;
+}
+
+.cs-suggestion-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  flex-shrink: 0;
+}
+
 .import-path-row {
   display: flex;
   align-items: center;

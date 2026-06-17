@@ -10,6 +10,12 @@ import {
   CommandEntry, SaveBlueprintRequest,
 } from '../../core/models/blueprint.model';
 
+interface CodeSampleInfo {
+  filename: string;
+  size_bytes: number;
+  is_builtin: boolean;
+}
+
 @Component({
   selector: 'app-blueprint-editor',
   standalone: true,
@@ -48,6 +54,19 @@ export class BlueprintEditorComponent implements OnInit {
   importErrors = signal<(string | null)[]>([]);
   importing = signal<boolean[]>([]);
 
+  // Code sample autocomplete
+  availableCodeSamples = signal<CodeSampleInfo[]>([]);
+  sampleDropdown = signal<{ ai: number; si: number; query: string } | null>(null);
+  private _blurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  filteredSuggestions = computed(() => {
+    const dd = this.sampleDropdown();
+    if (!dd) return [];
+    const q = dd.query.toLowerCase().trim();
+    const all = this.availableCodeSamples().map(s => s.filename);
+    return q ? all.filter(f => f.toLowerCase().includes(q)) : all;
+  });
+
   // Validation
   validationErrors = computed(() => this._validate(this.agents(), this.blueprintName()));
 
@@ -57,6 +76,11 @@ export class BlueprintEditorComponent implements OnInit {
   ngOnInit(): void {
     this.configSvc.loadAll().subscribe(() => {
       this.allBlueprints.set(this.configSvc.blueprints());
+    });
+
+    this.http.get<CodeSampleInfo[]>('api/config/code-samples').subscribe({
+      next: (list) => this.availableCodeSamples.set(list),
+      error: () => {},
     });
 
     const name = this.route.snapshot.paramMap.get('name');
@@ -314,6 +338,48 @@ export class BlueprintEditorComponent implements OnInit {
         });
       },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Code sample autocomplete
+  // ---------------------------------------------------------------------------
+
+  onSampleInput(ai: number, si: number, value: string): void {
+    this.updateCodeSample(ai, si, value);
+    this.sampleDropdown.set({ ai, si, query: value });
+  }
+
+  onSampleFocus(ai: number, si: number, value: string): void {
+    if (this._blurTimer !== null) {
+      clearTimeout(this._blurTimer);
+      this._blurTimer = null;
+    }
+    this.sampleDropdown.set({ ai, si, query: value });
+  }
+
+  onSampleBlur(): void {
+    this._blurTimer = setTimeout(() => {
+      this.sampleDropdown.set(null);
+      this._blurTimer = null;
+    }, 150);
+  }
+
+  selectSuggestion(ai: number, si: number, filename: string): void {
+    if (this._blurTimer !== null) {
+      clearTimeout(this._blurTimer);
+      this._blurTimer = null;
+    }
+    this.updateCodeSample(ai, si, filename);
+    this.sampleDropdown.set(null);
+  }
+
+  isSampleDropdownVisible(ai: number, si: number): boolean {
+    const dd = this.sampleDropdown();
+    return dd !== null && dd.ai === ai && dd.si === si && this.filteredSuggestions().length > 0;
+  }
+
+  isBuiltin(filename: string): boolean {
+    return this.availableCodeSamples().find(s => s.filename === filename)?.is_builtin ?? false;
   }
 
   agentKeys = computed(() => this.agents().map(a => a.key));
