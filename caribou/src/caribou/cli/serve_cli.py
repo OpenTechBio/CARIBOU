@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.prompt import Confirm
 
 serve_app = typer.Typer(
     name="serve",
@@ -17,6 +19,99 @@ serve_app = typer.Typer(
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _FRONTEND_DIR = _PACKAGE_ROOT / "frontend"
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "browser"
+
+# Files/dirs that, when newer than the built bundle, indicate a rebuild is warranted.
+_FRONTEND_SRC_GLOBS = ("src/**/*",)
+_FRONTEND_ROOT_FILES = ("angular.json", "package.json", "package-lock.json",
+                        "tsconfig.json", "tsconfig.app.json", "tsconfig.spec.json")
+
+_console = Console()
+
+
+def _iter_frontend_sources(frontend_dir: Path):
+    for pattern in _FRONTEND_SRC_GLOBS:
+        yield from (p for p in frontend_dir.glob(pattern) if p.is_file())
+    for name in _FRONTEND_ROOT_FILES:
+        candidate = frontend_dir / name
+        if candidate.is_file():
+            yield candidate
+
+
+def _frontend_build_state(frontend_dir: Path, dist_dir: Path) -> tuple[str, Path | None]:
+    """
+    Returns (state, newest_source_path):
+      - "missing"  → no built index.html
+      - "stale"    → sources newer than built bundle
+      - "fresh"    → build is up to date
+    """
+    index = dist_dir / "index.html"
+    if not index.exists():
+        return "missing", None
+    build_mtime = index.stat().st_mtime
+    newest: Path | None = None
+    newest_mtime = 0.0
+    for src in _iter_frontend_sources(frontend_dir):
+        m = src.stat().st_mtime
+        if m > newest_mtime:
+            newest_mtime = m
+            newest = src
+    if newest is not None and newest_mtime > build_mtime:
+        return "stale", newest
+    return "fresh", None
+
+
+def _run_npm(frontend_dir: Path, args: list[str], action: str) -> None:
+    _console.print(f"[cyan]Running `npm {' '.join(args)}` in {frontend_dir}…[/cyan]")
+    try:
+        subprocess.run(["npm", *args], cwd=frontend_dir, check=True)
+    except FileNotFoundError as exc:
+        _console.print(
+            "[red]npm was not found on PATH. Install Node.js 18+ and retry, "
+            "or run the build manually.[/red]"
+        )
+        raise typer.Exit(1) from exc
+    except subprocess.CalledProcessError as exc:
+        _console.print(f"[red]{action} failed (exit {exc.returncode}).[/red]")
+        raise typer.Exit(exc.returncode) from exc
+
+
+def _ensure_frontend_built(frontend_dir: Path, dist_dir: Path) -> None:
+    """
+    Ask the user whether to (re)build the Angular frontend when the bundle is
+    missing or older than the sources. No-op if there's no frontend/ directory
+    (e.g. wheel install where the bundle is already packaged).
+    """
+    if not (frontend_dir / "package.json").exists():
+        return  # nothing to build from source; assume prebuilt bundle ships with the package
+
+    state, newest = _frontend_build_state(frontend_dir, dist_dir)
+    if state == "fresh":
+        return
+
+    if state == "missing":
+        _console.print("[yellow]No built frontend bundle found at "
+                       f"{dist_dir}.[/yellow]")
+        default_yes = True
+    else:  # stale
+        _console.print(f"[yellow]Frontend sources have changed since the last build "
+                       f"(newest: {newest.relative_to(frontend_dir) if newest else '?'}).[/yellow]")
+        default_yes = True
+
+    if not Confirm.ask("Rebuild the Angular frontend now?", default=default_yes):
+        if state == "missing":
+            _console.print("[yellow]Continuing without a built frontend — the web UI "
+                           "will return 404 at /. API endpoints under /api still work.[/yellow]")
+        else:
+            _console.print("[yellow]Continuing with the existing (stale) bundle.[/yellow]")
+        return
+
+    if not (frontend_dir / "node_modules").exists():
+        _console.print("[cyan]node_modules missing — running `npm install` first.[/cyan]")
+        _run_npm(frontend_dir, ["install"], "npm install")
+
+    _run_npm(frontend_dir, ["run", "build"], "npm run build")
+    _console.print("[green]Frontend build complete.[/green]")
 
 
 def _backend_proxy_host(host: str) -> str:
@@ -116,6 +211,12 @@ def serve(
       Run this on HPC, then in frontend/: ng serve --proxy-config proxy.conf.json
     """
     import uvicorn
+
+    # In --refresh mode Angular serves its own bundle from ng serve, so a
+    # prebuilt dist is not required. Otherwise, offer to (re)build when the
+    # bundle is missing or older than the source tree.
+    if not refresh:
+        _ensure_frontend_built(_FRONTEND_DIR, _FRONTEND_DIST)
 
     display_host = _display_host(host)
     typer.echo(f"Starting CARIBOU server at http://{display_host}:{port}")
