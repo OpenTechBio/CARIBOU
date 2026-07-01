@@ -92,11 +92,11 @@
             <button class="btn btn-ghost btn-sm icon-btn" type="button"
               [attr.aria-label]="'Duplicate session ' + session.id.slice(0,8)"
               (click)="duplicateSession(session, $event)"
-              title="Duplicate config">⧉</button>
+              title="Duplicate — copy this session's config into a new session">⧉</button>
             <button class="btn btn-ghost btn-sm delete-btn" type="button"
               [attr.aria-label]="'Delete session ' + session.id.slice(0,8)"
               (click)="requestDelete(session.id, $event)"
-              title="Delete session">✕</button>
+              title="Delete this session and all its data">✕</button>
           </div>
           <div class="session-meta">
             <span class="label">Blueprint</span>

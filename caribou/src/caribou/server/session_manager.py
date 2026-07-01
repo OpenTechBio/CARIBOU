@@ -491,15 +491,21 @@ class SessionManager:
             if session.config.mode == SessionMode.auto and session.config.initial_prompt:
                 await self.start_run(session.id, session.config.initial_prompt)
 
-        except Exception as exc:
+        except BaseException as exc:  # noqa: BLE001 — includes SystemExit/KeyboardInterrupt
+            # SystemExit from legacy sandbox helpers must NOT propagate out of
+            # this task, or asyncio treats it as a fatal shutdown and takes the
+            # server lifespan down with it. Log the failure and forward a clean
+            # error event to the UI.
+            if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+                raise
             session.status = SessionStatus.error
             _emit_init("error", {
                 "code": getattr(exc, "code", "INIT_ERROR"),
-                "message": str(exc),
+                "message": str(exc) or exc.__class__.__name__,
                 "fatal": True,
                 "suggested_fix": getattr(exc, "suggested_fix", None),
             })
-            _emit_init("status_change", {"status": "error", "reason": str(exc)})
+            _emit_init("status_change", {"status": "error", "reason": str(exc) or exc.__class__.__name__})
 
 
 # ---------------------------------------------------------------------------

@@ -6,9 +6,12 @@ construction can be reused (or tested) without touching the manager.
 """
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from caribou.config import DEFAULT_AGENT_DIR
 from caribou.server.models import SessionCreateRequest
@@ -16,6 +19,21 @@ from caribou.server.session_state import (
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
 )
+
+_log = logging.getLogger(__name__)
+
+
+class SandboxUnavailableError(RuntimeError):
+    """
+    Raised when the requested sandbox backend can't be started because a
+    prerequisite is missing (binary, image, permissions). The server catches
+    this and forwards `code` + `suggested_fix` to the UI so users see an
+    actionable message instead of a stack trace.
+    """
+    def __init__(self, code: str, message: str, suggested_fix: Optional[str] = None):
+        super().__init__(message)
+        self.code = code
+        self.suggested_fix = suggested_fix
 
 
 def find_blueprint(name: str) -> Path:
@@ -77,41 +95,109 @@ def build_llm_client(config: SessionCreateRequest):
     raise ValueError(f"Unknown LLM backend: {backend!r}")
 
 
+def _preflight_docker() -> None:
+    if not shutil.which("docker"):
+        raise SandboxUnavailableError(
+            code="DOCKER_NOT_INSTALLED",
+            message="Docker executable not found in PATH.",
+            suggested_fix=(
+                "Install Docker Desktop (macOS/Windows) or the docker CLI (Linux) "
+                "and make sure the daemon is running, then retry."
+            ),
+        )
+
+
+def _preflight_singularity() -> None:
+    if not (shutil.which("apptainer") or shutil.which("singularity")):
+        raise SandboxUnavailableError(
+            code="SANDBOX_UNAVAILABLE",
+            message="Singularity/Apptainer executable not found in PATH.",
+            suggested_fix=(
+                "Install Apptainer or Singularity, or load the module on this host "
+                "(e.g. `module load singularity`), then restart the CARIBOU server."
+            ),
+        )
+
+
 def build_sandbox(config: SessionCreateRequest, output_dir: Path):
-    """Build and start a sandbox manager. Blocking — run in a thread."""
+    """
+    Build and start a sandbox manager. Blocking — run in a thread.
+
+    Raises SandboxUnavailableError with a suggested fix when a prerequisite
+    is missing so the UI can render an actionable error instead of a stack
+    trace. Also catches SystemExit — some sandbox helpers historically
+    `sys.exit(1)` on missing binaries, which would otherwise crash the
+    asyncio task and take down the server lifespan.
+    """
     from rich.console import Console
-    from caribou.core.sandbox_management import init_docker, init_singularity_exec
 
     script_dir = Path(__file__).resolve().parent
     # Quiet console so sandbox init output doesn't go to stdout;
     # errors are surfaced via exceptions caught by the caller.
     console = Console(quiet=True)
 
-    if config.sandbox_type.value == "docker":
-        manager_class, handle, copy_cmd, _, _ = init_docker(
-            script_dir, subprocess, console, force_refresh=False
-        )
-        sandbox = manager_class()
-        if not sandbox.start_container():
-            raise RuntimeError("Docker sandbox failed to start.")
-        copy_cmd(config.dataset_path, f"{handle}:{SANDBOX_DATA_PATH}")
-        if config.reference_dataset_path:
-            copy_cmd(config.reference_dataset_path, f"{handle}:{SANDBOX_REF_DATA_PATH}")
-        return sandbox
+    sandbox_type = config.sandbox_type.value
 
-    if config.sandbox_type.value == "singularity":
-        manager_class, _, _, _, _ = init_singularity_exec(
-            script_dir, SANDBOX_DATA_PATH, subprocess, console, force_refresh=False
-        )
-        sandbox = manager_class()
-        sandbox.set_data(
-            [(Path(config.dataset_path), SANDBOX_DATA_PATH)]
-            + ([(Path(config.reference_dataset_path), SANDBOX_REF_DATA_PATH)]
-               if config.reference_dataset_path else []),
-            output_dir,
-        )
-        if not sandbox.start_container():
-            raise RuntimeError("Singularity sandbox failed to start.")
-        return sandbox
+    try:
+        if sandbox_type == "docker":
+            _preflight_docker()
+            from caribou.core.sandbox_management import init_docker
 
-    raise ValueError(f"Unknown sandbox type: {config.sandbox_type}")
+            manager_class, handle, copy_cmd, _, _ = init_docker(
+                script_dir, subprocess, console, force_refresh=False
+            )
+            sandbox = manager_class()
+            if not sandbox.start_container():
+                raise SandboxUnavailableError(
+                    code="DOCKER_START_FAILED",
+                    message="Docker sandbox failed to start.",
+                    suggested_fix="Confirm the Docker daemon is running (`docker info`), then retry.",
+                )
+            copy_cmd(config.dataset_path, f"{handle}:{SANDBOX_DATA_PATH}")
+            if config.reference_dataset_path:
+                copy_cmd(config.reference_dataset_path, f"{handle}:{SANDBOX_REF_DATA_PATH}")
+            return sandbox
+
+        if sandbox_type == "singularity":
+            _preflight_singularity()
+            from caribou.core.sandbox_management import init_singularity_exec
+
+            manager_class, _, _, _, _ = init_singularity_exec(
+                script_dir, SANDBOX_DATA_PATH, subprocess, console, force_refresh=False
+            )
+            sandbox = manager_class()
+            sandbox.set_data(
+                [(Path(config.dataset_path), SANDBOX_DATA_PATH)]
+                + ([(Path(config.reference_dataset_path), SANDBOX_REF_DATA_PATH)]
+                   if config.reference_dataset_path else []),
+                output_dir,
+            )
+            if not sandbox.start_container():
+                raise SandboxUnavailableError(
+                    code="SINGULARITY_START_FAILED",
+                    message="Singularity sandbox failed to start.",
+                    suggested_fix="Check the singularity/apptainer install and try again.",
+                )
+            return sandbox
+
+        raise SandboxUnavailableError(
+            code="SANDBOX_TYPE_UNKNOWN",
+            message=f"Unknown sandbox type: {sandbox_type}",
+            suggested_fix="Pick 'docker' or 'singularity' for the session sandbox.",
+        )
+    except SandboxUnavailableError:
+        raise
+    except SystemExit as exc:
+        # Legacy sandbox helpers call sys.exit(1) on missing binaries at
+        # import time. Convert that into an actionable UI error rather than
+        # letting SystemExit escape and take down the event loop.
+        _log.warning("Sandbox helper raised SystemExit(%s); converting to error.", exc.code)
+        raise SandboxUnavailableError(
+            code="SANDBOX_UNAVAILABLE",
+            message=f"Sandbox helper exited unexpectedly (SystemExit {exc.code}).",
+            suggested_fix=(
+                "The sandbox backend was unable to initialize (typically a missing "
+                "binary such as singularity/apptainer or docker). Install the "
+                "required tool and restart the CARIBOU server."
+            ),
+        )
