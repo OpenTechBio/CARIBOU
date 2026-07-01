@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 
+# Timeout (seconds) applied to blocking LLM calls to prevent runners from
+# hanging indefinitely if the API stalls.
+DEFAULT_LLM_TIMEOUT = 120.0
+
 
 class AnthropicClient:
     """
@@ -30,7 +34,7 @@ class AnthropicClient:
         max_output_tokens: int = 1024,
         base_url: Optional[str] = None,
     ):
-        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        client_kwargs: Dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_LLM_TIMEOUT}
         if base_url:
             client_kwargs["base_url"] = base_url
         self._client = anthropic.Anthropic(**client_kwargs)

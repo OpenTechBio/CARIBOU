@@ -41,6 +41,48 @@ except ImportError as e:
     sys.exit(1)
 
 
+# Consecutive no-action / code-exec failures we tolerate before ending an auto run.
+MAX_CONSECUTIVE_NO_ACTION = 3
+MAX_CONSECUTIVE_EXEC_FAILURES = 5
+# Retry policy for transient LLM errors.
+_LLM_RETRY_ATTEMPTS = 3
+_LLM_RETRY_BASE_DELAY = 2.0
+
+
+def _call_llm_with_retry(
+    *,
+    console: Console,
+    llm_client: object,
+    model_name: str,
+    messages: List[Dict[str, str]],
+) -> Optional[str]:
+    """
+    Call the LLM with exponential backoff on transient errors. Returns the
+    assistant message string, or None if all retries are exhausted.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _LLM_RETRY_ATTEMPTS + 1):
+        try:
+            resp = llm_client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.0,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:  # noqa: BLE001 — SDKs raise varied exception types
+            last_exc = e
+            if attempt >= _LLM_RETRY_ATTEMPTS:
+                break
+            delay = _LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            console.print(
+                f"[yellow]LLM API error (attempt {attempt}/{_LLM_RETRY_ATTEMPTS}): {e}. "
+                f"Retrying in {delay:.1f}s…[/yellow]"
+            )
+            time.sleep(delay)
+    console.print(f"[red]LLM API error after {_LLM_RETRY_ATTEMPTS} attempts: {last_exc}[/red]")
+    return None
+
+
 # --- Type Hinting & Base Classes ---
 class SandboxManager:
     """Abstract base class for sandbox interaction."""
@@ -122,6 +164,7 @@ def run_agent_session(
     code_exec_attempts = 0
     code_exec_failures = 0
     consecutive_failures = 0
+    consecutive_no_action = 0
     correction_count = 0
     session_start_ts = datetime.utcnow()
     session_start_time = time.time()
@@ -151,15 +194,13 @@ def run_agent_session(
                 cleaned_msg["content"] = cleaned_msg["content"].rstrip()
             cleaned_context.append(cleaned_msg)
 
-        try:
-            resp = llm_client.chat.completions.create(
-                model=model_name,
-                messages=cleaned_context,
-                temperature=0.0,
-            )
-            msg = resp.choices[0].message.content
-        except Exception as e:
-            console.print(f"[red]LLM API error: {e}[/red]")
+        msg = _call_llm_with_retry(
+            console=console,
+            llm_client=llm_client,
+            model_name=model_name,
+            messages=cleaned_context,
+        )
+        if msg is None:
             session_end_reason = "llm_error"
             break
 
@@ -221,8 +262,19 @@ def run_agent_session(
         if query_from_re and current_agent.is_rag_enabled:
             _action_fired = True
             console.print(f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]")
-            rag_client = get_rag_client(console)
-            retrieved_docs = rag_client.query(query_from_re)
+            try:
+                rag_client = get_rag_client(console)
+                retrieved_docs = rag_client.query(query_from_re)
+            except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
+                console.print(f"[red] RAG query failed: {rag_exc} [/red]")
+                rag_err = (
+                    f"[SYSTEM] RAG query for '{query_from_re}' failed: {rag_exc}. "
+                    f"Proceed without retrieved context."
+                )
+                history.append({"role": "system", "content": rag_err})
+                if memory_manager:
+                    memory_manager.add_message("system", rag_err)
+                retrieved_docs = None
             if retrieved_docs:
                 console.print(f"[green] RAG query successful. [/green]")
                 feedback = retrieved_docs
@@ -355,6 +407,22 @@ def run_agent_session(
                             print("Error Query unsuccessful - Function signature does not exist in the current database.")
             if rag_short_circuit:
                 continue
+            # Escalate if the same code path keeps failing — don't loop forever.
+            if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
+                console.print(
+                    f"[bold red]Auto run halted: {consecutive_failures} consecutive "
+                    f"code execution failures — likely stuck on the same error.[/bold red]"
+                )
+                escalation_msg = (
+                    f"[SYSTEM] {consecutive_failures} consecutive code execution failures. "
+                    f"The current approach is not working — ending this auto run so a human "
+                    f"can inspect the state."
+                )
+                history.append({"role": "system", "content": escalation_msg})
+                if memory_manager:
+                    memory_manager.add_message("system", escalation_msg)
+                session_end_reason = "stuck_code_failures"
+                break
 
         # In auto mode, delegation immediately hands execution to the new agent.
         # In interactive mode, the user gets control back after the handoff.
@@ -364,6 +432,16 @@ def run_agent_session(
         if is_auto and not _action_fired:
             # No action was taken this turn — give the LLM explicit feedback so it
             # doesn't silently repeat the same output indefinitely.
+            consecutive_no_action += 1
+            if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
+                # The agent is stuck emitting non-actionable text. End the run
+                # rather than burn tokens looping on the same feedback message.
+                console.print(
+                    f"[bold red]Auto run halted: agent produced no action for "
+                    f"{consecutive_no_action} consecutive turns.[/bold red]"
+                )
+                session_end_reason = "stuck_no_action"
+                break
             rag_hint = ""
             if current_agent.is_rag_enabled:
                 rag_hint = (
@@ -375,12 +453,16 @@ def run_agent_session(
                 f"(no Python code block, no delegation command, no RAG query).{rag_hint} "
                 f"Please either write executable Python code in a ```python ... ``` block, "
                 f"issue a delegation command, or use a RAG query. "
-                f"Do not output plain text descriptions of what you intend to do."
+                f"Do not output plain text descriptions of what you intend to do. "
+                f"(Attempt {consecutive_no_action}/{MAX_CONSECUTIVE_NO_ACTION} — the run "
+                f"will halt after {MAX_CONSECUTIVE_NO_ACTION} consecutive no-action turns.)"
             )
             console.print(f"[red]{no_action_msg}[/red]")
             history.append({"role": "system", "content": no_action_msg})
             if memory_manager:
                 memory_manager.add_message("system", no_action_msg)
+        elif _action_fired:
+            consecutive_no_action = 0
 
         if is_auto:
             if benchmark_modules:
