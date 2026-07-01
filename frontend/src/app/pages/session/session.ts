@@ -19,6 +19,7 @@ import {
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
+import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 
 export interface ErrorRecord {
   code: string;
@@ -57,7 +58,8 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
   standalone: true,
   imports: [
     CommonModule, FormsModule,
-    MessageBubbleComponent, ArtifactCardComponent, StatusIndicatorComponent
+    MessageBubbleComponent, ArtifactCardComponent, StatusIndicatorComponent,
+    TooltipDirective,
   ],
   templateUrl: './session.html',
   styleUrl: './session.scss',

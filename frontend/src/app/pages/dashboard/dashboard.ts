@@ -11,6 +11,7 @@ import { DatasetService } from '../../core/services/dataset.service';
 import { ToastService } from '../../core/services/toast.service';
 import { Session, SessionCreateRequest, Dataset } from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
+import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 
 type DatasetSource = 'existing' | 'upload' | 'hpc';
 type SortKey = 'newest' | 'oldest' | 'status' | 'turns';
@@ -70,7 +71,7 @@ const PRESETS: QuickStartPreset[] = [
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, StatusIndicatorComponent],
+  imports: [CommonModule, FormsModule, RouterLink, StatusIndicatorComponent, TooltipDirective],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })
