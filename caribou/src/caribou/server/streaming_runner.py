@@ -14,9 +14,17 @@ import asyncio
 import queue
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
+
+# Consecutive no-action / code-exec failures we tolerate before ending the run.
+MAX_CONSECUTIVE_NO_ACTION = 3
+MAX_CONSECUTIVE_EXEC_FAILURES = 5
+# Transient LLM failures are retried with exponential backoff before we give up.
+_LLM_RETRY_ATTEMPTS = 3
+_LLM_RETRY_BASE_DELAY = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +179,7 @@ def run_session_sync(
     current_agent = driver_agent
     turns_completed = 0
     consecutive_failures = 0
+    consecutive_no_action = 0
 
     try:
         while True:
@@ -196,18 +205,44 @@ def run_session_sync(
                     m["content"] = m["content"].rstrip()
                 cleaned_context.append(m)
 
-            # --- LLM call (streaming) ---
-            try:
-                full_msg = ""
-                for token in _stream_tokens_with_fallback(llm_client, model_name, cleaned_context):
-                    if stop_flag.is_set():
+            # --- LLM call (streaming) with retry on transient errors ---
+            msg = None
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, _LLM_RETRY_ATTEMPTS + 1):
+                if stop_flag.is_set():
+                    _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                    return
+                try:
+                    full_msg = ""
+                    for token in _stream_tokens_with_fallback(llm_client, model_name, cleaned_context):
+                        if stop_flag.is_set():
+                            break
+                        full_msg += token
+                        _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
+                    msg = full_msg
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= _LLM_RETRY_ATTEMPTS:
                         break
-                    full_msg += token
-                    _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
-                msg = full_msg
-            except Exception as exc:
-                _emit("error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True})
-                _emit("status_change", {"status": "error", "reason": str(exc)})
+                    delay = _LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    _emit("error", {
+                        "code": "LLM_TRANSIENT_ERROR",
+                        "message": f"{exc} (attempt {attempt}/{_LLM_RETRY_ATTEMPTS}; retrying in {delay:.1f}s)",
+                        "fatal": False,
+                    })
+                    # Wait but stay responsive to stop signals.
+                    waited = 0.0
+                    while waited < delay:
+                        if stop_flag.is_set():
+                            _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                            return
+                        time.sleep(min(0.5, delay - waited))
+                        waited += 0.5
+            if last_exc is not None:
+                _emit("error", {"code": "LLM_ERROR", "message": str(last_exc), "fatal": True})
+                _emit("status_change", {"status": "error", "reason": str(last_exc)})
                 return
 
             if stop_flag.is_set():
@@ -250,8 +285,17 @@ def run_session_sync(
                     docs = rag_client.query(query_str)
                     if docs:
                         history.append({"role": "system", "content": docs})
-                except Exception:
-                    pass
+                except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
+                    err = (
+                        f"[SYSTEM] RAG query for '{query_str}' failed: {rag_exc}. "
+                        f"Proceed without retrieved context."
+                    )
+                    history.append({"role": "system", "content": err})
+                    _emit("error", {
+                        "code": "RAG_ERROR",
+                        "message": str(rag_exc),
+                        "fatal": False,
+                    }, turn=turn)
 
             # --- Delegation ---
             cmd = detect_delegation(msg)
@@ -324,15 +368,35 @@ def run_session_sync(
                     history.append({"role": "assistant", "content": feedback})
 
             if _delegated and is_auto:
+                consecutive_no_action = 0
                 continue
 
+            # Track / escalate stuck-loop conditions in auto mode.
+            if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
+                _emit("status_change", {
+                    "status": "stopped",
+                    "reason": f"stuck: {consecutive_failures} consecutive code failures",
+                }, turn=turn)
+                return
+
             if is_auto and not _action_fired:
+                consecutive_no_action += 1
+                if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
+                    _emit("status_change", {
+                        "status": "stopped",
+                        "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
+                    }, turn=turn)
+                    return
                 no_action_msg = (
                     "[SYSTEM] No action was recognised in your last message. "
                     "Please write executable Python code in a ```python ... ``` block "
-                    "or issue a delegation command."
+                    "or issue a delegation command. "
+                    f"(Attempt {consecutive_no_action}/{MAX_CONSECUTIVE_NO_ACTION}; "
+                    "the run will halt after that.)"
                 )
                 history.append({"role": "system", "content": no_action_msg})
+            elif _action_fired:
+                consecutive_no_action = 0
 
             if is_auto:
                 history.append({"role": "user", "content": "Please continue with the next step."})
@@ -368,7 +432,12 @@ def run_session_sync(
                     continue
 
     except Exception as exc:
-        _emit("error", {"code": "RUNNER_ERROR", "message": str(exc), "fatal": True})
+        _emit("error", {
+            "code": "RUNNER_ERROR",
+            "message": str(exc),
+            "traceback": traceback.format_exc(limit=8),
+            "fatal": True,
+        })
         _emit("status_change", {"status": "error", "reason": str(exc)})
 
 

@@ -2,6 +2,13 @@ from __future__ import annotations
 import json
 from typing import List, Dict
 
+# Bound on how many episodic summaries we keep. Older summaries are dropped
+# so the context we send never grows unboundedly during multi-hour sessions.
+_MAX_SUMMARIZED_LOG = 20
+# Explicit timeout for the summarization LLM call so a hung provider doesn't
+# wedge the whole session while summarizing between turns.
+_SUMMARIZATION_TIMEOUT_SECONDS = 60.0
+
 class MemoryManager:
     """
     Manages the agent's conversation history with episodic summarization
@@ -109,18 +116,36 @@ class MemoryManager:
         )
 
         try:
-            response = self.llm_client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": summary_prompt},
-                    {"role": "user", "content": json.dumps(chunk_to_summarize)},
-                ],
-                temperature=0.0,
-            )
+            # Try to hand the SDK an explicit timeout. Not every wrapper accepts
+            # `timeout=` (the OpenAI SDK does; the Ollama wrapper ignores kwargs),
+            # so we fall back gracefully if the call rejects the keyword.
+            try:
+                response = self.llm_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": summary_prompt},
+                        {"role": "user", "content": json.dumps(chunk_to_summarize)},
+                    ],
+                    temperature=0.0,
+                    timeout=_SUMMARIZATION_TIMEOUT_SECONDS,
+                )
+            except TypeError:
+                response = self.llm_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": summary_prompt},
+                        {"role": "user", "content": json.dumps(chunk_to_summarize)},
+                    ],
+                    temperature=0.0,
+                )
             summary_text = response.choices[0].message.content
             self._summarized_log.append(
                 {"role": "system", "content": f"EPISODIC SUMMARY:\n{summary_text}"}
             )
+            # Cap the summarized log length so context assembly stays bounded.
+            if len(self._summarized_log) > _MAX_SUMMARIZED_LOG:
+                drop = len(self._summarized_log) - _MAX_SUMMARIZED_LOG
+                del self._summarized_log[:drop]
         except Exception as e:
             # Non-fatal: keep going with existing context
             print(f"Warning: Could not summarize context chunk: {e}")

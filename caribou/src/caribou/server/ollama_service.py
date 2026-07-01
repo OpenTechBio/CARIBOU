@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from shutil import which
@@ -13,8 +14,13 @@ import requests
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3"
 _PROBE_TIMEOUT_SECONDS = 2
-_START_TIMEOUT_SECONDS = 15
+# Large local models can take a while to bind their port on cold start.
+_START_TIMEOUT_SECONDS = 30
 _owned_process: Optional[subprocess.Popen] = None
+# Guards _owned_process mutation. Concurrent session creations would
+# otherwise race and either spawn duplicate `ollama serve` processes or
+# leak one on teardown.
+_OWNED_PROCESS_LOCK = threading.Lock()
 
 
 @dataclass
@@ -152,8 +158,9 @@ def start_ollama(host: str | None) -> OllamaStatus:
 
 def shutdown_owned_ollama() -> None:
     global _owned_process
-    proc = _owned_process
-    _owned_process = None
+    with _OWNED_PROCESS_LOCK:
+        proc = _owned_process
+        _owned_process = None
     if proc and proc.poll() is None:
         proc.terminate()
         try:
@@ -174,36 +181,41 @@ def _extract_model_names(payload: dict) -> list[str]:
 
 def _start_ollama_process() -> None:
     global _owned_process
-    if _owned_process and _owned_process.poll() is None:
-        return
-    if not which("ollama"):
-        raise OllamaStartupError(
-            "OLLAMA_NOT_INSTALLED",
-            "The ollama executable was not found on this server.",
-            "Install Ollama on the CARIBOU server host, then run: ollama serve",
-        )
-    try:
-        _owned_process = subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except OSError as exc:
-        raise OllamaStartupError(
-            "OLLAMA_START_FAILED",
-            f"Unable to start Ollama: {exc}",
-            "Try starting Ollama manually with: ollama serve",
-        ) from exc
+    with _OWNED_PROCESS_LOCK:
+        if _owned_process and _owned_process.poll() is None:
+            return
+        if not which("ollama"):
+            raise OllamaStartupError(
+                "OLLAMA_NOT_INSTALLED",
+                "The ollama executable was not found on this server.",
+                "Install Ollama on the CARIBOU server host, then run: ollama serve",
+            )
+        try:
+            _owned_process = subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            raise OllamaStartupError(
+                "OLLAMA_START_FAILED",
+                f"Unable to start Ollama: {exc}",
+                "Try starting Ollama manually with: ollama serve",
+            ) from exc
 
 
 def _wait_for_ollama(host: str) -> OllamaStatus:
+    # Exponential backoff: 0.5s → 1s → 2s → 4s (capped at 4s), so we don't
+    # busy-poll for slow-to-start large models.
     deadline = time.monotonic() + _START_TIMEOUT_SECONDS
+    delay = 0.5
     last_status = probe_ollama(host)
     while time.monotonic() < deadline:
         if last_status.running:
             return last_status
-        time.sleep(0.5)
+        time.sleep(min(delay, max(0.1, deadline - time.monotonic())))
+        delay = min(delay * 2, 4.0)
         last_status = probe_ollama(host)
     raise OllamaStartupError(
         "OLLAMA_START_TIMEOUT",

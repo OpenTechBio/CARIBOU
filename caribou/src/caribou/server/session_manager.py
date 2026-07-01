@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import queue
 import shutil
@@ -21,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+_log = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 
@@ -108,6 +111,12 @@ class _Session:
 
 # Events that don't need to be persisted mid-stream (too frequent)
 _SKIP_PERSIST_TYPES = {"token", "pong"}
+# Bound the in-memory event log per session so long-running sessions don't
+# leak memory as tokens/messages accumulate. When exceeded, oldest events
+# are dropped; the persisted session.json still reflects the latest state.
+_MAX_EVENTS_PER_SESSION = 5000
+# When trimming kicks in, keep this many recent events.
+_EVENTS_TRIM_TARGET = 4000
 
 
 class SessionManager:
@@ -154,8 +163,9 @@ class SessionManager:
             if self._is_deleted(session.id):
                 return
             path.write_text(json.dumps(data, indent=2, default=str))
-        except Exception:
-            pass  # persistence failure must never crash the server
+        except Exception as exc:
+            # Persistence failure must never crash the server, but do log it.
+            _log.warning("Failed to persist session %s: %s", session.id, exc)
 
     def _load_persisted_sessions(self) -> None:
         """On startup, reload all sessions saved to disk."""
@@ -201,8 +211,12 @@ class SessionManager:
                         "data": {"status": "stopped", "reason": "server restarted"},
                     })
                 self._sessions[session.id] = session
-            except Exception:
-                pass  # skip corrupt session files
+            except Exception as exc:
+                # Skip but log — silent skips have masked schema drift and
+                # disk corruption in prior incidents.
+                _log.warning(
+                    "Skipping corrupt session file %s: %s", session_file, exc
+                )
 
     # ------------------------------------------------------------------
     # Public API
@@ -310,17 +324,21 @@ class SessionManager:
                 except Exception as exc:
                     errors.append(f"{session.id}: sandbox shutdown failed: {exc}")
 
-            if session.status in (SessionStatus.initializing, SessionStatus.running, SessionStatus.idle):
-                session.status = SessionStatus.stopped
-                session.updated_at = datetime.utcnow()
-                session.events.append({
-                    "type": "status_change",
-                    "session_id": session.id,
-                    "turn": session.current_turn,
-                    "timestamp": session.updated_at.isoformat(),
-                    "data": {"status": "stopped", "reason": "server shutdown"},
-                })
-                self._save_session(session)
+            async with self._lock:
+                if session.status in (SessionStatus.initializing, SessionStatus.running, SessionStatus.idle):
+                    session.status = SessionStatus.stopped
+                    session.updated_at = datetime.utcnow()
+                    session.events.append({
+                        "type": "status_change",
+                        "session_id": session.id,
+                        "turn": session.current_turn,
+                        "timestamp": session.updated_at.isoformat(),
+                        "data": {"status": "stopped", "reason": "server shutdown"},
+                    })
+                    if len(session.events) > _MAX_EVENTS_PER_SESSION:
+                        drop = len(session.events) - _EVENTS_TRIM_TARGET
+                        del session.events[:drop]
+                    self._save_session(session)
 
         return errors
 
@@ -387,12 +405,19 @@ class SessionManager:
             return False
 
         # Reset stop flag for the new run
-        session.stop_flag.clear()
-        session.status = SessionStatus.idle
+        async with self._lock:
+            # Re-check under the lock: another concurrent extend/delete could
+            # have flipped the status or removed the runner between checks.
+            if session.runner_task and not session.runner_task.done():
+                return False
+            if session.status not in (SessionStatus.stopped,):
+                return False
+            session.stop_flag.clear()
+            session.status = SessionStatus.idle
 
-        # Update max_turns to allow additional_turns more from current position
-        new_max = session.current_turn + additional_turns
-        session.config = session.config.model_copy(update={"max_turns": new_max})
+            # Update max_turns to allow additional_turns more from current position
+            new_max = session.current_turn + additional_turns
+            session.config = session.config.model_copy(update={"max_turns": new_max})
 
         self._on_event(session, {
             "type": "status_change",
@@ -411,29 +436,48 @@ class SessionManager:
         is_auto = session.config.mode == SessionMode.auto
         max_turns = session.config.max_turns or 20
 
-        session.runner_task = asyncio.create_task(
-            run_session_async(
-                session_id=session.id,
-                agent_system=session.agent_system,
-                driver_agent=session.driver_agent,
-                analysis_context=session.analysis_context,
-                llm_client=session.llm_client,
-                sandbox_manager=session.sandbox_manager,
-                history=history,
-                is_auto=is_auto,
-                max_turns=max_turns,
-                model_name=session.model_name,
-                output_dir=session.output_dir,
-                event_callback=lambda ev: self._on_event(session, ev),
-                stop_flag=session.stop_flag,
-                user_input_queue=session.user_input_queue if not is_auto else None,
-            )
-        )
+        async def _guarded_runner() -> None:
+            # Ensures the sandbox is torn down and the stop flag reset even if the
+            # runner task is cancelled mid-turn (e.g., session deleted, server
+            # shutdown). Without this, cancellations leak sandbox containers.
+            try:
+                await run_session_async(
+                    session_id=session.id,
+                    agent_system=session.agent_system,
+                    driver_agent=session.driver_agent,
+                    analysis_context=session.analysis_context,
+                    llm_client=session.llm_client,
+                    sandbox_manager=session.sandbox_manager,
+                    history=history,
+                    is_auto=is_auto,
+                    max_turns=max_turns,
+                    model_name=session.model_name,
+                    output_dir=session.output_dir,
+                    event_callback=lambda ev: self._on_event(session, ev),
+                    stop_flag=session.stop_flag,
+                    user_input_queue=session.user_input_queue if not is_auto else None,
+                )
+            except asyncio.CancelledError:
+                # Propagate after cleanup so shutdown_all/delete_session can await it.
+                raise
+            finally:
+                # Best-effort sandbox shutdown for cancellation paths that don't
+                # go through delete_session (e.g., server SIGTERM race).
+                if self._is_deleted(session.id) and session.sandbox_manager is not None:
+                    try:
+                        await asyncio.to_thread(session.sandbox_manager.stop_container)
+                    except Exception:
+                        pass
+
+        session.runner_task = asyncio.create_task(_guarded_runner())
         return True
 
     def append_event(self, session: _Session, event: Dict[str, Any]) -> None:
         """Synchronously append event and schedule condition notification."""
         session.events.append(event)
+        if len(session.events) > _MAX_EVENTS_PER_SESSION:
+            drop = len(session.events) - _EVENTS_TRIM_TARGET
+            del session.events[:drop]
         session.updated_at = datetime.utcnow()
         self._process_event(session, event)
 
@@ -446,6 +490,10 @@ class SessionManager:
         if self._is_deleted(session.id):
             return
         session.events.append(event)
+        # Prevent unbounded growth on long sessions (tokens fire many times/turn).
+        if len(session.events) > _MAX_EVENTS_PER_SESSION:
+            drop = len(session.events) - _EVENTS_TRIM_TARGET
+            del session.events[:drop]
         session.updated_at = datetime.utcnow()
         self._process_event(session, event)
         if event.get("type") not in _SKIP_PERSIST_TYPES:

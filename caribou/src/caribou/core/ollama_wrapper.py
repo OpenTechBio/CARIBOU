@@ -14,6 +14,11 @@ from types import SimpleNamespace
 from typing import List, Dict, Any
 import json
 
+# Non-streaming chats can be slow with large local models; keep the ceiling
+# high but bounded so a stuck request never wedges the runner forever.
+_CHAT_TIMEOUT_SECONDS = 300
+_STREAM_CONNECT_TIMEOUT_SECONDS = 30
+
 class OllamaClient:
     """
     Example:
@@ -48,7 +53,7 @@ class OllamaClient:
             if temperature is not None:
                 payload["options"] = {"temperature": temperature}
 
-            r = requests.post(f"{self._host}/api/chat", json=payload, timeout=300)
+            r = requests.post(f"{self._host}/api/chat", json=payload, timeout=_CHAT_TIMEOUT_SECONDS)
             r.raise_for_status()
 
             # ND-JSON → take the line that has the message
@@ -83,7 +88,7 @@ class OllamaClient:
             with requests.post(
                 f"{self._host}/api/chat",
                 json=payload,
-                timeout=300,
+                timeout=(_STREAM_CONNECT_TIMEOUT_SECONDS, _CHAT_TIMEOUT_SECONDS),
                 stream=True,
             ) as r:
                 r.raise_for_status()
