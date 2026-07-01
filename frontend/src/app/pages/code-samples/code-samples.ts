@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
+import { CodeEditorComponent } from '../../shared/components/code-editor/code-editor';
 
 interface CodeSampleInfo {
   filename: string;
@@ -19,7 +20,7 @@ interface CodeSampleContent {
 @Component({
   selector: 'app-code-samples',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, CodeEditorComponent],
   templateUrl: './code-samples.html',
   styleUrl: './code-samples.scss',
 })

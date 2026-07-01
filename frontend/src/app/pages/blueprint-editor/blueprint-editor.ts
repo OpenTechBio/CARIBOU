@@ -5,6 +5,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { ConfigService } from '../../core/services/config.service';
 import { AgentBlueprint } from '../../core/models/session.model';
+import { CodeEditorComponent } from '../../shared/components/code-editor/code-editor';
 import {
   AgentConfig, AgentEntry, BlueprintContent, CommandConfig,
   CommandEntry, SaveBlueprintRequest,
@@ -19,7 +20,7 @@ interface CodeSampleInfo {
 @Component({
   selector: 'app-blueprint-editor',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, CodeEditorComponent],
   templateUrl: './blueprint-editor.html',
   styleUrl: './blueprint-editor.scss',
 })

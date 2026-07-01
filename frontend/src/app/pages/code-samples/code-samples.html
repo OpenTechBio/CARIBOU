@@ -131,18 +131,16 @@
           }
         </div>
 
-        <!-- Textarea editor -->
-        <textarea
-          class="cs-editor"
-          [value]="editorContent()"
-          (input)="onContentChange($any($event.target).value)"
-          (keydown.tab)="onTabKey($event)"
-          [readonly]="sel.is_builtin"
-          [class.readonly]="sel.is_builtin"
-          spellcheck="false"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"></textarea>
+        <!-- Rich code editor -->
+        <div class="cs-editor-wrap">
+          <app-code-editor
+            [value]="editorContent()"
+            (valueChange)="onContentChange($event)"
+            language="python"
+            [readonly]="sel.is_builtin"
+            [ariaLabel]="'Editing ' + sel.filename"
+          />
+        </div>
 
       }
 
