@@ -45,8 +45,39 @@ INSTANCE_NAME = "benchmarking_sandbox_instance"
 API_PORT_INSIDE = 8000
 API_PORT_HOST = 8000
 
-SING_BIN = shutil.which("apptainer") or shutil.which("singularity")
-if not SING_BIN:
+# SING_BIN may be None if apptainer/singularity isn't installed. We surface
+# the missing-binary error at the point of use (see require_sing_bin) rather
+# than sys.exit-ing at import time; the server needs to keep running so a
+# specific session can fail with a clean error instead of crashing the whole
+# process.
+SING_BIN: str | None = shutil.which("apptainer") or shutil.which("singularity")
+
+
+class SingularityUnavailableError(RuntimeError):
+    """Raised when apptainer/singularity is not installed or not on PATH."""
+    code = "SANDBOX_UNAVAILABLE"
+    suggested_fix = (
+        "Install Apptainer or Singularity, or load the appropriate module "
+        "(e.g. `module load singularity`), then restart the CARIBOU server."
+    )
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or (
+            "Singularity/Apptainer executable not found in PATH. "
+            "Install it or load the module and retry."
+        ))
+
+
+def require_sing_bin() -> str:
+    """Return the resolved singularity binary path, or raise a clean error."""
+    if not SING_BIN:
+        raise SingularityUnavailableError()
+    return SING_BIN
+
+
+if __name__ == "__main__" and not SING_BIN:
+    # Preserve the historical CLI behavior: exit with an error message when
+    # this script is invoked directly without the binary installed.
     print(
         "Singularity/Apptainer executable not found in PATH. "
         "Do you need to load a module?",

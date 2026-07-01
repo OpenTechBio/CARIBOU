@@ -32,6 +32,7 @@
       </div>
       <button class="btn btn-ghost btn-sm" type="button"
         aria-label="Show timeline"
+        title="Toggle turn timeline"
         [class.active]="showTimeline()"
         (click)="toggleTimeline()"
         *ngIf="chatItems().length > 4">
@@ -39,13 +40,15 @@
       </button>
       @if (session(); as s) {
         <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download
-           aria-label="Download session notebook">
+           aria-label="Download session notebook"
+           title="Download the run as a Jupyter notebook">
           Notebook
         </a>
       }
       <app-status-indicator [status]="status()" />
       <button class="btn btn-danger btn-sm" *ngIf="isRunning()"
-              (click)="stopSession()" aria-label="Stop session (Esc)">Stop</button>
+              (click)="stopSession()" aria-label="Stop session (Esc)"
+              title="Stop the running session (Esc)">Stop</button>
     </div>
   </header>
 
@@ -157,6 +160,7 @@
                 }
                 <button type="button" class="btn btn-ghost btn-xs code-copy"
                   aria-label="Copy code to clipboard"
+                  title="Copy this code block to the clipboard"
                   (click)="copyToClipboard(item.codeEvent.submitted.source)">Copy</button>
               </div>
               <pre class="code-source">{{ item.codeEvent.submitted.source }}</pre>
@@ -177,7 +181,8 @@
                 <span class="error-ts">{{ item.error.timestamp | date:'HH:mm:ss' }}</span>
                 <span class="error-severity">{{ item.error.fatal ? 'fatal' : 'non-fatal' }}</span>
                 <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(item.error)"
-                  aria-label="Copy error to clipboard">Copy</button>
+                  aria-label="Copy error to clipboard"
+                  title="Copy error details to clipboard">Copy</button>
               </div>
               <pre class="error-message">{{ item.error.message }}</pre>
               @if (item.error.suggested_fix) {
