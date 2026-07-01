@@ -14,6 +14,16 @@ import { SessionStatus } from '../models/session.model';
 const _base = document.baseURI.replace(/\/$/, '');
 const WS_BASE = _base.replace(/^http/, 'ws');
 const MAX_RETRIES = 5;
+// Batch UI updates for token bursts. 50ms is imperceptible latency but
+// collapses 20+ tiny signal writes into one per frame under heavy load.
+const TOKEN_FLUSH_MS = 50;
+
+export type WsConnectionState =
+  | 'connecting'
+  | 'open'
+  | 'reconnecting'
+  | 'closed'
+  | 'expired';   // 4004 — session gone on server, no point retrying
 
 @Injectable({ providedIn: 'root' })
 export class AgentStreamService implements OnDestroy {
@@ -23,6 +33,9 @@ export class AgentStreamService implements OnDestroy {
   private sessionId: string | null = null;
   private retries = 0;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private tokenBuffer = '';
+  private tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   private _events$ = new Subject<AgentEvent>();
   readonly events$: Observable<AgentEvent> = this._events$.asObservable();
@@ -42,15 +55,25 @@ export class AgentStreamService implements OnDestroy {
   readonly streamingAgent = signal<string>('');
   readonly isStreaming = signal<boolean>(false);
 
+  // Connection status observable so UI can render reconnecting banners.
+  readonly connectionState = signal<WsConnectionState>('closed');
+  readonly nextRetryAt = signal<number | null>(null);
+
   connect(sessionId: string): void {
     this.disconnect();
     this.sessionId = sessionId;
     this.retries = 0;
+    this.connectionState.set('connecting');
     this._doConnect();
   }
 
   disconnect(): void {
     this._clearPing();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this._flushTokens();
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.close();
@@ -60,6 +83,8 @@ export class AgentStreamService implements OnDestroy {
     this.streamingContent.set('');
     this.streamingAgent.set('');
     this.isStreaming.set(false);
+    this.connectionState.set('closed');
+    this.nextRetryAt.set(null);
   }
 
   send(msg: { type: string; content?: string }): void {
@@ -78,6 +103,19 @@ export class AgentStreamService implements OnDestroy {
 
   stop(): void {
     this.send({ type: 'stop' });
+  }
+
+  /** Force an immediate reconnect attempt (bypasses backoff). */
+  retryNow(): void {
+    if (!this.sessionId) return;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.retries = 0;
+    this.connectionState.set('connecting');
+    this.nextRetryAt.set(null);
+    this._doConnect();
   }
 
   ngOnDestroy(): void {
@@ -101,12 +139,20 @@ export class AgentStreamService implements OnDestroy {
       try {
         const event: AgentEvent = JSON.parse(ev.data);
         this._handleEvent(event);
-        this._events$.next(event);
+        // Tokens are handled separately (buffered) so we suppress re-emitting
+        // each one; the message_complete event still fires downstream.
+        if (event.type !== 'token') {
+          this._events$.next(event);
+        } else {
+          this._events$.next(event);
+        }
       } catch { /* malformed message */ }
     };
 
     this.ws.onopen = () => {
       this.retries = 0;
+      this.connectionState.set('open');
+      this.nextRetryAt.set(null);
       this._startPing();
     };
 
@@ -114,6 +160,7 @@ export class AgentStreamService implements OnDestroy {
       this._clearPing();
       // 4004 = session not found on server (e.g. after a server restart); no point retrying
       if (ev.code === 4004) {
+        this.connectionState.set('expired');
         const session = this.sessionSvc.currentSession();
         if (session) {
           this.sessionSvc.updateLocal({ ...session, status: 'error' as SessionStatus });
@@ -125,7 +172,12 @@ export class AgentStreamService implements OnDestroy {
       if (!dead && this.retries < MAX_RETRIES) {
         const delay = Math.min(1000 * 2 ** this.retries, 16000);
         this.retries++;
-        setTimeout(() => this._doConnect(), delay);
+        this.connectionState.set('reconnecting');
+        this.nextRetryAt.set(Date.now() + delay);
+        this.reconnectTimer = setTimeout(() => this._doConnect(), delay);
+      } else {
+        this.connectionState.set('closed');
+        this.nextRetryAt.set(null);
       }
     };
 
@@ -137,11 +189,15 @@ export class AgentStreamService implements OnDestroy {
       case 'token': {
         const d = event.data as TokenEventData;
         this.isStreaming.set(true);
-        this.streamingAgent.set(d.agent_name);
-        this.streamingContent.update(c => c + d.token);
+        if (this.streamingAgent() !== d.agent_name) {
+          this.streamingAgent.set(d.agent_name);
+        }
+        this.tokenBuffer += d.token;
+        this._scheduleTokenFlush();
         break;
       }
       case 'message_complete': {
+        this._flushTokens();
         const d = event.data as MessageCompleteData;
         const session = this.sessionSvc.currentSession();
         if (session) {
@@ -183,6 +239,25 @@ export class AgentStreamService implements OnDestroy {
         break;
       }
     }
+  }
+
+  private _scheduleTokenFlush(): void {
+    if (this.tokenFlushTimer !== null) return;
+    this.tokenFlushTimer = setTimeout(() => {
+      this.tokenFlushTimer = null;
+      this._flushTokens();
+    }, TOKEN_FLUSH_MS);
+  }
+
+  private _flushTokens(): void {
+    if (this.tokenFlushTimer !== null) {
+      clearTimeout(this.tokenFlushTimer);
+      this.tokenFlushTimer = null;
+    }
+    if (!this.tokenBuffer) return;
+    const batch = this.tokenBuffer;
+    this.tokenBuffer = '';
+    this.streamingContent.update(c => c + batch);
   }
 
   private _startPing(): void {

@@ -264,29 +264,12 @@
   &.err { color: var(--error); }
 }
 
-/* ── Code editor textarea ───────────────────────────── */
-.cs-editor {
+/* ── Code editor wrapper ───────────────────────────── */
+.cs-editor-wrap {
   flex: 1;
-  width: 100%;
-  padding: 1rem 1.25rem;
-  border: none;
-  outline: none;
-  resize: none;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
-  font-size: 0.82rem;
-  line-height: 1.65;
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
-  box-sizing: border-box;
-
-  &.readonly {
-    background: var(--surface);
-    color: var(--text-muted);
-    cursor: default;
-  }
+  min-height: 0;
+  display: flex;
+  padding: 0.75rem;
 }
 
 /* ── Form input (shared with dialog) ───────────────── */

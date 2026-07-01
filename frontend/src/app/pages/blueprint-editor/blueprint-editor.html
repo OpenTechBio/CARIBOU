@@ -205,6 +205,7 @@
                               placeholder="When to use this handoff…" />
                             @if (!isPackageDefault()) {
                               <button class="btn btn-ghost btn-xs cmd-remove" (click)="removeCommand(i, ci)"
+                                aria-label="Remove command"
                                 title="Remove command">✕</button>
                             }
                           </div>
@@ -254,7 +255,8 @@
                               }
                             </div>
                             @if (!isPackageDefault()) {
-                              <button class="btn btn-ghost btn-xs" (click)="removeCodeSample(i, si)">✕</button>
+                              <button class="btn btn-ghost btn-xs" aria-label="Remove code sample"
+                                (click)="removeCodeSample(i, si)">✕</button>
                             }
                           </div>
                         }
@@ -305,11 +307,15 @@
             @if (jsonError()) {
               <div class="json-error-banner">⚠ {{ jsonError() }}</div>
             }
-            <textarea class="json-textarea"
-              [value]="rawJson()"
-              (input)="rawJson.set($any($event.target).value)"
-              [disabled]="isPackageDefault()"
-              spellcheck="false"></textarea>
+            <div class="json-editor-wrap">
+              <app-code-editor
+                [value]="rawJson()"
+                (valueChange)="rawJson.set($event)"
+                language="json"
+                [readonly]="isPackageDefault()"
+                ariaLabel="Blueprint JSON editor"
+              />
+            </div>
           </div>
         }
 

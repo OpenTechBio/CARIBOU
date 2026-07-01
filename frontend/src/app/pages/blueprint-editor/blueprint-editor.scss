@@ -639,23 +639,10 @@
   font-size: 0.82rem;
 }
 
-.json-textarea {
+.json-editor-wrap {
   flex: 1;
   min-height: 520px;
-  width: 100%;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
-  font-size: 0.8rem;
-  line-height: 1.6;
-  resize: vertical;
-  box-sizing: border-box;
-
-  &:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(49,68,107,0.1); }
-  &:disabled { opacity: 0.6; }
+  display: flex;
 }
 
 /* ── Validation panel ───────────────────────────────── */

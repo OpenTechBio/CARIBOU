@@ -2,40 +2,115 @@
 
   <!-- Top bar -->
   <header class="session-header">
-    <button class="btn btn-ghost btn-sm back-btn" (click)="goBack()">← Back</button>
+    <button class="btn btn-ghost btn-sm back-btn" (click)="goBack()" aria-label="Back to dashboard">← Back</button>
     <div class="session-info">
-      <span class="session-id">{{ session()?.id?.slice(0,8) }}</span>
+      <span class="session-id" title="Full ID: {{ session()?.id }}">{{ session()?.id?.slice(0,8) }}</span>
       <span class="agent-badge" *ngIf="currentAgent()">{{ currentAgent() }}</span>
+      <span class="run-state-chip" [attr.data-state]="runState()" aria-live="polite">
+        <span class="run-state-dot" aria-hidden="true"></span>
+        <span class="run-state-label">{{ runStateLabel() }}</span>
+      </span>
     </div>
     <div class="header-right">
-      <span class="turn-counter" *ngIf="session()">
-        Turn {{ session()!.current_turn }}{{ session()!.max_turns ? ' / ' + session()!.max_turns : '' }}
-      </span>
+      <div class="header-metrics" *ngIf="session() as s">
+        <span class="metric" title="Turn progress">
+          <span class="metric-label">Turn</span>
+          <span class="metric-value">{{ s.current_turn }}<span class="dim">{{ s.max_turns ? ' / ' + s.max_turns : '' }}</span></span>
+        </span>
+        <span class="metric" *ngIf="sessionElapsedSec() > 0" title="Elapsed time">
+          <span class="metric-label">Elapsed</span>
+          <span class="metric-value">{{ formatDuration(sessionElapsedSec()) }}</span>
+        </span>
+        <span class="metric" *ngIf="eta() as e" title="Estimated time remaining">
+          <span class="metric-label">ETA</span>
+          <span class="metric-value">{{ formatDuration(e) }}</span>
+        </span>
+        <span class="metric" *ngIf="avgTurnDurationMs() > 0 && s.current_turn > 0" title="Average turn duration">
+          <span class="metric-label">Avg turn</span>
+          <span class="metric-value">{{ formatMs(avgTurnDurationMs()) }}</span>
+        </span>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button"
+        aria-label="Show timeline"
+        [class.active]="showTimeline()"
+        (click)="toggleTimeline()"
+        *ngIf="chatItems().length > 4">
+        {{ showTimeline() ? '× Timeline' : '☰ Timeline' }}
+      </button>
       @if (session(); as s) {
-        <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download>
+        <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download
+           aria-label="Download session notebook">
           Notebook
         </a>
       }
       <app-status-indicator [status]="status()" />
-      <button class="btn btn-danger btn-sm" *ngIf="isRunning()" (click)="stopSession()">Stop</button>
+      <button class="btn btn-danger btn-sm" *ngIf="isRunning()"
+              (click)="stopSession()" aria-label="Stop session (Esc)">Stop</button>
     </div>
   </header>
 
-  <!-- Fatal error banner -->
-  @if (isError() && lastError()) {
-    <div class="error-banner">
-      <strong>{{ lastError()!.code }}</strong>
-      <span>{{ lastError()!.message }}</span>
-      @if (lastError()!.suggested_fix) {
-        <code>{{ lastError()!.suggested_fix }}</code>
+  <!-- Connection / reconnecting banner -->
+  @if (showConnectionBanner()) {
+    <div class="conn-banner" [class.expired]="stream.connectionState() === 'expired'" role="status" aria-live="polite">
+      @if (stream.connectionState() === 'reconnecting') {
+        <span class="conn-spinner" aria-hidden="true"></span>
+        <span>
+          Connection lost.
+          @if (reconnectCountdownSec() > 0) {
+            Reconnecting in {{ reconnectCountdownSec() }}s…
+          } @else {
+            Reconnecting…
+          }
+        </span>
+        <button class="btn btn-ghost btn-xs" (click)="retryReconnect()">Retry now</button>
+      } @else {
+        <span aria-hidden="true">⚠</span>
+        <span>Session expired on the server. Recent history is still visible below.</span>
+        <button class="btn btn-ghost btn-xs" (click)="goBack()">Back to dashboard</button>
       }
+    </div>
+  }
+
+  <!-- Fatal error banner with actions -->
+  @if (isError() && lastError()) {
+    <div class="error-banner" role="alert">
+      <div class="error-banner-body">
+        <strong>{{ lastError()!.code }}</strong>
+        <span>{{ lastError()!.message }}</span>
+        @if (lastError()!.suggested_fix) {
+          <code>{{ lastError()!.suggested_fix }}</code>
+        }
+      </div>
+      <div class="error-banner-actions">
+        <button class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(lastError()!)"
+          aria-label="Copy error details to clipboard">Copy</button>
+        @if (canExtend()) {
+          <button class="btn btn-primary btn-xs" (click)="retryLastAction()"
+            aria-label="Continue this session with more turns">Continue</button>
+        }
+      </div>
     </div>
   }
 
   <div class="session-body">
 
+    <!-- Timeline -->
+    @if (showTimeline() && turnAnchors().length > 0) {
+      <nav class="timeline" aria-label="Turn timeline">
+        <div class="timeline-header">Turns</div>
+        <div class="timeline-list">
+          @for (a of turnAnchors(); track a.turn) {
+            <button type="button" class="timeline-item" (click)="jumpToTurn(a.turn)"
+              [attr.aria-label]="'Jump to turn ' + a.turn">
+              <span class="timeline-turn">Turn {{ a.turn }}</span>
+            </button>
+          }
+        </div>
+      </nav>
+    }
+
     <!-- Chat panel -->
-    <main class="chat-panel" (scroll)="onScroll($event)">
+    <main class="chat-panel" #chatPanel (scroll)="onScroll($event)">
       <div class="chat-content">
 
         @if (hiddenChatItemCount() > 0) {
@@ -50,26 +125,39 @@
 
         @for (item of visibleChatItems(); track $index) {
           @if (item.kind === 'message' && item.message) {
-            <app-message-bubble [message]="item.message" [streaming]="false" />
+            <div [attr.data-turn]="item.turn ?? item.message.turn">
+              <app-message-bubble [message]="item.message" [streaming]="false" />
+            </div>
           }
           @if (item.kind === 'delegation' && item.delegation) {
-            <div class="delegation-indicator">
+            <div class="delegation-indicator" [attr.data-turn]="item.turn">
               <span>{{ item.delegation.from }}</span>
-              <span class="arrow">→</span>
+              <span class="arrow" aria-hidden="true">→</span>
               <span>{{ item.delegation.to }}</span>
               <code class="cmd">{{ item.delegation.command }}</code>
             </div>
           }
           @if (item.kind === 'code' && item.codeEvent) {
-            <div class="code-item">
+            <div class="code-item" [attr.data-turn]="item.turn">
               <div class="code-header">
                 <span class="agent-tag">{{ item.codeEvent.submitted.agent_name }}</span>
                 <span class="exec-status"
                   [class.ok]="item.codeEvent.result?.success"
-                  [class.fail]="item.codeEvent.result?.success === false">
+                  [class.fail]="item.codeEvent.result?.success === false"
+                  [attr.aria-label]="item.codeEvent.result ? (item.codeEvent.result.success ? 'succeeded' : 'failed') : 'running'">
                   {{ item.codeEvent.result ? (item.codeEvent.result.success ? '✓' : '✗') : '…' }}
                 </span>
-                <span class="duration" *ngIf="item.codeEvent.result">{{ item.codeEvent.result.duration_ms }}ms</span>
+                @if (item.codeEvent.result) {
+                  <span class="duration"
+                    [class.slow]="isSlowBlock(item.codeEvent)"
+                    [title]="isSlowBlock(item.codeEvent) ? 'This block took longer than the slow threshold' : ''">
+                    @if (isSlowBlock(item.codeEvent)) { <span aria-hidden="true">⚠</span> }
+                    {{ item.codeEvent.result.duration_ms }}ms
+                  </span>
+                }
+                <button type="button" class="btn btn-ghost btn-xs code-copy"
+                  aria-label="Copy code to clipboard"
+                  (click)="copyToClipboard(item.codeEvent.submitted.source)">Copy</button>
               </div>
               <pre class="code-source">{{ item.codeEvent.submitted.source }}</pre>
               @if (item.codeEvent.result?.stdout) {
@@ -81,12 +169,15 @@
             </div>
           }
           @if (item.kind === 'error' && item.error) {
-            <div class="chat-error-item" [class.fatal]="item.error.fatal">
+            <div class="chat-error-item" [class.fatal]="item.error.fatal" [attr.data-turn]="item.turn"
+                 role="alert">
               <div class="chat-error-header">
-                <span class="error-icon">⚠</span>
+                <span class="error-icon" aria-hidden="true">⚠</span>
                 <span class="error-code">{{ item.error.code }}</span>
                 <span class="error-ts">{{ item.error.timestamp | date:'HH:mm:ss' }}</span>
                 <span class="error-severity">{{ item.error.fatal ? 'fatal' : 'non-fatal' }}</span>
+                <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(item.error)"
+                  aria-label="Copy error to clipboard">Copy</button>
               </div>
               <pre class="error-message">{{ item.error.message }}</pre>
               @if (item.error.suggested_fix) {
@@ -98,27 +189,37 @@
 
         <!-- Sandbox initializing indicator -->
         @if (isInitializing()) {
-          <div class="init-indicator">
-            <div class="spinner"></div>
+          <div class="init-indicator" role="status">
+            <div class="spinner" aria-hidden="true"></div>
             <span>Starting sandbox — this may take up to 30 seconds…</span>
           </div>
         }
 
-        <!-- Waiting indicator: user sent message, server not yet running -->
+        <!-- Waiting indicator -->
         @if (waitingForAgent()) {
-          <div class="thinking-indicator">
+          <div class="thinking-indicator" role="status">
             <span class="thinking-label">{{ waitingLabel() }}</span>
-            <div class="thinking-dots">
+            <div class="thinking-dots" aria-hidden="true">
               <span></span><span></span><span></span>
             </div>
           </div>
         }
 
-        <!-- Thinking indicator: running but no tokens yet -->
+        <!-- Code executing indicator -->
+        @if (awaitingCodeResult()) {
+          <div class="thinking-indicator executing" role="status">
+            <span class="thinking-label">Running code in sandbox…</span>
+            <div class="thinking-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+        }
+
+        <!-- Thinking indicator -->
         @if (isThinking()) {
-          <div class="thinking-indicator">
+          <div class="thinking-indicator" role="status">
             <span class="thinking-label">{{ thinkingLabel() }}</span>
-            <div class="thinking-dots">
+            <div class="thinking-dots" aria-hidden="true">
               <span></span><span></span><span></span>
             </div>
           </div>
@@ -142,10 +243,18 @@
 
         <div #chatBottom></div>
       </div>
+
+      <!-- Jump to latest -->
+      @if (showJumpToLatest()) {
+        <button type="button" class="jump-to-latest" (click)="jumpToLatest()"
+          aria-label="Scroll to latest messages">
+          New messages ↓
+        </button>
+      }
     </main>
 
     <!-- Sidebar -->
-    <aside class="sidebar">
+    <aside class="sidebar" aria-label="Session sidebar">
 
       @if (errorLog().length > 0) {
         <section class="sidebar-section error-log-section">
@@ -160,6 +269,9 @@
               @if (err.suggested_fix) {
                 <code class="sidebar-error-fix">{{ err.suggested_fix }}</code>
               }
+              <div class="sidebar-error-actions">
+                <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(err)">Copy</button>
+              </div>
             </div>
           }
         </section>
@@ -167,11 +279,34 @@
 
       <section class="sidebar-section">
         <h3>Artifacts <span class="count">{{ artifacts().length }}</span></h3>
-        @for (artifact of artifacts(); track artifact.id) {
+        @if (artifacts().length > 3) {
+          <div class="artifact-filter-tabs" role="tablist">
+            <button type="button" role="tab" [attr.aria-selected]="artifactFilter() === 'all'"
+              [class.active]="artifactFilter() === 'all'"
+              (click)="artifactFilter.set('all')">All <span>{{ artifactCounts().all }}</span></button>
+            <button type="button" role="tab" [attr.aria-selected]="artifactFilter() === 'plot'"
+              [class.active]="artifactFilter() === 'plot'"
+              (click)="artifactFilter.set('plot')">Plots <span>{{ artifactCounts().plot }}</span></button>
+            <button type="button" role="tab" [attr.aria-selected]="artifactFilter() === 'data'"
+              [class.active]="artifactFilter() === 'data'"
+              (click)="artifactFilter.set('data')">Data <span>{{ artifactCounts().data }}</span></button>
+            <button type="button" role="tab" [attr.aria-selected]="artifactFilter() === 'other'"
+              [class.active]="artifactFilter() === 'other'"
+              (click)="artifactFilter.set('other')">Other <span>{{ artifactCounts().other }}</span></button>
+          </div>
+          <input class="artifact-search" type="search"
+            [value]="artifactSearch()"
+            (input)="artifactSearch.set($any($event.target).value)"
+            placeholder="Search…" aria-label="Search artifacts" />
+        }
+        @for (artifact of filteredArtifacts(); track artifact.id) {
           <app-artifact-card [artifact]="artifact" />
         }
         @if (artifacts().length === 0) {
           <p class="empty">No artifacts yet.</p>
+        }
+        @if (artifacts().length > 0 && filteredArtifacts().length === 0) {
+          <p class="empty">No artifacts match filter.</p>
         }
       </section>
 
@@ -180,7 +315,7 @@
         <div class="status-log">
           @for (entry of statusLog(); track $index) {
             <div class="status-log-entry" [class]="'log-' + entry.status">
-              <span class="log-dot"></span>
+              <span class="log-dot" aria-hidden="true"></span>
               <div class="log-body">
                 <div class="log-main">
                   <span class="log-status">{{ entry.status }}</span>
@@ -217,7 +352,6 @@
   <footer class="input-bar">
 
     @if (canExtend() && showExtend()) {
-      <!-- Extend panel -->
       <div class="extend-panel">
         @if (extendError()) {
           <span class="extend-error">{{ extendError() }}</span>
@@ -228,7 +362,8 @@
           type="number"
           [value]="extendTurns()"
           (input)="extendTurns.set(+$any($event.target).value)"
-          min="1" max="100" />
+          min="1" max="100"
+          aria-label="Additional turns" />
         <span class="extend-label">more turns</span>
         <button class="btn btn-primary btn-sm" (click)="confirmExtend()" [disabled]="extending()">
           {{ extending() ? 'Starting…' : 'Continue' }}
@@ -237,36 +372,61 @@
       </div>
     } @else {
       <textarea
+        #messageInput
         class="message-input"
         [value]="userInput()"
         (input)="userInput.set($any($event.target).value)"
         (keydown)="onKeyDown($event)"
         [disabled]="isError() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing()"
+        [attr.aria-label]="'Message input'"
         placeholder="{{
           isError()          ? 'Session ended with an error — see error log' :
           isInitializing()   ? 'Initializing sandbox…' :
           session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
-          session()?.mode === 'auto' && status() === 'stopped' ? 'Auto session complete' :
-          'Enter your message (Shift+Enter for newline)'
+          session()?.mode === 'auto' && status() === 'stopped' ? 'Run finished — click Continue to add more turns' :
+          'Enter your message (⏎ to send · Shift+⏎ newline · ↑/↓ history · Esc stop)'
         }}"
         rows="2">
       </textarea>
       @if (isRunning() || isInitializing()) {
-        <button class="btn btn-danger send-btn" (click)="stopSession()">Stop</button>
+        <button class="btn btn-danger send-btn" (click)="stopSession()" aria-label="Stop session (Esc)">Stop</button>
       } @else if (canExtend()) {
-        <button class="btn btn-primary send-btn" (click)="showExtend.set(true)">
-          + Extend
+        <button class="btn btn-primary send-btn" (click)="showExtend.set(true)"
+          aria-label="Continue session with more turns">
+          ▶ Continue +{{ extendTurns() }}
         </button>
       } @else {
         <button
           class="btn btn-primary send-btn"
           (click)="sendMessage()"
-          [disabled]="!userInput().trim() || isError()">
+          [disabled]="!userInput().trim() || isError()"
+          aria-label="Send message">
           Send
         </button>
       }
     }
 
   </footer>
+
+  <!-- Shortcut help modal -->
+  @if (showShortcutHelp()) {
+    <div class="overlay" (click)="showShortcutHelp.set(false)" role="dialog" aria-label="Keyboard shortcuts">
+      <div class="shortcut-dialog" (click)="$event.stopPropagation()">
+        <h3>Keyboard Shortcuts</h3>
+        <dl>
+          <dt>Enter</dt><dd>Send message</dd>
+          <dt>Shift + Enter</dt><dd>Newline</dd>
+          <dt>↑ / ↓</dt><dd>Cycle through input history</dd>
+          <dt>Esc</dt><dd>Stop running session</dd>
+          <dt>/</dt><dd>Focus message input</dd>
+          <dt>⌘/Ctrl + K</dt><dd>Focus message input</dd>
+          <dt>⌘/Ctrl + /</dt><dd>Toggle this help</dd>
+        </dl>
+        <div class="dialog-actions">
+          <button class="btn btn-primary btn-sm" (click)="showShortcutHelp.set(false)">Close</button>
+        </div>
+      </div>
+    </div>
+  }
 
 </div>
