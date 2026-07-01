@@ -5,34 +5,25 @@ Each session wraps an agent run: it holds the sandbox, LLM client, agent
 system, event log, and the asyncio machinery to stream events to WebSocket
 clients. Multiple WebSocket connections can observe the same session — they
 all see full history on connect then live events from that point forward.
+
+Persistence, session-record shape, and bootstrap helpers live in sibling
+modules:
+  - session_state.py       — the `_Session` dataclass and constants
+  - session_persistence.py — save/load session state to/from disk
+  - session_setup.py       — blueprint / LLM / sandbox construction
 """
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import os
-import queue
 import shutil
-import subprocess
 import textwrap
-import threading
-from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-_log = logging.getLogger(__name__)
-
 from dotenv import load_dotenv
 
-from caribou.config import (
-    CARIBOU_HOME,
-    DEFAULT_AGENT_DIR,
-    DEFAULT_BLUEPRINT_NAME,
-    ENV_FILE,
-)
+from caribou.config import ENV_FILE
 from caribou.server.models import (
     ArtifactRecord,
     ArtifactType,
@@ -43,188 +34,55 @@ from caribou.server.models import (
     SessionResponse,
     SessionStatus,
 )
+from caribou.server.session_persistence import (
+    load_persisted_sessions,
+    save_session,
+    session_dir,
+)
+from caribou.server.session_setup import build_llm_client, build_sandbox, find_blueprint
+from caribou.server.session_state import (
+    SANDBOX_DATA_PATH,
+    SANDBOX_REF_DATA_PATH,
+    SESSIONS_DIR,
+    SKIP_PERSIST_TYPES,
+    _Session,
+    trim_events,
+)
 
-_UPLOADS_DIR = CARIBOU_HOME / "server_uploads"
-_SESSIONS_DIR = CARIBOU_HOME / "server_sessions"
-_SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
-_SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"
-
-
-# ---------------------------------------------------------------------------
-# Internal session record
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _Session:
-    id: str
-    config: SessionCreateRequest
-    status: SessionStatus
-    current_agent: str
-    current_turn: int
-    messages: List[MessageRecord]
-    artifacts: List[ArtifactRecord]
-    code_events: List[CodeEventRecord]
-    output_dir: Path
-    # Event log: every event emitted is appended here
-    events: List[Dict[str, Any]]
-    # Notified whenever a new event is appended
-    event_condition: asyncio.Condition
-    stop_flag: threading.Event
-    user_input_queue: queue.Queue
-    created_at: datetime
-    updated_at: datetime
-    # Set once sandbox + runner are wired up
-    sandbox_manager: Any = None
-    llm_client: Any = None
-    agent_system: Any = None
-    driver_agent: Any = None
-    initial_history: List[Dict] = field(default_factory=list)
-    # Live history — mutated in-place by the runner so we always have the latest state
-    live_history: List[Dict] = field(default_factory=list)
-    model_name: str = ""
-    analysis_context: str = ""
-    runner_task: Optional[asyncio.Task] = None
-
-    def to_response(self) -> SessionResponse:
-        return SessionResponse(
-            id=self.id,
-            status=self.status,
-            mode=self.config.mode,
-            run_mode=self.config.run_mode,
-            agent_system=self.config.agent_system,
-            llm_backend=self.config.llm_backend,
-            sandbox_type=self.config.sandbox_type,
-            dataset_path=self.config.dataset_path,
-            max_turns=self.config.max_turns,
-            current_turn=self.current_turn,
-            current_agent=self.current_agent,
-            created_at=self.created_at,
-            updated_at=self.updated_at,
-            artifact_count=len(self.artifacts),
-            message_count=len(self.messages),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Session Manager
-# ---------------------------------------------------------------------------
-
-# Events that don't need to be persisted mid-stream (too frequent)
-_SKIP_PERSIST_TYPES = {"token", "pong"}
-# Bound the in-memory event log per session so long-running sessions don't
-# leak memory as tokens/messages accumulate. When exceeded, oldest events
-# are dropped; the persisted session.json still reflects the latest state.
-_MAX_EVENTS_PER_SESSION = 5000
-# When trimming kicks in, keep this many recent events.
-_EVENTS_TRIM_TARGET = 4000
+# Backwards-compatible re-exports for callers that reach into this module.
+_SESSIONS_DIR = SESSIONS_DIR
 
 
 class SessionManager:
 
     def __init__(self) -> None:
-        self._sessions: Dict[str, _Session] = {}
         self._deleted_session_ids: set[str] = set()
         self._lock = asyncio.Lock()
-        self._load_persisted_sessions()
+        self._sessions: Dict[str, _Session] = load_persisted_sessions()
 
     # ------------------------------------------------------------------
-    # Persistence helpers
+    # Persistence adapters (keep the manager as the single call site)
     # ------------------------------------------------------------------
-
-    def _session_file(self, session_id: str) -> Path:
-        return _SESSIONS_DIR / session_id / "session.json"
-
-    def _session_dir(self, session_id: str) -> Path:
-        return _SESSIONS_DIR / session_id
 
     def _is_deleted(self, session_id: str) -> bool:
         return session_id in getattr(self, "_deleted_session_ids", set())
 
     def _save_session(self, session: _Session) -> None:
-        """Write session state to disk. Called after every non-token event."""
-        if self._is_deleted(session.id):
-            return
-        try:
-            path = self._session_file(session.id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "id": session.id,
-                "config": session.config.model_dump(),
-                "status": session.status.value,
-                "current_agent": session.current_agent,
-                "current_turn": session.current_turn,
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "messages": [m.model_dump() for m in session.messages],
-                "artifacts": [a.model_dump() for a in session.artifacts],
-                "code_events": [c.model_dump() for c in session.code_events],
-                "events": session.events,
-            }
-            if self._is_deleted(session.id):
-                return
-            path.write_text(json.dumps(data, indent=2, default=str))
-        except Exception as exc:
-            # Persistence failure must never crash the server, but do log it.
-            _log.warning("Failed to persist session %s: %s", session.id, exc)
+        save_session(session, self._is_deleted)
 
-    def _load_persisted_sessions(self) -> None:
-        """On startup, reload all sessions saved to disk."""
-        if not _SESSIONS_DIR.exists():
-            return
-        for session_dir in sorted(_SESSIONS_DIR.iterdir()):
-            session_file = session_dir / "session.json"
-            if not session_file.exists():
-                continue
-            try:
-                data = json.loads(session_file.read_text())
-                config = SessionCreateRequest(**data["config"])
-                raw_status = data.get("status", "stopped")
-                # Sessions that were mid-run when the server died are now stopped
-                if raw_status in ("running", "initializing"):
-                    raw_status = "stopped"
-                status = SessionStatus(raw_status)
-
-                session = _Session(
-                    id=data["id"],
-                    config=config,
-                    status=status,
-                    current_agent=data.get("current_agent", ""),
-                    current_turn=data.get("current_turn", 0),
-                    messages=[MessageRecord(**m) for m in data.get("messages", [])],
-                    artifacts=[ArtifactRecord(**a) for a in data.get("artifacts", [])],
-                    code_events=[CodeEventRecord(**c) for c in data.get("code_events", [])],
-                    output_dir=session_dir / "outputs",
-                    events=data.get("events", []),
-                    event_condition=asyncio.Condition(),
-                    stop_flag=threading.Event(),
-                    user_input_queue=queue.Queue(),
-                    created_at=datetime.fromisoformat(data["created_at"]),
-                    updated_at=datetime.fromisoformat(data["updated_at"]),
-                )
-                # If the session was interrupted, record that in the event log
-                if raw_status != data.get("status"):
-                    session.events.append({
-                        "type": "status_change",
-                        "session_id": session.id,
-                        "turn": session.current_turn,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "data": {"status": "stopped", "reason": "server restarted"},
-                    })
-                self._sessions[session.id] = session
-            except Exception as exc:
-                # Skip but log — silent skips have masked schema drift and
-                # disk corruption in prior incidents.
-                _log.warning(
-                    "Skipping corrupt session file %s: %s", session_file, exc
-                )
+    def _session_dir(self, session_id: str):
+        return session_dir(session_id)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     async def create_session(self, config: SessionCreateRequest) -> SessionResponse:
+        import queue
+        import threading
+
         session_id = str(uuid4())
-        output_dir = _SESSIONS_DIR / session_id / "outputs"
+        output_dir = SESSIONS_DIR / session_id / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         session = _Session(
@@ -335,9 +193,7 @@ class SessionManager:
                         "timestamp": session.updated_at.isoformat(),
                         "data": {"status": "stopped", "reason": "server shutdown"},
                     })
-                    if len(session.events) > _MAX_EVENTS_PER_SESSION:
-                        drop = len(session.events) - _EVENTS_TRIM_TARGET
-                        del session.events[:drop]
+                    trim_events(session.events)
                     self._save_session(session)
 
         return errors
@@ -404,7 +260,6 @@ class SessionManager:
         if session.runner_task and not session.runner_task.done():
             return False
 
-        # Reset stop flag for the new run
         async with self._lock:
             # Re-check under the lock: another concurrent extend/delete could
             # have flipped the status or removed the runner between checks.
@@ -473,11 +328,9 @@ class SessionManager:
         return True
 
     def append_event(self, session: _Session, event: Dict[str, Any]) -> None:
-        """Synchronously append event and schedule condition notification."""
+        """Synchronously append event and update derived state."""
         session.events.append(event)
-        if len(session.events) > _MAX_EVENTS_PER_SESSION:
-            drop = len(session.events) - _EVENTS_TRIM_TARGET
-            del session.events[:drop]
+        trim_events(session.events)
         session.updated_at = datetime.utcnow()
         self._process_event(session, event)
 
@@ -490,13 +343,10 @@ class SessionManager:
         if self._is_deleted(session.id):
             return
         session.events.append(event)
-        # Prevent unbounded growth on long sessions (tokens fire many times/turn).
-        if len(session.events) > _MAX_EVENTS_PER_SESSION:
-            drop = len(session.events) - _EVENTS_TRIM_TARGET
-            del session.events[:drop]
+        trim_events(session.events)
         session.updated_at = datetime.utcnow()
         self._process_event(session, event)
-        if event.get("type") not in _SKIP_PERSIST_TYPES:
+        if event.get("type") not in SKIP_PERSIST_TYPES:
             self._save_session(session)
         asyncio.ensure_future(self._notify_condition(session))
 
@@ -587,7 +437,7 @@ class SessionManager:
 
             # --- Agent system ---
             from caribou.agents.AgentSystem import AgentSystem
-            blueprint_path = _find_blueprint(session.config.agent_system)
+            blueprint_path = find_blueprint(session.config.agent_system)
             agent_sys = AgentSystem.load_from_json(str(blueprint_path))
             if self._is_deleted(session.id):
                 return
@@ -599,7 +449,7 @@ class SessionManager:
             session.current_agent = driver_name
 
             # --- LLM client ---
-            llm_client, model_name = _build_llm_client(session.config)
+            llm_client, model_name = build_llm_client(session.config)
             if self._is_deleted(session.id):
                 return
             session.llm_client = llm_client
@@ -607,8 +457,8 @@ class SessionManager:
 
             # --- Analysis context + initial history ---
             analysis_context = textwrap.dedent(f"""\
-                Primary dataset path: **{_SANDBOX_DATA_PATH}**
-                {"Reference dataset path: **" + _SANDBOX_REF_DATA_PATH + "**" if session.config.reference_dataset_path else ""}
+                Primary dataset path: **{SANDBOX_DATA_PATH}**
+                {"Reference dataset path: **" + SANDBOX_REF_DATA_PATH + "**" if session.config.reference_dataset_path else ""}
 
                 **IMPORTANT**: Please save all generated output files (plots, .h5ad, .csv) to the /workspace/outputs/ directory.
             """).strip()
@@ -624,7 +474,7 @@ class SessionManager:
             # --- Sandbox ---
             _emit_init("status_change", {"status": "initializing", "reason": "starting_sandbox"})
             sandbox_manager = await asyncio.to_thread(
-                _build_sandbox, session.config, session.output_dir
+                build_sandbox, session.config, session.output_dir
             )
             if self._is_deleted(session.id):
                 try:
@@ -650,108 +500,6 @@ class SessionManager:
                 "suggested_fix": getattr(exc, "suggested_fix", None),
             })
             _emit_init("status_change", {"status": "error", "reason": str(exc)})
-
-
-# ---------------------------------------------------------------------------
-# Setup helpers
-# ---------------------------------------------------------------------------
-
-def _find_blueprint(name: str) -> Path:
-    """Resolve a blueprint name to a JSON path."""
-    from caribou.config import DEFAULT_AGENT_DIR
-    from caribou.cli.run_cli import PACKAGE_AGENTS_DIR
-
-    for search_dir in (DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR):
-        candidate = Path(search_dir) / name
-        if candidate.exists():
-            return candidate
-        candidate = Path(search_dir) / f"{name}.json"
-        if candidate.exists():
-            return candidate
-
-    # Absolute path provided
-    p = Path(name)
-    if p.exists():
-        return p
-
-    raise FileNotFoundError(f"Blueprint '{name}' not found in {DEFAULT_AGENT_DIR} or package agents dir.")
-
-
-def _build_llm_client(config: SessionCreateRequest):
-    """Return (llm_client, model_name) for the given backend string."""
-    from openai import OpenAI
-
-    backend = config.llm_backend
-
-    if backend == "chatgpt":
-        key = os.environ.get("OPENAI_API_KEY", "")
-        if not key:
-            raise EnvironmentError("OPENAI_API_KEY not set.")
-        return OpenAI(api_key=key), "gpt-4o"
-
-    if backend == "claude":
-        key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not key:
-            raise EnvironmentError("ANTHROPIC_API_KEY not set.")
-        from caribou.core.anthropic_wrapper import AnthropicClient
-        return AnthropicClient(api_key=key), "claude-sonnet-4-6"
-
-    if backend == "deepseek":
-        key = os.environ.get("DEEPSEEK_API_KEY", "")
-        if not key:
-            raise EnvironmentError("DEEPSEEK_API_KEY not set.")
-        return OpenAI(api_key=key, base_url="https://api.deepseek.com"), "deepseek-chat"
-
-    if backend.startswith("ollama"):
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        env_model = os.environ.get("OLLAMA_MODEL", "")
-        requested_model = config.ollama_model or env_model or ""
-        from caribou.server.ollama_service import ensure_ollama_ready
-        from caribou.core.ollama_wrapper import OllamaClient
-        resolved_host, model_name = ensure_ollama_ready(host, requested_model)
-        return OllamaClient(host=resolved_host, model=model_name), model_name
-
-    raise ValueError(f"Unknown LLM backend: {backend!r}")
-
-
-def _build_sandbox(config: SessionCreateRequest, output_dir: Path):
-    """Build and start a sandbox manager. Blocking — run in a thread."""
-    from pathlib import Path as _Path
-    from rich.console import Console
-    from caribou.core.sandbox_management import init_docker, init_singularity_exec
-
-    script_dir = _Path(__file__).resolve().parent
-    # Quiet console so sandbox init output doesn't go to stdout;
-    # errors are surfaced via exceptions caught by _initialize_session.
-    console = Console(quiet=True)
-
-    if config.sandbox_type.value == "docker":
-        manager_class, handle, copy_cmd, _, _ = init_docker(
-            script_dir, subprocess, console, force_refresh=False
-        )
-        sandbox = manager_class()
-        if not sandbox.start_container():
-            raise RuntimeError("Docker sandbox failed to start.")
-        copy_cmd(config.dataset_path, f"{handle}:{_SANDBOX_DATA_PATH}")
-        if config.reference_dataset_path:
-            copy_cmd(config.reference_dataset_path, f"{handle}:{_SANDBOX_REF_DATA_PATH}")
-        return sandbox
-
-    if config.sandbox_type.value == "singularity":
-        manager_class, _, _, _, _ = init_singularity_exec(
-            script_dir, _SANDBOX_DATA_PATH, subprocess, console, force_refresh=False
-        )
-        sandbox = manager_class()
-        sandbox.set_data(
-            [(Path(config.dataset_path), _SANDBOX_DATA_PATH)]
-            + ([(Path(config.reference_dataset_path), _SANDBOX_REF_DATA_PATH)] if config.reference_dataset_path else []),
-            output_dir,
-        )
-        if not sandbox.start_container():
-            raise RuntimeError("Singularity sandbox failed to start.")
-        return sandbox
-
-    raise ValueError(f"Unknown sandbox type: {config.sandbox_type}")
 
 
 # ---------------------------------------------------------------------------
