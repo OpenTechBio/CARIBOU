@@ -19,6 +19,7 @@ import {
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
+import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 
 export interface ErrorRecord {
@@ -59,7 +60,7 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
   imports: [
     CommonModule, FormsModule,
     MessageBubbleComponent, ArtifactCardComponent, StatusIndicatorComponent,
-    TooltipDirective,
+    IconComponent, TooltipDirective,
   ],
   templateUrl: './session.html',
   styleUrl: './session.scss',
@@ -240,8 +241,8 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
           this.notifyCompletion(status);
         }
         if (prefs.tabTitleNotifications && document.hidden) {
-          const symbol = status === 'stopped' ? '✓' : '✗';
-          document.title = `${symbol} ${this.originalTitle}`;
+          const prefix = status === 'stopped' ? '(done)' : '(error)';
+          document.title = `${prefix} ${this.originalTitle}`;
         }
       } else if (status === 'running' || status === 'initializing' || status === 'idle') {
         this.lastCompletedStatus = null;

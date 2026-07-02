@@ -1,15 +1,24 @@
 import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ToastService } from '../../../core/services/toast.service';
+import { IconComponent } from '../icon/icon';
 
 @Component({
   selector: 'app-toast-host',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, IconComponent],
   template: `
     <div class="toast-host" aria-live="polite" aria-atomic="false">
       @for (t of toasts.toasts(); track t.id) {
         <div class="toast" [class]="'toast-' + t.kind" role="status">
+          <span class="toast-icon" aria-hidden="true">
+            @switch (t.kind) {
+              @case ('success') { <app-icon name="check" /> }
+              @case ('error')   { <app-icon name="alert-triangle" /> }
+              @case ('warn')    { <app-icon name="alert-triangle" /> }
+              @default          { <app-icon name="info" /> }
+            }
+          </span>
           <div class="toast-body">
             <div class="toast-title">{{ t.title }}</div>
             @if (t.detail) { <div class="toast-detail">{{ t.detail }}</div> }
@@ -18,7 +27,9 @@ import { ToastService } from '../../../core/services/toast.service';
             <button class="toast-action" type="button" (click)="run(t)">{{ t.action.label }}</button>
           }
           <button class="toast-close" type="button" aria-label="Dismiss notification"
-            (click)="toasts.dismiss(t.id)">✕</button>
+            (click)="toasts.dismiss(t.id)">
+            <app-icon name="x" [size]="14" />
+          </button>
         </div>
       }
     </div>
@@ -49,6 +60,19 @@ import { ToastService } from '../../../core/services/toast.service';
     .toast-success { border-left-color: var(--success, #2A5C3A); }
     .toast-warn    { border-left-color: var(--accent, #BBAE6A); }
     .toast-error   { border-left-color: var(--error, #A03828); }
+    .toast-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+      color: var(--primary, #31446B);
+      margin-top: 1px;
+    }
+    .toast-success .toast-icon { color: var(--success, #2A5C3A); }
+    .toast-warn    .toast-icon { color: var(--accent, #BBAE6A); }
+    .toast-error   .toast-icon { color: var(--error, #A03828); }
     .toast-body    { flex: 1; min-width: 0; }
     .toast-title   { font-weight: 600; font-size: 0.85rem; color: var(--text, #1A1710); }
     .toast-detail  {

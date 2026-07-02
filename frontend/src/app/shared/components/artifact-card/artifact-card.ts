@@ -2,11 +2,12 @@ import { Component, Input, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Artifact } from '../../../core/models/session.model';
 import { TooltipDirective } from '../../directives/tooltip.directive';
+import { IconComponent } from '../icon/icon';
 
 @Component({
   selector: 'app-artifact-card',
   standalone: true,
-  imports: [CommonModule, TooltipDirective],
+  imports: [CommonModule, TooltipDirective, IconComponent],
   templateUrl: './artifact-card.html',
   styleUrl: './artifact-card.scss',
 })

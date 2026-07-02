@@ -2,7 +2,10 @@
 
   <!-- Top bar -->
   <header class="session-header">
-    <button class="btn btn-ghost btn-sm back-btn" (click)="goBack()" aria-label="Back to dashboard">← Back</button>
+    <button class="btn btn-ghost btn-sm back-btn" (click)="goBack()" aria-label="Back to dashboard">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </button>
     <div class="session-info">
       <span class="session-id" title="Full ID: {{ session()?.id }}">{{ session()?.id?.slice(0,8) }}</span>
       <span class="agent-badge" *ngIf="currentAgent()">{{ currentAgent() }}</span>
@@ -36,19 +39,24 @@
         [class.active]="showTimeline()"
         (click)="toggleTimeline()"
         *ngIf="chatItems().length > 4">
-        {{ showTimeline() ? '× Timeline' : '☰ Timeline' }}
+        <app-icon [name]="showTimeline() ? 'x' : 'list'" />
+        <span>Timeline</span>
       </button>
       @if (session(); as s) {
         <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download
            aria-label="Download session notebook"
            title="Download the run as a Jupyter notebook">
-          Notebook
+          <app-icon name="notebook" />
+          <span>Notebook</span>
         </a>
       }
       <app-status-indicator [status]="status()" />
       <button class="btn btn-danger btn-sm" *ngIf="isRunning()"
               (click)="stopSession()" aria-label="Stop session (Esc)"
-              title="Stop the running session (Esc)">Stop</button>
+              title="Stop the running session (Esc)">
+        <app-icon name="stop" />
+        <span>Stop</span>
+      </button>
     </div>
   </header>
 
@@ -67,7 +75,7 @@
         </span>
         <button class="btn btn-ghost btn-xs" (click)="retryReconnect()">Retry now</button>
       } @else {
-        <span aria-hidden="true">⚠</span>
+        <app-icon name="alert-triangle" aria-hidden="true" />
         <span>Session expired on the server. Recent history is still visible below.</span>
         <button class="btn btn-ghost btn-xs" (click)="goBack()">Back to dashboard</button>
       }
@@ -86,10 +94,16 @@
       </div>
       <div class="error-banner-actions">
         <button class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(lastError()!)"
-          aria-label="Copy error details to clipboard">Copy</button>
+          aria-label="Copy error details to clipboard">
+          <app-icon name="copy" />
+          <span>Copy</span>
+        </button>
         @if (canExtend()) {
           <button class="btn btn-primary btn-xs" (click)="retryLastAction()"
-            aria-label="Continue this session with more turns">Continue</button>
+            aria-label="Continue this session with more turns">
+            <app-icon name="play" />
+            <span>Continue</span>
+          </button>
         }
       </div>
     </div>
@@ -135,7 +149,7 @@
           @if (item.kind === 'delegation' && item.delegation) {
             <div class="delegation-indicator" [attr.data-turn]="item.turn">
               <span>{{ item.delegation.from }}</span>
-              <span class="arrow" aria-hidden="true">→</span>
+              <app-icon class="arrow" name="arrow-right" [size]="14" aria-hidden="true" />
               <span>{{ item.delegation.to }}</span>
               <code class="cmd">{{ item.delegation.command }}</code>
             </div>
@@ -148,20 +162,33 @@
                   [class.ok]="item.codeEvent.result?.success"
                   [class.fail]="item.codeEvent.result?.success === false"
                   [attr.aria-label]="item.codeEvent.result ? (item.codeEvent.result.success ? 'succeeded' : 'failed') : 'running'">
-                  {{ item.codeEvent.result ? (item.codeEvent.result.success ? '✓' : '✗') : '…' }}
+                  @if (item.codeEvent.result) {
+                    @if (item.codeEvent.result.success) {
+                      <app-icon name="check" [size]="14" />
+                    } @else {
+                      <app-icon name="x" [size]="14" />
+                    }
+                  } @else {
+                    <app-icon name="loader" [size]="14" class="spin" />
+                  }
                 </span>
                 @if (item.codeEvent.result) {
                   <span class="duration"
                     [class.slow]="isSlowBlock(item.codeEvent)"
                     [title]="isSlowBlock(item.codeEvent) ? 'This block took longer than the slow threshold' : ''">
-                    @if (isSlowBlock(item.codeEvent)) { <span aria-hidden="true">⚠</span> }
+                    @if (isSlowBlock(item.codeEvent)) {
+                      <app-icon name="alert-triangle" [size]="12" aria-hidden="true" />
+                    }
                     {{ item.codeEvent.result.duration_ms }}ms
                   </span>
                 }
                 <button type="button" class="btn btn-ghost btn-xs code-copy"
                   aria-label="Copy code to clipboard"
                   title="Copy this code block to the clipboard"
-                  (click)="copyToClipboard(item.codeEvent.submitted.source)">Copy</button>
+                  (click)="copyToClipboard(item.codeEvent.submitted.source)">
+                  <app-icon name="copy" />
+                  <span>Copy</span>
+                </button>
               </div>
               <pre class="code-source">{{ item.codeEvent.submitted.source }}</pre>
               @if (item.codeEvent.result?.stdout) {
@@ -176,13 +203,16 @@
             <div class="chat-error-item" [class.fatal]="item.error.fatal" [attr.data-turn]="item.turn"
                  role="alert">
               <div class="chat-error-header">
-                <span class="error-icon" aria-hidden="true">⚠</span>
+                <app-icon class="error-icon" name="alert-triangle" [size]="16" aria-hidden="true" />
                 <span class="error-code">{{ item.error.code }}</span>
                 <span class="error-ts">{{ item.error.timestamp | date:'HH:mm:ss' }}</span>
                 <span class="error-severity">{{ item.error.fatal ? 'fatal' : 'non-fatal' }}</span>
                 <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(item.error)"
                   aria-label="Copy error to clipboard"
-                  title="Copy error details to clipboard">Copy</button>
+                  title="Copy error details to clipboard">
+                  <app-icon name="copy" />
+                  <span>Copy</span>
+                </button>
               </div>
               <pre class="error-message">{{ item.error.message }}</pre>
               @if (item.error.suggested_fix) {
@@ -253,7 +283,8 @@
       @if (showJumpToLatest()) {
         <button type="button" class="jump-to-latest" (click)="jumpToLatest()"
           aria-label="Scroll to latest messages">
-          New messages ↓
+          <span>New messages</span>
+          <app-icon name="arrow-down" />
         </button>
       }
     </main>
@@ -275,7 +306,11 @@
                 <code class="sidebar-error-fix">{{ err.suggested_fix }}</code>
               }
               <div class="sidebar-error-actions">
-                <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(err)">Copy</button>
+                <button type="button" class="btn btn-ghost btn-xs" (click)="copyErrorToClipboard(err)"
+                  aria-label="Copy error to clipboard">
+                  <app-icon name="copy" />
+                  <span>Copy</span>
+                </button>
               </div>
             </div>
           }
@@ -389,16 +424,20 @@
           isInitializing()   ? 'Initializing sandbox…' :
           session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
           session()?.mode === 'auto' && status() === 'stopped' ? 'Run finished — click Continue to add more turns' :
-          'Enter your message (⏎ to send · Shift+⏎ newline · ↑/↓ history · Esc stop)'
+          'Enter your message (Enter to send · Shift+Enter newline · Up/Down history · Esc stop)'
         }}"
         rows="2">
       </textarea>
       @if (isRunning() || isInitializing()) {
-        <button class="btn btn-danger send-btn" (click)="stopSession()" aria-label="Stop session (Esc)">Stop</button>
+        <button class="btn btn-danger send-btn" (click)="stopSession()" aria-label="Stop session (Esc)">
+          <app-icon name="stop" />
+          <span>Stop</span>
+        </button>
       } @else if (canExtend()) {
         <button class="btn btn-primary send-btn" (click)="showExtend.set(true)"
           aria-label="Continue session with more turns">
-          ▶ Continue +{{ extendTurns() }}
+          <app-icon name="play" />
+          <span>Continue +{{ extendTurns() }}</span>
         </button>
       } @else {
         <button
@@ -406,7 +445,8 @@
           (click)="sendMessage()"
           [disabled]="!userInput().trim() || isError()"
           aria-label="Send message">
-          Send
+          <app-icon name="send" />
+          <span>Send</span>
         </button>
       }
     }
@@ -421,11 +461,14 @@
         <dl>
           <dt>Enter</dt><dd>Send message</dd>
           <dt>Shift + Enter</dt><dd>Newline</dd>
-          <dt>↑ / ↓</dt><dd>Cycle through input history</dd>
+          <dt>
+            <app-icon name="arrow-up" [size]="12" /> /
+            <app-icon name="arrow-down" [size]="12" />
+          </dt><dd>Cycle through input history</dd>
           <dt>Esc</dt><dd>Stop running session</dd>
           <dt>/</dt><dd>Focus message input</dd>
-          <dt>⌘/Ctrl + K</dt><dd>Focus message input</dd>
-          <dt>⌘/Ctrl + /</dt><dd>Toggle this help</dd>
+          <dt>Cmd / Ctrl + K</dt><dd>Focus message input</dd>
+          <dt>Cmd / Ctrl + /</dt><dd>Toggle this help</dd>
         </dl>
         <div class="dialog-actions">
           <button class="btn btn-primary btn-sm" (click)="showShortcutHelp.set(false)">Close</button>

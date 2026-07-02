@@ -7,8 +7,14 @@
     <div class="header-actions">
       <a class="btn btn-ghost btn-sm" routerLink="/blueprints">Blueprints</a>
       <a class="btn btn-ghost btn-sm" routerLink="/code-samples">Code Samples</a>
-      <a class="btn btn-ghost btn-sm" routerLink="/settings" aria-label="Open settings">⚙ Settings</a>
-      <button class="btn btn-primary" (click)="openCreate()" aria-label="Create new session">+ New Session</button>
+      <a class="btn btn-ghost btn-sm" routerLink="/settings" aria-label="Open settings">
+        <app-icon name="settings" />
+        <span>Settings</span>
+      </a>
+      <button class="btn btn-primary" (click)="openCreate()" aria-label="Create new session">
+        <app-icon name="plus" />
+        <span>New Session</span>
+      </button>
     </div>
   </header>
 
@@ -43,7 +49,8 @@
         <button class="btn btn-ghost btn-sm" type="button" (click)="toggleSelectMode()"
           [class.active]="selectMode()"
           aria-label="Toggle bulk-select mode">
-          {{ selectMode() ? '✓ Selecting' : 'Select' }}
+          @if (selectMode()) { <app-icon name="check" /> <span>Selecting</span> }
+          @else { <span>Select</span> }
         </button>
       </div>
     </div>
@@ -60,10 +67,12 @@
 
     @if (sessionSvc.sessions().length === 0) {
       <div class="empty-state">
-        <div class="empty-icon" aria-hidden="true">🦌</div>
+        <div class="empty-icon" aria-hidden="true">
+          <app-icon name="microscope" [size]="48" [strokeWidth]="1.6" />
+        </div>
         <h3>Welcome to CARIBOU</h3>
         <p>Multi-agent bioinformatics analysis, streamed to your browser.</p>
-        <p class="empty-hint">Click <strong>+ New Session</strong> to pick a preset or configure a custom run.</p>
+        <p class="empty-hint">Click <strong>New Session</strong> to pick a preset or configure a custom run.</p>
       </div>
     }
 
@@ -92,11 +101,15 @@
             <button class="btn btn-ghost btn-sm icon-btn" type="button"
               [attr.aria-label]="'Duplicate session ' + session.id.slice(0,8)"
               (click)="duplicateSession(session, $event)"
-              title="Duplicate — copy this session's config into a new session">⧉</button>
+              title="Duplicate — copy this session's config into a new session">
+              <app-icon name="copy-plus" />
+            </button>
             <button class="btn btn-ghost btn-sm delete-btn" type="button"
               [attr.aria-label]="'Delete session ' + session.id.slice(0,8)"
               (click)="requestDelete(session.id, $event)"
-              title="Delete this session and all its data">✕</button>
+              title="Delete this session and all its data">
+              <app-icon name="trash" />
+            </button>
           </div>
           <div class="session-meta">
             <span class="label">Blueprint</span>
@@ -122,7 +135,9 @@
 @if (pendingDeleteId()) {
   <div class="overlay" (click)="cancelDelete()" role="dialog" aria-modal="true" aria-label="Delete session">
     <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
-      <div class="confirm-icon" aria-hidden="true">🗑</div>
+      <div class="confirm-icon" aria-hidden="true">
+        <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
+      </div>
       <h3>Delete session?</h3>
       <p class="confirm-detail">
         <code>{{ pendingDeleteId()?.slice(0, 8) }}</code>
@@ -144,7 +159,9 @@
   <div class="overlay" (click)="cancelBulkDelete()" role="dialog" aria-modal="true"
        aria-label="Bulk delete sessions">
     <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
-      <div class="confirm-icon" aria-hidden="true">🗑</div>
+      <div class="confirm-icon" aria-hidden="true">
+        <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
+      </div>
       <h3>Delete {{ selected().size }} sessions?</h3>
       <p class="confirm-warning">
         This will permanently remove {{ selected().size }} sessions and all their data. This cannot be undone.
@@ -157,15 +174,19 @@
   </div>
 }
 
-<!-- Create session dialog: preset → form → confirm -->
+<!-- Create session dialog: preset -> form -> confirm -->
 @if (showCreateDialog()) {
   <div class="overlay" (click)="cancelCreate()" role="dialog" aria-modal="true" aria-label="New session">
     <div class="dialog wizard" (click)="$event.stopPropagation()">
       <div class="wizard-steps" role="progressbar" [attr.aria-valuenow]="wizardStep() === 'preset' ? 1 : wizardStep() === 'form' ? 2 : 3" aria-valuemin="1" aria-valuemax="3">
         <span [class.active]="wizardStep() === 'preset'">1 · Preset</span>
-        <span class="wizard-sep" aria-hidden="true">→</span>
+        <span class="wizard-sep" aria-hidden="true">
+          <app-icon name="chevron-right" [size]="14" />
+        </span>
         <span [class.active]="wizardStep() === 'form'">2 · Configure</span>
-        <span class="wizard-sep" aria-hidden="true">→</span>
+        <span class="wizard-sep" aria-hidden="true">
+          <app-icon name="chevron-right" [size]="14" />
+        </span>
         <span [class.active]="wizardStep() === 'confirm'">3 · Confirm</span>
       </div>
 
@@ -185,7 +206,9 @@
               role="radio"
               [attr.aria-checked]="selectedPreset() === p.id"
               (click)="choosePreset(p.id)">
-              <span class="preset-icon" aria-hidden="true">{{ p.icon }}</span>
+              <span class="preset-icon" aria-hidden="true">
+                <app-icon [name]="p.icon" [size]="28" [strokeWidth]="1.6" />
+              </span>
               <span class="preset-body">
                 <span class="preset-title">{{ p.title }}</span>
                 <span class="preset-subtitle">{{ p.subtitle }}</span>
@@ -329,9 +352,13 @@
 
         <div class="dialog-actions">
           <button class="btn btn-ghost" (click)="cancelCreate()">Cancel</button>
-          <button class="btn btn-ghost" (click)="wizardStep.set('preset')">← Back</button>
+          <button class="btn btn-ghost" (click)="wizardStep.set('preset')">
+            <app-icon name="chevron-left" />
+            <span>Back</span>
+          </button>
           <button class="btn btn-primary" (click)="goToConfirm()" [disabled]="hpcValidating()">
-            Review →
+            <span>Review</span>
+            <app-icon name="chevron-right" />
           </button>
         </div>
       }
@@ -365,7 +392,10 @@
         </dl>
         <div class="dialog-actions">
           <button class="btn btn-ghost" (click)="cancelCreate()">Cancel</button>
-          <button class="btn btn-ghost" (click)="backToForm()">← Back</button>
+          <button class="btn btn-ghost" (click)="backToForm()">
+            <app-icon name="chevron-left" />
+            <span>Back</span>
+          </button>
           <button class="btn btn-primary" (click)="submitCreate()" [disabled]="creating()">
             {{ creating() ? 'Creating…' : 'Create Session' }}
           </button>

@@ -5,6 +5,7 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { ConfigService } from '../../core/services/config.service';
 import { OllamaModelsResponse } from '../../core/models/session.model';
+import { IconComponent } from '../../shared/components/icon/icon';
 
 interface ServerSettings {
   caribou_home: string;
@@ -19,7 +20,7 @@ interface ServerSettings {
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, IconComponent],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
 })

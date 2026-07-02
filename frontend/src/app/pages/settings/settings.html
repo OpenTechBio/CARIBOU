@@ -1,6 +1,9 @@
 <div class="settings-page">
   <header class="settings-header">
-    <button class="btn btn-ghost btn-sm" (click)="goBack()">← Back</button>
+    <button class="btn btn-ghost btn-sm" (click)="goBack()" aria-label="Back">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </button>
     <h1>Settings</h1>
   </header>
 
