@@ -101,7 +101,15 @@
   border-radius: 12px;
   background: var(--surface);
 
-  .empty-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+  .empty-icon {
+    color: var(--cividis-blue);
+    margin-bottom: 0.6rem;
+    display: inline-flex;
+    padding: 0.9rem;
+    background: var(--primary-bg);
+    border-radius: 999px;
+    border: 1px solid #E0D898;
+  }
   h3 { color: var(--cividis-navy); margin: 0 0 0.5rem; font-size: 1.15rem; }
   p { margin: 0.25rem 0; font-size: 0.9rem; }
   .empty-hint { color: var(--text); }
@@ -373,7 +381,18 @@
   max-width: 400px;
   text-align: center;
 
-  .confirm-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+  .confirm-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 0.6rem;
+    color: var(--error);
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    border-radius: 999px;
+    width: 60px;
+    height: 60px;
+  }
 
   h3 { margin: 0 0 0.5rem; font-size: 1.1rem; color: var(--cividis-navy); }
 
@@ -477,8 +496,20 @@
   }
 
   .preset-icon {
-    font-size: 1.75rem;
     flex-shrink: 0;
+    color: var(--primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: var(--primary-bg);
+    border: 1px solid #E0D898;
+  }
+  &.selected .preset-icon {
+    background: var(--bg);
+    color: var(--cividis-navy);
   }
   .preset-body { display: flex; flex-direction: column; gap: 0.15rem; }
   .preset-title { font-weight: 700; color: var(--text); font-size: 0.95rem; }

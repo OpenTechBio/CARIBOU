@@ -2,7 +2,10 @@
 
   <!-- Header -->
   <header class="cs-header">
-    <a class="btn btn-ghost btn-sm" routerLink="/">← Back</a>
+    <a class="btn btn-ghost btn-sm" routerLink="/" aria-label="Back to dashboard">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </a>
     <div class="cs-header-title">
       <span class="cs-title">Code Samples</span>
       <span class="cs-subtitle">Python utilities available to blueprint agents</span>
@@ -204,7 +207,9 @@
 @if (showDeleteConfirm()) {
   <div class="overlay" (click)="cancelDelete()">
     <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
-      <div class="confirm-icon">🗑</div>
+      <div class="confirm-icon" aria-hidden="true">
+        <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
+      </div>
       <h3>Delete sample?</h3>
       <p class="confirm-detail"><code>{{ selected()?.filename }}</code></p>
       <p class="confirm-warning">This will permanently remove the file. This cannot be undone.</p>

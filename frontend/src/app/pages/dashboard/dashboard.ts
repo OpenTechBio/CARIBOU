@@ -11,6 +11,7 @@ import { DatasetService } from '../../core/services/dataset.service';
 import { ToastService } from '../../core/services/toast.service';
 import { Session, SessionCreateRequest, Dataset } from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
+import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 
 type DatasetSource = 'existing' | 'upload' | 'hpc';
@@ -32,7 +33,7 @@ const PRESETS: QuickStartPreset[] = [
     id: 'scrna-explore',
     title: 'scRNA-seq exploration',
     subtitle: 'Interactive · full agent system',
-    icon: '🔬',
+    icon: 'microscope',
     values: {
       mode: 'interactive',
       run_mode: 'full_system',
@@ -47,7 +48,7 @@ const PRESETS: QuickStartPreset[] = [
     id: 'cell-typing-auto',
     title: 'Cell typing (auto)',
     subtitle: 'Auto · 20 turns · full agent system',
-    icon: '🧬',
+    icon: 'dna',
     values: {
       mode: 'auto',
       run_mode: 'full_system',
@@ -63,7 +64,7 @@ const PRESETS: QuickStartPreset[] = [
     id: 'custom',
     title: 'Custom',
     subtitle: 'Configure every field yourself',
-    icon: '⚙',
+    icon: 'sliders',
     values: { initial_prompt: '' },
   },
 ];
@@ -71,7 +72,7 @@ const PRESETS: QuickStartPreset[] = [
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, StatusIndicatorComponent, TooltipDirective],
+  imports: [CommonModule, FormsModule, RouterLink, StatusIndicatorComponent, IconComponent, TooltipDirective],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })

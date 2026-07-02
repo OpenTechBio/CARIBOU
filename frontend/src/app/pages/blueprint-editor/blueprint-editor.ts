@@ -6,6 +6,7 @@ import { HttpClient } from '@angular/common/http';
 import { ConfigService } from '../../core/services/config.service';
 import { AgentBlueprint } from '../../core/models/session.model';
 import { CodeEditorComponent } from '../../shared/components/code-editor/code-editor';
+import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import {
   AgentConfig, AgentEntry, BlueprintContent, CommandConfig,
@@ -21,7 +22,7 @@ interface CodeSampleInfo {
 @Component({
   selector: 'app-blueprint-editor',
   standalone: true,
-  imports: [CommonModule, FormsModule, CodeEditorComponent, TooltipDirective],
+  imports: [CommonModule, FormsModule, CodeEditorComponent, IconComponent, TooltipDirective],
   templateUrl: './blueprint-editor.html',
   styleUrl: './blueprint-editor.scss',
 })

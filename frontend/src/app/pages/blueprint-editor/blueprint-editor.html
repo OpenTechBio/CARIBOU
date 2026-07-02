@@ -2,7 +2,10 @@
 
   <!-- ── Header ── -->
   <header class="bpe-header">
-    <button class="btn btn-ghost btn-sm" (click)="goBack()">← Back</button>
+    <button class="btn btn-ghost btn-sm" (click)="goBack()" aria-label="Back">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </button>
     <div class="bpe-header-title">
       <span class="bpe-title">Blueprint Editor</span>
       @if (selectedName()) {
@@ -75,7 +78,8 @@
               Package defaults cannot be edited. Fork a copy to make changes.
             </div>
             <button class="btn btn-primary btn-sm" (click)="useAsTemplate()">
-              Use as Template →
+              <span>Use as Template</span>
+              <app-icon name="arrow-right" />
             </button>
           </div>
         }
@@ -145,7 +149,10 @@
                     </label>
                     @if (!isPackageDefault()) {
                       <button class="btn btn-ghost btn-sm" (click)="removeAgent(i)"
-                        title="Remove agent">✕ Remove</button>
+                        aria-label="Remove agent" title="Remove agent">
+                        <app-icon name="trash" />
+                        <span>Remove</span>
+                      </button>
                     }
                   </div>
                 </div>
@@ -206,7 +213,9 @@
                             @if (!isPackageDefault()) {
                               <button class="btn btn-ghost btn-xs cmd-remove" (click)="removeCommand(i, ci)"
                                 aria-label="Remove command"
-                                title="Remove command">✕</button>
+                                title="Remove command">
+                                <app-icon name="x" [size]="14" />
+                              </button>
                             }
                           </div>
                         }
@@ -221,7 +230,10 @@
                         <span class="form-hint">Filenames that must exist in the server's code_samples/ directory</span>
                       </label>
                       @if (!isPackageDefault()) {
-                        <button class="btn btn-ghost btn-sm" (click)="addCodeSample(i)">+ Add</button>
+                        <button class="btn btn-ghost btn-sm" (click)="addCodeSample(i)">
+                          <app-icon name="plus" />
+                          <span>Add</span>
+                        </button>
                       }
                     </div>
 
@@ -229,7 +241,9 @@
                       <div class="code-samples-list">
                         @for (sample of agent.codeSamples; track $index; let si = $index) {
                           <div class="code-sample-row">
-                            <span class="code-sample-icon">📄</span>
+                            <span class="code-sample-icon" aria-hidden="true">
+                              <app-icon name="file-code" [size]="14" />
+                            </span>
                             <div class="cs-autocomplete-wrap flex-1">
                               <input class="form-input code-input"
                                 [value]="sample"
@@ -256,7 +270,9 @@
                             </div>
                             @if (!isPackageDefault()) {
                               <button class="btn btn-ghost btn-xs" aria-label="Remove code sample"
-                                (click)="removeCodeSample(i, si)">✕</button>
+                                (click)="removeCodeSample(i, si)">
+                                <app-icon name="x" [size]="14" />
+                              </button>
                             }
                           </div>
                         }
@@ -273,11 +289,18 @@
                         <button class="btn btn-ghost btn-sm"
                           (click)="importCodeSample(i)"
                           [disabled]="importing()[i] || !importPaths()[i].trim()">
-                          {{ importing()[i] ? 'Importing…' : '↑ Import' }}
+                          @if (importing()[i]) { <span>Importing…</span> }
+                          @else {
+                            <app-icon name="upload" />
+                            <span>Import</span>
+                          }
                         </button>
                       </div>
                       @if (importErrors()[i]) {
-                        <div class="import-error">⚠ {{ importErrors()[i] }}</div>
+                        <div class="import-error">
+                          <app-icon name="alert-triangle" [size]="14" />
+                          <span>{{ importErrors()[i] }}</span>
+                        </div>
                       }
                     }
                   </div>
@@ -289,8 +312,8 @@
             <!-- Add agent button -->
             @if (!isPackageDefault()) {
               <button class="add-agent-btn" (click)="addAgent()">
-                <span class="add-agent-icon">＋</span>
-                Add Agent
+                <app-icon name="plus" [size]="18" />
+                <span>Add Agent</span>
               </button>
             }
 
@@ -305,7 +328,10 @@
               @if (isPackageDefault()) { <strong>Read-only.</strong> }
             </div>
             @if (jsonError()) {
-              <div class="json-error-banner">⚠ {{ jsonError() }}</div>
+              <div class="json-error-banner">
+                <app-icon name="alert-triangle" [size]="14" />
+                <span>{{ jsonError() }}</span>
+              </div>
             }
             <div class="json-editor-wrap">
               <app-code-editor
@@ -322,7 +348,10 @@
         <!-- Validation errors -->
         @if (validationErrors().length > 0) {
           <div class="validation-panel">
-            <div class="validation-title">⚠ Fix before saving</div>
+            <div class="validation-title">
+              <app-icon name="alert-triangle" [size]="14" />
+              <span>Fix before saving</span>
+            </div>
             @for (err of validationErrors(); track $index) {
               <div class="validation-item">{{ err }}</div>
             }
@@ -333,13 +362,16 @@
         <div class="bpe-action-bar">
           @if (saveResult(); as r) {
             <span class="save-feedback" [class.ok]="r.ok" [class.err]="!r.ok">
-              {{ r.ok ? '✓' : '✗' }} {{ r.message }}
+              @if (r.ok) { <app-icon name="check" [size]="14" /> }
+              @else { <app-icon name="x" [size]="14" /> }
+              <span>{{ r.message }}</span>
             </span>
           }
 
           <div class="action-bar-btns">
             <button class="btn btn-ghost" (click)="downloadJson()" title="Download blueprint as JSON">
-              ↓ Download JSON
+              <app-icon name="download" />
+              <span>Download JSON</span>
             </button>
             @if (!isPackageDefault()) {
               @if (selectedName()) {
@@ -354,7 +386,8 @@
               </button>
             } @else {
               <button class="btn btn-primary" (click)="useAsTemplate()">
-                Use as Template →
+                <span>Use as Template</span>
+                <app-icon name="arrow-right" />
               </button>
             }
           </div>
