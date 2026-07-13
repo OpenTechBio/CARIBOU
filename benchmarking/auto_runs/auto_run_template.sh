@@ -4,7 +4,7 @@
 #SBATCH --mem=16GB                    # Total RAM requested
 #SBATCH --time=24:00:00               # Max wall time (hh:mm:ss)
 #SBATCH --output=auto_run.log  # Updated log file name
-#SBATCH --partition=cpu
+#SBATCH --partition=peerd
 
 BLUEPRINT_PATH="full blue print path"
 DATASET_PATH="full dataset path"

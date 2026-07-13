@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release CARIBOU Study"
+  short_description: "Build immutable reproducible study releases"
+  default_prompt: "Use $release-caribou-study to assemble and verify an immutable CARIBOU study release."

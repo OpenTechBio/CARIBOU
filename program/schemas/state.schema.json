@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "caribou-program-state-v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "program_id",
+    "goal_reference",
+    "policy_reference",
+    "status",
+    "created_at",
+    "updated_at",
+    "code",
+    "active_task",
+    "next_action",
+    "milestones",
+    "budgets",
+    "indexes",
+    "documents"
+  ],
+  "properties": {
+    "schema_version": {"const": "caribou-program-state-v1"},
+    "program_id": {"type": "string", "minLength": 1},
+    "goal_reference": {"type": "string", "minLength": 1},
+    "policy_reference": {"enum": ["program:policy.yaml", "program/policy.yaml"]},
+    "status": {"$ref": "#/$defs/status"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "code": {
+      "type": "object",
+      "required": ["branch", "commit", "dirty"],
+      "properties": {
+        "branch": {"type": "string"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty": {"type": "boolean"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "active_task": {"$ref": "#/$defs/task"},
+    "next_action": {
+      "type": "object",
+      "required": ["task_id", "milestone_id", "action", "skill", "policy_check", "blocked_by"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "milestone_id": {"type": "string"},
+        "action": {"type": "string", "minLength": 1},
+        "skill": {"type": "string", "minLength": 1},
+        "policy_check": {"type": "string"},
+        "blocked_by": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "milestones": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["milestone_id", "title", "status", "evidence"],
+        "properties": {
+          "milestone_id": {"type": "string"},
+          "title": {"type": "string"},
+          "status": {"$ref": "#/$defs/status"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "blocked_by": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "required": ["external_api_calls_used", "external_api_tokens_used", "external_api_spend_usd", "slurm_jobs_submitted", "slurm_cpu_hours_used", "slurm_gpu_hours_used"],
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "indexes": {
+      "type": "object",
+      "required": ["experiments", "runs", "evidence", "reviews", "releases"],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "documents": {
+      "type": "object",
+      "properties": {
+        "manuscript_root": {"type": "string", "minLength": 1},
+        "program_goal": {"type": "string", "minLength": 1},
+        "revision_goal": {"type": "string", "minLength": 1},
+        "revision_strategy": {"type": "string", "minLength": 1},
+        "repository_map": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": ["Pending", "In progress", "Evidence collected", "Validated", "Not claimed", "Blocked"]
+    },
+    "task": {
+      "type": "object",
+      "required": ["task_id", "milestone_id", "title", "status", "evidence"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "milestone_id": {"type": "string"},
+        "title": {"type": "string"},
+        "status": {"$ref": "#/$defs/status"},
+        "evidence": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
