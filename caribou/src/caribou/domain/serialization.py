@@ -21,10 +21,15 @@ from .lifecycle import (
     RunTransition,
 )
 from .models import (
+    ArtifactCreatedPayload,
+    BudgetRecordedPayload,
+    CheckpointCreatedPayload,
     DomainModel,
     Event,
     Experiment,
     ExperimentTransitionRecord,
+    FailureRecordedPayload,
+    MetricRecordedPayload,
     Run,
     StateTransitionPayload,
 )
@@ -269,6 +274,108 @@ def read_run_journal(path: Path) -> RunJournal:
     journal = read_model(path, RunJournal)
     validate_run_event_pair(journal.run, journal.events)
     return journal
+
+
+def commit_run_event(
+    path: Path,
+    updated_run: Run,
+    event: Event,
+    *,
+    expected_hash: str,
+) -> str:
+    """Atomically append one durable non-transition event and its run snapshot.
+
+    This is the application-service counterpart to ``commit_run_transition``.
+    It permits only event cursors, current execution position, and durable-record
+    link fields to change; frozen scientific and execution configuration remains
+    immutable.
+    """
+
+    if not event.durable or event.event_type == EventType.state_transition:
+        raise PersistenceError(
+            "commit_run_event requires a durable non-transition event"
+        )
+    with _exclusive_lock(path):
+        if not path.exists():
+            raise IntegrityError(f"run journal does not exist: {path}")
+        current_hash = file_hash(path)
+        if current_hash != expected_hash:
+            raise ConcurrentUpdateError(
+                f"compare-and-swap conflict for {path}: expected {expected_hash}, "
+                f"found {current_hash}"
+            )
+        try:
+            current = RunJournal.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError) as exc:
+            raise IntegrityError(f"invalid run journal at {path}: {exc}") from exc
+        if updated_run.run_id != current.run.run_id:
+            raise IntegrityError("event update belongs to a different run attempt")
+        if (
+            updated_run.event_sequence != current.run.event_sequence + 1
+            or event.sequence != updated_run.event_sequence
+        ):
+            raise IntegrityError("event update must advance the cursor exactly once")
+        if (
+            event.run_id != updated_run.run_id
+            or event.experiment_id != updated_run.experiment_id
+        ):
+            raise IntegrityError("event update crosses a run or experiment boundary")
+        if updated_run.updated_at != event.occurred_at:
+            raise IntegrityError("run update timestamp must equal the event timestamp")
+        if updated_run.current_turn != event.turn:
+            raise IntegrityError("run current turn must equal the event turn")
+
+        link_fields: dict[str, Optional[str]] = {
+            "artifact_ids": None,
+            "metric_record_ids": None,
+            "failure_ids": None,
+            "checkpoint_ids": None,
+            "budget_record_ids": None,
+        }
+        if isinstance(event.payload, ArtifactCreatedPayload):
+            link_fields["artifact_ids"] = event.payload.artifact_id
+        elif isinstance(event.payload, MetricRecordedPayload):
+            link_fields["metric_record_ids"] = event.payload.metric_record_id
+        elif isinstance(event.payload, FailureRecordedPayload):
+            link_fields["failure_ids"] = event.payload.failure_id
+        elif isinstance(event.payload, CheckpointCreatedPayload):
+            link_fields["checkpoint_ids"] = event.payload.checkpoint_id
+        elif isinstance(event.payload, BudgetRecordedPayload):
+            link_fields["budget_record_ids"] = event.payload.budget_record_id
+
+        for field, expected_identifier in link_fields.items():
+            before = list(getattr(current.run, field))
+            after = list(getattr(updated_run, field))
+            expected = (
+                before
+                if expected_identifier is None
+                else [*before, expected_identifier]
+            )
+            if after != expected:
+                raise IntegrityError(
+                    f"event update has invalid {field} linkage for its payload"
+                )
+
+        mutable_fields = {
+            "updated_at",
+            "event_sequence",
+            "current_turn",
+            "current_agent",
+            *link_fields,
+        }
+        previous_values = current.run.model_dump(mode="python")
+        next_values = updated_run.model_dump(mode="python")
+        for field in mutable_fields:
+            previous_values.pop(field, None)
+            next_values.pop(field, None)
+        if previous_values != next_values:
+            raise IntegrityError(
+                "event update attempted to mutate frozen run configuration or state"
+            )
+        updated = RunJournal(run=updated_run, events=[*current.events, event])
+        data = canonical_json_bytes(updated)
+        _atomic_replace(path, data)
+    return sha256_bytes(data)
 
 
 def commit_experiment_transition(

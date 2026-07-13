@@ -52,6 +52,11 @@ The control-plane environment is shared by the CLI, web service, and tests.
 Biological code executes in the versioned Docker/Apptainer analysis image; a
 new Conda environment is not created for each run or Slurm job.
 
+Long-running software agents should use the durable, machine-readable command
+contract in [docs/agent-cli.md](docs/agent-cli.md). It covers discovery,
+idempotent submission, detached execution, resumable events, cancellation, and
+verified artifact retrieval.
+
 -----
 
 ## 🚀 Quick Start Guide

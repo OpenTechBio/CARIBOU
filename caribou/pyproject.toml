@@ -28,7 +28,8 @@ dependencies = [
   "uvicorn[standard]>=0.29.0",
   "python-multipart>=0.0.9",
   "aiofiles>=23.0.0",
-  "pydantic>=2.7,<3"
+  "pydantic>=2.7,<3",
+  "PyYAML>=6.0"
 ]
 
 # If you want a command like `caribou …`
