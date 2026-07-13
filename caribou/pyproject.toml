@@ -23,7 +23,11 @@ dependencies = [
   "typer",
   "platformdirs",
   "sentence_transformers",
-  "tf_keras"
+  "tf_keras",
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.29.0",
+  "python-multipart>=0.0.9",
+  "aiofiles>=23.0.0"
 ]
 
 # If you want a command like `caribou …`
@@ -37,6 +41,11 @@ dev = [
   "ruff",
   "mypy",
   "ipykernel"
+]
+
+[tool.hatch.build]
+artifacts = [
+  "src/caribou/frontend/**",
 ]
 
 # If you’re using a src/ layout, tell Hatch where packages live.

@@ -1,0 +1,536 @@
+"""
+Async-compatible event-emitting runner for the CARIBOU web server.
+
+Runs the agent session loop in a background thread and emits structured
+events via a thread-safe callback. The server's WebSocket route forwards
+those events to the browser.
+
+This is a parallel implementation to execution/runner.py — it shares the
+same helpers and execution model but replaces Console output with events.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import queue
+import threading
+import time
+import traceback
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set
+
+# Consecutive no-action / code-exec failures we tolerate before ending the run.
+MAX_CONSECUTIVE_NO_ACTION = 3
+MAX_CONSECUTIVE_EXEC_FAILURES = 5
+
+
+# ---------------------------------------------------------------------------
+# Token streaming helper
+# ---------------------------------------------------------------------------
+
+def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
+    """
+    Generator yielding text tokens from the LLM.
+    Works with AnthropicClient (has stream_chat) and OpenAI-compatible clients.
+    """
+    if hasattr(llm_client, "stream_chat"):
+        yield from llm_client.stream_chat(
+            model=model, messages=messages, temperature=0.0
+        )
+    else:
+        stream = llm_client.chat.completions.create(
+            model=model, messages=messages, temperature=0.0, stream=True
+        )
+        if hasattr(stream, "choices"):
+            content = stream.choices[0].message.content
+            if content:
+                yield content
+            return
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            token = getattr(delta, "content", None)
+            if token:
+                yield token
+
+
+# ---------------------------------------------------------------------------
+# Sync runner (runs inside a ThreadPoolExecutor thread)
+# ---------------------------------------------------------------------------
+
+def run_session_sync(
+    *,
+    session_id: str,
+    agent_system,
+    driver_agent,
+    analysis_context: str,
+    llm_client,
+    sandbox_manager,
+    history: List[Dict],
+    is_auto: bool,
+    max_turns: int,
+    model_name: str,
+    output_dir: Path,
+    emit: Callable[[Dict], None],
+    stop_flag: threading.Event,
+    cancel_response_flag: Optional[threading.Event] = None,
+    user_input_queue: Optional[queue.Queue] = None,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Main agent session loop. Replaces Console output with emit() calls.
+    Designed to be run in a thread via asyncio.to_thread or ThreadPoolExecutor.
+    """
+    from caribou.execution.ActionSpace import AgentActionSpace
+    from caribou.execution.agent_management import (
+        _apply_agent_switch,
+        _extract_possible_actions,
+    )
+    from caribou.execution.message_utils import (
+        _code_preview,
+        _count_code_blocks,
+        _extract_artifacts_from_msg,
+        detect_delegation,
+        detect_end_session,
+        detect_rag,
+    )
+    from caribou.execution.rag_client import get_rag_client
+    from caribou.core.io_helpers import (
+        extract_python_code_blocks,
+        format_execute_response,
+    )
+    from rich.console import Console
+
+    console = Console(quiet=True)
+    cancel_response_flag = cancel_response_flag or threading.Event()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    emitted_artifacts: Set[str] = set()
+
+    def _emit(event_type: str, data: Dict, turn: int = 0) -> None:
+        emit({
+            "type": event_type,
+            "session_id": session_id,
+            "turn": turn,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data,
+        })
+
+    def _scan_new_artifacts(turn: int) -> None:
+        """Emit artifact events for any new files in output_dir."""
+        mime_map = {
+            ".png": ("plot", "image/png"),
+            ".jpg": ("plot", "image/jpeg"),
+            ".svg": ("plot", "image/svg+xml"),
+            ".pdf": ("plot", "application/pdf"),
+            ".csv": ("data", "text/csv"),
+            ".h5ad": ("data", "application/x-hdf5"),
+            ".txt": ("report", "text/plain"),
+        }
+        if not output_dir.exists():
+            return
+        for fpath in sorted(output_dir.iterdir()):
+            if not fpath.is_file() or fpath.name in emitted_artifacts:
+                continue
+            suffix = fpath.suffix.lower()
+            art_type, mime_type = mime_map.get(suffix, ("data", "application/octet-stream"))
+            emitted_artifacts.add(fpath.name)
+            _emit("artifact", {
+                "artifact": {
+                    "filename": fpath.name,
+                    "type": art_type,
+                    "mime_type": mime_type,
+                    "size_bytes": fpath.stat().st_size,
+                    "local_path": str(fpath),
+                    "turn": turn,
+                }
+            }, turn=turn)
+
+    action_space = AgentActionSpace(driver_agent.name)
+    action_space.set_possible_actions(_extract_possible_actions(driver_agent))
+    action_init_msg = action_space.to_message()
+    history.append({"role": "system", "content": action_init_msg})
+
+    current_agent = driver_agent
+    turns_completed = 0
+    consecutive_failures = 0
+    consecutive_no_action = 0
+
+    def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
+        """Wait for one interactive message; return false if the session stops."""
+        _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
+        if logger:
+            logger.info("Waiting for user input | turn: %s", turn)
+        if user_input_queue is None:
+            return False
+
+        while True:
+            if stop_flag.is_set():
+                if logger:
+                    logger.info("Session stopped while waiting for user input")
+                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                return False
+            try:
+                user_msg = user_input_queue.get(timeout=1.0)
+                if logger:
+                    logger.info("User message received | turn: %s | length: %s chars", turn, len(user_msg))
+                history.append({"role": "user", "content": user_msg})
+                next_turn = turns_completed + 1
+                _emit("message_complete", {
+                    "message": {
+                        "id": f"msg_{session_id}_user_{next_turn}",
+                        "turn": next_turn,
+                        "role": "user",
+                        "agent_name": "",
+                        "content": user_msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                }, turn=next_turn)
+                return True
+            except queue.Empty:
+                continue
+
+    try:
+        while True:
+            if stop_flag.is_set():
+                if logger:
+                    logger.info("Session stopped (user requested)")
+                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                return
+
+            if is_auto and turns_completed >= max_turns:
+                if logger:
+                    logger.info("Session stopped — max turns reached (%s)", max_turns)
+                _emit("status_change", {"status": "stopped", "reason": f"max turns reached ({max_turns})"})
+                return
+
+            turn = turns_completed + 1
+            _emit("status_change", {
+                "status": "running",
+                "reason": f"turn {turn} — {current_agent.name}",
+            }, turn=turn)
+
+            # --- Build cleaned context ---
+            cleaned_context = []
+            for msg in history:
+                m = msg.copy()
+                if isinstance(m.get("content"), str):
+                    m["content"] = m["content"].rstrip()
+                cleaned_context.append(m)
+
+            if logger:
+                logger.info(
+                    "Turn %s | agent: %s | messages_in_context: %s",
+                    turn,
+                    current_agent.name,
+                    len(cleaned_context),
+                )
+
+            # A user turn issues exactly one provider request. A failed stream
+            # is surfaced instead of silently replaying the prompt.
+            try:
+                if logger:
+                    logger.info("LLM request | turn: %s | model: %s", turn, model_name)
+                llm_started = time.monotonic()
+                first_token_at: Optional[float] = None
+                full_msg = ""
+                token_chars = 0
+                for token in _stream_tokens(llm_client, model_name, cleaned_context):
+                    if stop_flag.is_set() or cancel_response_flag.is_set():
+                        break
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if logger:
+                            logger.info(
+                                "First token received | turn: %s | latency: %sms",
+                                turn,
+                                int((first_token_at - llm_started) * 1000),
+                            )
+                    full_msg += token
+                    token_chars += len(token)
+                    _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
+                msg = full_msg
+                if logger:
+                    logger.info(
+                        "LLM response complete | turn: %s | duration: %sms | ~%s chars",
+                        turn,
+                        int((time.monotonic() - llm_started) * 1000),
+                        token_chars,
+                    )
+            except Exception as exc:
+                if logger:
+                    logger.error("LLM error | turn: %s | %s", turn, exc, exc_info=True)
+                _emit("error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True})
+                _emit("status_change", {"status": "error", "reason": str(exc)})
+                return
+
+            if stop_flag.is_set():
+                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                return
+
+            if cancel_response_flag.is_set() and not is_auto:
+                cancel_response_flag.clear()
+                if logger:
+                    logger.info("Response cancelled | turn: %s", turn)
+                if not _wait_for_user(turn, "response_cancelled"):
+                    return
+                continue
+
+            history.append({"role": "assistant", "content": msg})
+            turns_completed += 1
+
+            _emit("message_complete", {
+                "message": {
+                    "id": f"msg_{session_id}_{turn}",
+                    "turn": turn,
+                    "role": "assistant",
+                    "agent_name": current_agent.name,
+                    "content": msg,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            }, turn=turn)
+
+            # --- End session detection ---
+            has_delegation = detect_delegation(msg) is not None
+            if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
+                if is_auto:
+                    if logger:
+                        logger.info("Session finished — agent signalled end | turn: %s", turn)
+                    _emit("status_change", {"status": "stopped", "reason": "agent_finished"})
+                    return
+                else:
+                    if logger:
+                        logger.info("Agent requested session end | turn: %s", turn)
+                    _emit("status_change", {"status": "stopped", "reason": "agent_requested_end"})
+                    return
+
+            _action_fired = False
+            _delegated = False
+
+            # --- RAG ---
+            query_str = detect_rag(msg)
+            if query_str and current_agent.is_rag_enabled:
+                _action_fired = True
+                try:
+                    rag_client = get_rag_client(console)
+                    docs = rag_client.query(query_str)
+                    if docs:
+                        history.append({"role": "system", "content": docs})
+                except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
+                    err = (
+                        f"[SYSTEM] RAG query for '{query_str}' failed: {rag_exc}. "
+                        f"Proceed without retrieved context."
+                    )
+                    history.append({"role": "system", "content": err})
+                    _emit("error", {
+                        "code": "RAG_ERROR",
+                        "message": str(rag_exc),
+                        "fatal": False,
+                    }, turn=turn)
+
+            # --- Delegation ---
+            cmd = detect_delegation(msg)
+            if cmd and cmd in current_agent.commands:
+                _action_fired = True
+                target_name = current_agent.commands[cmd].target_agent
+                new_agent = agent_system.get_agent(target_name)
+                if new_agent:
+                    if logger:
+                        logger.info(
+                            "Agent switch: %s -> %s | command: %s | turn: %s",
+                            current_agent.name,
+                            target_name,
+                            cmd,
+                            turn,
+                        )
+                    _emit("agent_switch", {
+                        "from_agent": current_agent.name,
+                        "to_agent": target_name,
+                        "command": cmd,
+                        "reason": None,
+                    }, turn=turn)
+                    history.append({
+                        "role": "assistant",
+                        "content": f"Routing to **{target_name}** (command `{cmd}`)"
+                    })
+                    _apply_agent_switch(
+                        new_agent_prompt=new_agent.get_full_prompt(None),
+                        analysis_context=analysis_context,
+                        history=history,
+                        memory_manager=None,
+                        action_space=action_space,
+                        new_agent=new_agent,
+                    )
+                    current_agent = new_agent
+                    _delegated = True
+
+            # --- Code execution ---
+            code_blocks = extract_python_code_blocks(msg)
+            if code_blocks:
+                _action_fired = True
+                for idx, code in enumerate(code_blocks, start=1):
+                    if stop_flag.is_set() or cancel_response_flag.is_set():
+                        break
+
+                    if logger:
+                        logger.info(
+                            "Code block %s/%s -> sandbox | turn: %s | lines: %s",
+                            idx,
+                            len(code_blocks),
+                            turn,
+                            code.count("\n") + 1,
+                        )
+
+                    _emit("code_submitted", {
+                        "agent_name": current_agent.name,
+                        "source": code,
+                        "block_index": idx,
+                        "total_blocks": len(code_blocks),
+                    }, turn=turn)
+
+                    t0 = time.time()
+                    exec_result = sandbox_manager.exec_code(code, timeout=600)
+                    duration_ms = int((time.time() - t0) * 1000)
+
+                    success = exec_result.get("status") == "ok"
+                    consecutive_failures = 0 if success else consecutive_failures + 1
+                    if logger:
+                        logger.info(
+                            "Code block %s/%s <- sandbox | turn: %s | duration: %sms | success: %s",
+                            idx,
+                            len(code_blocks),
+                            turn,
+                            duration_ms,
+                            success,
+                        )
+
+                    _emit("code_result", {
+                        "agent_name": current_agent.name,
+                        "stdout": exec_result.get("stdout", ""),
+                        "stderr": exec_result.get("stderr", ""),
+                        "success": success,
+                        "duration_ms": duration_ms,
+                        "block_index": idx,
+                    }, turn=turn)
+
+                    _scan_new_artifacts(turn)
+
+                    feedback = format_execute_response(exec_result, output_dir)
+                    action_space.add_action(
+                        "code_execution",
+                        f"Ran code block {idx}/{len(code_blocks)}:\n{_code_preview(code)}",
+                        status=exec_result.get("status"),
+                    )
+                    history.append({"role": "system", "content": action_space.to_message()})
+                    history.append({"role": "assistant", "content": feedback})
+
+            if cancel_response_flag.is_set() and not is_auto:
+                cancel_response_flag.clear()
+                if logger:
+                    logger.info("Response cancelled after action | turn: %s", turn)
+                if not _wait_for_user(turn, "response_cancelled"):
+                    return
+                continue
+
+            if _delegated and is_auto:
+                consecutive_no_action = 0
+                continue
+
+            # Track / escalate stuck-loop conditions in auto mode.
+            if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
+                _emit("status_change", {
+                    "status": "stopped",
+                    "reason": f"stuck: {consecutive_failures} consecutive code failures",
+                }, turn=turn)
+                return
+
+            if is_auto and not _action_fired:
+                consecutive_no_action += 1
+                if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
+                    _emit("status_change", {
+                        "status": "stopped",
+                        "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
+                    }, turn=turn)
+                    return
+                no_action_msg = (
+                    "[SYSTEM] No action was recognised in your last message. "
+                    "Please write executable Python code in a ```python ... ``` block "
+                    "or issue a delegation command. "
+                    f"(Attempt {consecutive_no_action}/{MAX_CONSECUTIVE_NO_ACTION}; "
+                    "the run will halt after that.)"
+                )
+                history.append({"role": "system", "content": no_action_msg})
+            elif _action_fired:
+                consecutive_no_action = 0
+
+            if is_auto:
+                history.append({"role": "user", "content": "Please continue with the next step."})
+                continue
+
+            # --- Interactive: wait for next user message ---
+            if not _wait_for_user(turn):
+                return
+
+    except Exception as exc:
+        if logger:
+            logger.error("Runner error: %s", exc, exc_info=True)
+        _emit("error", {
+            "code": "RUNNER_ERROR",
+            "message": str(exc),
+            "traceback": traceback.format_exc(limit=8),
+            "fatal": True,
+        })
+        _emit("status_change", {"status": "error", "reason": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Async wrapper
+# ---------------------------------------------------------------------------
+
+async def run_session_async(
+    *,
+    session_id: str,
+    agent_system,
+    driver_agent,
+    analysis_context: str,
+    llm_client,
+    sandbox_manager,
+    history: List[Dict],
+    is_auto: bool,
+    max_turns: int,
+    model_name: str,
+    output_dir: Path,
+    event_callback: Callable[[Dict], None],
+    stop_flag: threading.Event,
+    cancel_response_flag: Optional[threading.Event] = None,
+    user_input_queue: Optional[queue.Queue] = None,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Runs run_session_sync in a thread so it doesn't block the event loop.
+    event_callback is called from the background thread — use
+    loop.call_soon_threadsafe() internally if needed.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _emit(event: Dict) -> None:
+        loop.call_soon_threadsafe(event_callback, event)
+
+    await asyncio.to_thread(
+        run_session_sync,
+        session_id=session_id,
+        agent_system=agent_system,
+        driver_agent=driver_agent,
+        analysis_context=analysis_context,
+        llm_client=llm_client,
+        sandbox_manager=sandbox_manager,
+        history=history,
+        is_auto=is_auto,
+        max_turns=max_turns,
+        model_name=model_name,
+        output_dir=output_dir,
+        emit=_emit,
+        stop_flag=stop_flag,
+        cancel_response_flag=cancel_response_flag,
+        user_input_queue=user_input_queue,
+        logger=logger,
+    )

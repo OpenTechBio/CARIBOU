@@ -1,0 +1,182 @@
+.bubble {
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  max-width: 100%;
+  min-width: 0;       /* prevents flex children from blowing past parent */
+  overflow: hidden;   /* clip anything that escapes the border-radius */
+
+  &.user {
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-left: 3px solid var(--cividis-blue);
+  }
+
+  &.assistant {
+    background: var(--primary-bg);
+    border: 1px solid #E8E0C0;
+    border-left: 3px solid var(--cividis-warm);
+  }
+
+  &.streaming {
+    border-left-color: var(--cividis-warm);
+    background: var(--primary-bg);
+  }
+}
+
+.bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.72rem;
+}
+
+.role-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+
+  .user &      { color: var(--cividis-blue); }
+  .assistant & { color: var(--cividis-olive); }
+}
+
+.timestamp {
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.streaming-cursor {
+  animation: blink 0.7s step-end infinite;
+  color: var(--cividis-warm);
+  font-weight: 700;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* ── Markdown body ── */
+.md-body {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--text);
+  /* Prose: wrap long words/URLs rather than overflow */
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+
+  // Streaming plain text (no markdown rendered yet)
+  &.streaming-text {
+    white-space: pre-wrap;
+    font-family: inherit;
+  }
+
+  p  { margin: 0 0 0.6em; &:last-child { margin-bottom: 0; } }
+  ul, ol { margin: 0.3em 0 0.6em 1.4em; padding: 0; }
+  li { margin-bottom: 0.2em; }
+
+  h1, h2, h3, h4 {
+    color: var(--cividis-navy);
+    font-weight: 700;
+    margin: 0.8em 0 0.3em;
+    line-height: 1.3;
+  }
+  h1 { font-size: 1.1em; }
+  h2 { font-size: 1.0em; }
+  h3 { font-size: 0.95em; }
+
+  strong { font-weight: 700; color: var(--cividis-navy); }
+  em     { font-style: italic; }
+
+  a { color: var(--cividis-blue); text-decoration: underline; }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0.75em 0;
+  }
+
+  blockquote {
+    border-left: 3px solid var(--cividis-olive);
+    margin: 0.5em 0;
+    padding: 0.3em 0.75em;
+    color: var(--text-muted);
+    background: var(--surface);
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* Inline code */
+  .md-inline-code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.82em;
+    background: var(--surface-2);
+    border: 1px solid var(--border-light);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    color: var(--cividis-navy);
+  }
+
+  /* Fenced code block */
+  .md-code-block {
+    margin: 0.6em 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #1a1e2e;
+
+    .md-code-lang {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #7a8ab0;
+      padding: 0.3rem 0.75rem;
+      border-bottom: 1px solid #2a3050;
+      background: #141828;
+    }
+
+    pre {
+      margin: 0;
+      padding: 0.75rem;
+      /* Code blocks scroll horizontally — never wrap */
+      overflow-x: auto;
+      overflow-y: visible;
+      background: transparent;
+      /* Custom scrollbar to match dark code background */
+      &::-webkit-scrollbar       { height: 5px; }
+      &::-webkit-scrollbar-track { background: #141828; }
+      &::-webkit-scrollbar-thumb { background: #3a4060; border-radius: 3px; }
+    }
+
+    code {
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 0.8rem;
+      line-height: 1.55;
+      background: transparent;
+      /* Keep code on one logical line — scrolling handles overflow */
+      white-space: pre;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+  }
+}
+
+/* ── Highlight.js token colours (cividis-inspired dark code theme) ── */
+.hljs            { color: #d4cdb8; }
+.hljs-keyword,
+.hljs-selector-tag  { color: #BFF1F5; font-weight: 600; }
+.hljs-string,
+.hljs-attr          { color: #A1D88A; }
+.hljs-number,
+.hljs-literal       { color: #F0D060; }
+.hljs-comment       { color: #6a7080; font-style: italic; }
+.hljs-function,
+.hljs-title         { color: #92c4e8; }
+.hljs-built_in,
+.hljs-class .hljs-title { color: #c8a0e0; }
+.hljs-variable,
+.hljs-params        { color: #d4cdb8; }
+.hljs-type          { color: #e0b888; }
+.hljs-operator,
+.hljs-punctuation   { color: #8899aa; }

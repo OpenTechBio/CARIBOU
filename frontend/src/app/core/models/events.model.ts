@@ -1,0 +1,80 @@
+import { Artifact, Message } from './session.model';
+
+export interface AgentEventEnvelope<T = unknown> {
+  type: AgentEventType;
+  session_id: string;
+  turn: number;
+  timestamp: string;
+  data: T;
+}
+
+export type AgentEventType =
+  | 'token'
+  | 'message_complete'
+  | 'agent_switch'
+  | 'code_submitted'
+  | 'code_result'
+  | 'artifact'
+  | 'status_change'
+  | 'metrics_result'
+  | 'error'
+  | 'pong';
+
+export interface TokenEventData {
+  agent_name: string;
+  token: string;
+}
+
+export interface MessageCompleteData {
+  message: Message;
+}
+
+export interface AgentSwitchData {
+  from_agent: string;
+  to_agent: string;
+  command: string;
+  reason: string | null;
+}
+
+export interface CodeSubmittedData {
+  agent_name: string;
+  source: string;
+  block_index: number;
+  total_blocks: number;
+}
+
+export interface CodeResultData {
+  agent_name: string;
+  stdout: string;
+  stderr: string;
+  success: boolean;
+  duration_ms: number;
+  block_index: number;
+}
+
+export interface ArtifactEventData {
+  artifact: Artifact & { local_path: string };
+}
+
+export interface StatusChangeData {
+  status: string;
+  reason: string | null;
+}
+
+export interface ErrorData {
+  code: string;
+  message: string;
+  fatal: boolean;
+  suggested_fix?: string | null;
+}
+
+export type AgentEvent =
+  | AgentEventEnvelope<TokenEventData>
+  | AgentEventEnvelope<MessageCompleteData>
+  | AgentEventEnvelope<AgentSwitchData>
+  | AgentEventEnvelope<CodeSubmittedData>
+  | AgentEventEnvelope<CodeResultData>
+  | AgentEventEnvelope<ArtifactEventData>
+  | AgentEventEnvelope<StatusChangeData>
+  | AgentEventEnvelope<ErrorData>
+  | AgentEventEnvelope<{}>;

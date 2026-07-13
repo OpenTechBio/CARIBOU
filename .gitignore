@@ -1,3 +1,4 @@
+notes/
 .env
 __pycache__/
 .DS_store
@@ -11,6 +12,7 @@ bin/
 benchmarking/datasets/*.h5ad
 dev/
 */dist/
+caribou/src/caribou/frontend/
 *.log
 benchmarking/auto_runs/*
 benchmarking/metadata_benchmarks/benchmark_data/
@@ -33,3 +35,4 @@ benchmarking/celltyping_benchmarks/clean_plots/tsp_large_intestine/
 *.note
 manuscript/
 .codex
+.dev/CARIBOU_manuscript_revised.docx

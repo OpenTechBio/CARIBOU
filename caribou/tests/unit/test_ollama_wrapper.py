@@ -217,6 +217,71 @@ class TestOllamaClientResponseParsing:
         assert response.choices[0].message.role == "assistant"
 
 
+class TestOllamaClientStreaming:
+    """Test streaming chat behavior."""
+
+    @patch("caribou.core.ollama_wrapper.requests.post")
+    def test_stream_chat_yields_message_chunks(self, mock_post):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            '{"message": {"role": "assistant", "content": "Hel"}}',
+            '{"message": {"role": "assistant", "content": "lo"}}',
+            '{"done": true}',
+        ]
+        mock_response.__enter__ = Mock(return_value=mock_response)
+        mock_response.__exit__ = Mock(return_value=None)
+        mock_post.return_value = mock_response
+
+        client = OllamaClient(host="http://localhost:11434", model="llama3")
+        chunks = list(client.stream_chat(messages=[{"role": "user", "content": "Hi"}]))
+
+        assert chunks == ["Hel", "lo"]
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "http://localhost:11434/api/chat"
+        assert call_args[1]["json"]["model"] == "llama3"
+        assert call_args[1]["json"]["stream"] is True
+        assert call_args[1]["stream"] is True
+        assert call_args[1]["timeout"] == 300
+
+    @patch("caribou.core.ollama_wrapper.requests.post")
+    def test_stream_chat_uses_requested_model_and_temperature(self, mock_post):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = ['{"done": true}']
+        mock_response.__enter__ = Mock(return_value=mock_response)
+        mock_response.__exit__ = Mock(return_value=None)
+        mock_post.return_value = mock_response
+
+        client = OllamaClient(model="llama3")
+        list(client.stream_chat(
+            model="mistral",
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.4,
+        ))
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["model"] == "mistral"
+        assert payload["options"]["temperature"] == 0.4
+
+    @patch("caribou.core.ollama_wrapper.requests.post")
+    def test_stream_chat_skips_blank_lines_and_empty_content(self, mock_post):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            "",
+            '{"message": {"role": "assistant", "content": ""}}',
+            '{"message": {"role": "assistant", "content": "done"}}',
+            '{"done": true}',
+        ]
+        mock_response.__enter__ = Mock(return_value=mock_response)
+        mock_response.__exit__ = Mock(return_value=None)
+        mock_post.return_value = mock_response
+
+        client = OllamaClient()
+
+        assert list(client.stream_chat(messages=[{"role": "user", "content": "Hi"}])) == ["done"]
+
 class TestOllamaClientErrorHandling:
     """Test error handling scenarios."""
 
