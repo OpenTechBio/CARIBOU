@@ -14,6 +14,11 @@ from types import SimpleNamespace
 from typing import List, Dict, Any
 import json
 
+# Non-streaming chats can be slow with large local models; keep the ceiling
+# high but bounded so a stuck request never wedges the runner forever.
+_CHAT_TIMEOUT_SECONDS = 300
+_STREAM_CONNECT_TIMEOUT_SECONDS = 30
+
 class OllamaClient:
     """
     Example:
@@ -48,7 +53,7 @@ class OllamaClient:
             if temperature is not None:
                 payload["options"] = {"temperature": temperature}
 
-            r = requests.post(f"{self._host}/api/chat", json=payload, timeout=300)
+            r = requests.post(f"{self._host}/api/chat", json=payload, timeout=_CHAT_TIMEOUT_SECONDS)
             r.raise_for_status()
 
             # ND-JSON → take the line that has the message
@@ -63,3 +68,38 @@ class OllamaClient:
             message = SimpleNamespace(content=content, role="assistant")
             choice  = SimpleNamespace(message=message, index=0, finish_reason="stop")
             return SimpleNamespace(choices=[choice])
+
+    def stream_chat(
+            self,
+            *,
+            model: str | None = None,
+            messages: List[Dict[str, str]],
+            temperature: float | None = None,
+            **kwargs: Any,
+        ):
+            payload = {
+                "model": model or self._default_model,
+                "messages": messages,
+                "stream": True,
+            }
+            if temperature is not None:
+                payload["options"] = {"temperature": temperature}
+
+            with requests.post(
+                f"{self._host}/api/chat",
+                json=payload,
+                timeout=(_STREAM_CONNECT_TIMEOUT_SECONDS, _CHAT_TIMEOUT_SECONDS),
+                stream=True,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    message = obj.get("message")
+                    if isinstance(message, dict):
+                        content = message.get("content")
+                        if content:
+                            yield content
+                    if obj.get("done"):
+                        break

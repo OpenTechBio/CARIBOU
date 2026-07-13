@@ -1,0 +1,165 @@
+<div class="settings-page">
+  <header class="settings-header">
+    <button class="btn btn-ghost btn-sm" (click)="goBack()" aria-label="Back">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </button>
+    <h1>Settings</h1>
+  </header>
+
+  @if (loading()) {
+    <p class="loading">Loading…</p>
+  }
+
+  @if (settings(); as s) {
+    <div class="settings-body">
+
+      <!-- Storage paths -->
+      <section class="card">
+        <h2>Storage</h2>
+        <p class="section-desc">
+          All session data is saved to disk so it survives server restarts.
+          Artifacts (plots, .h5ad outputs) live in <code>sessions_dir/&lt;id&gt;/outputs/</code>.
+        </p>
+
+        <div class="field">
+          <label>CARIBOU home</label>
+          <div class="path-display">
+            <code>{{ s.caribou_home }}</code>
+            <span class="path-note">Set via <code>$CARIBOU_HOME</code> or platform default</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Sessions directory <span class="editable-tag">editable</span></label>
+          <div class="path-edit">
+            <input
+              type="text"
+              [value]="sessionsDir()"
+              (input)="sessionsDir.set($any($event.target).value)"
+              placeholder="Absolute path on HPC" />
+          </div>
+          <span class="path-note">
+            Currently <strong>{{ s.sessions_dir }}</strong> —
+            {{ s.sessions_dir === sessionsDir() ? 'unchanged' : 'will be updated on save' }}
+          </span>
+        </div>
+
+        <div class="field">
+          <label>Uploads directory</label>
+          <div class="path-display"><code>{{ s.uploads_dir }}</code></div>
+        </div>
+
+        <div class="field">
+          <label>Secrets file</label>
+          <div class="path-display">
+            <code>{{ s.env_file }}</code>
+            <span class="path-note">API keys are stored here in plain text — keep this file private</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- API keys -->
+      <section class="card">
+        <h2>API Keys</h2>
+        <p class="section-desc">
+          Leave a key field blank to keep the existing value. Keys are saved to
+          <code>{{ s.env_file }}</code> and loaded each time a session starts.
+        </p>
+
+        @for (entry of [
+          { id: 'openai',    label: 'OpenAI',    env: 'OPENAI_API_KEY',    sig: openaiKey    },
+          { id: 'anthropic', label: 'Anthropic', env: 'ANTHROPIC_API_KEY', sig: anthropicKey },
+          { id: 'deepseek',  label: 'DeepSeek',  env: 'DEEPSEEK_API_KEY',  sig: deepseekKey  }
+        ]; track entry.id) {
+          <div class="field">
+            <label>{{ entry.label }} <code class="env-name">{{ entry.env }}</code></label>
+            <div class="key-row">
+              <div class="current-key">
+                <span class="key-mask">{{ s.api_keys[entry.env] || '(not set)' }}</span>
+              </div>
+              <input
+                [type]="showKeys[entry.id] ? 'text' : 'password'"
+                [value]="entry.sig()"
+                (input)="entry.sig.set($any($event.target).value)"
+                placeholder="Enter new key to replace…"
+                autocomplete="off" />
+              <button class="btn btn-ghost btn-xs show-btn"
+                (click)="showKeys[entry.id] = !showKeys[entry.id]">
+                {{ showKeys[entry.id] ? 'Hide' : 'Show' }}
+              </button>
+            </div>
+          </div>
+        }
+      </section>
+
+      <!-- Ollama -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2>Ollama</h2>
+          <button class="btn btn-ghost btn-xs" (click)="refreshOllamaModels()" [disabled]="loadingOllama()">
+            {{ loadingOllama() ? 'Checking…' : 'Refresh' }}
+          </button>
+        </div>
+        <p class="section-desc">
+          CARIBOU queries downloaded Ollama models from the server configured here.
+          If Ollama is not running, CARIBOU will try to start it when an Ollama session is created.
+        </p>
+
+        <div class="field">
+          <label>Host <span class="editable-tag">editable</span></label>
+          <div class="path-edit">
+            <input
+              type="text"
+              [value]="ollamaHost()"
+              (input)="ollamaHost.set($any($event.target).value)"
+              placeholder="http://localhost:11434" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Default model <span class="editable-tag">editable</span></label>
+          @if (ollamaModels()?.models?.length) {
+            <select class="model-select" [value]="ollamaModel()" (change)="ollamaModel.set($any($event.target).value)">
+              @for (model of ollamaModels()!.models; track model) {
+                <option [value]="model">{{ model }}</option>
+              }
+            </select>
+          } @else {
+            <input
+              class="model-input"
+              type="text"
+              [value]="ollamaModel()"
+              (input)="ollamaModel.set($any($event.target).value)"
+              placeholder="llama3" />
+          }
+        </div>
+
+        @if (ollamaModels(); as o) {
+          <div class="ollama-status" [class.ok]="o.status === 'ready'" [class.warn]="o.status !== 'ready'">
+            <strong>{{ o.status }}</strong>
+            <span>{{ o.message }}</span>
+            @if (o.suggested_fix) {
+              <code>{{ o.suggested_fix }}</code>
+            }
+          </div>
+        }
+      </section>
+
+      <!-- Save -->
+      @if (saveResult(); as r) {
+        <div class="save-result" [class.ok]="r.ok" [class.err]="!r.ok">
+          {{ r.message }}
+        </div>
+      }
+
+      <div class="save-row">
+        <button class="btn btn-primary" (click)="save()" [disabled]="saving()">
+          {{ saving() ? 'Saving…' : 'Save changes' }}
+        </button>
+        <span class="save-note">Changes take effect for new sessions immediately.</span>
+      </div>
+
+    </div>
+  }
+</div>

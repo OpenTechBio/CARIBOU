@@ -1,0 +1,222 @@
+<div class="cs-page">
+
+  <!-- Header -->
+  <header class="cs-header">
+    <a class="btn btn-ghost btn-sm" routerLink="/" aria-label="Back to dashboard">
+      <app-icon name="arrow-left" />
+      <span>Back</span>
+    </a>
+    <div class="cs-header-title">
+      <span class="cs-title">Code Samples</span>
+      <span class="cs-subtitle">Python utilities available to blueprint agents</span>
+    </div>
+    <button class="btn btn-primary" (click)="openNewDialog()">+ New Sample</button>
+  </header>
+
+  <!-- Body -->
+  <div class="cs-body">
+
+    <!-- Sidebar -->
+    <aside class="cs-sidebar">
+
+      @if (builtinSamples.length > 0) {
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Built-in</div>
+          @for (s of builtinSamples; track s.filename) {
+            <button
+              class="sidebar-item"
+              [class.active]="selected()?.filename === s.filename"
+              (click)="selectSample(s.filename)">
+              <div class="sidebar-item-icon pkg-icon">PY</div>
+              <div class="sidebar-item-body">
+                <span class="sidebar-item-name">{{ s.filename }}</span>
+                <span class="sidebar-item-meta">{{ formatSize(s.size_bytes) }} · read-only</span>
+              </div>
+            </button>
+          }
+        </div>
+      }
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">My Samples</div>
+        @if (userSamples.length === 0) {
+          <div class="sidebar-empty">No user samples yet.</div>
+        }
+        @for (s of userSamples; track s.filename) {
+          <button
+            class="sidebar-item"
+            [class.active]="selected()?.filename === s.filename"
+            (click)="selectSample(s.filename)">
+            <div class="sidebar-item-icon user-icon">PY</div>
+            <div class="sidebar-item-body">
+              <span class="sidebar-item-name">{{ s.filename }}</span>
+              <span class="sidebar-item-meta">{{ formatSize(s.size_bytes) }}</span>
+            </div>
+          </button>
+        }
+      </div>
+
+      <!-- Import from path -->
+      <div class="sidebar-import">
+        <div class="sidebar-group-label">Import from path</div>
+        <div class="import-row">
+          <input
+            class="form-input import-input"
+            type="text"
+            placeholder="/abs/path/to/script.py"
+            [ngModel]="importPath()"
+            (ngModelChange)="importPath.set($event); importError.set(null)" />
+          <button
+            class="btn btn-ghost btn-sm"
+            (click)="importSample()"
+            [disabled]="importing() || !importPath().trim()">
+            {{ importing() ? '…' : 'Import' }}
+          </button>
+        </div>
+        @if (importError()) {
+          <p class="import-error">{{ importError() }}</p>
+        }
+      </div>
+
+    </aside>
+
+    <!-- Editor area -->
+    <main class="cs-main">
+
+      @if (!selected() && !loading()) {
+        <div class="cs-welcome">
+          <div class="welcome-icon">🐍</div>
+          <h2>Code Sample Library</h2>
+          <p>Select a file from the sidebar to view or edit it, or create a new sample.</p>
+        </div>
+      }
+
+      @if (loading()) {
+        <div class="cs-welcome">
+          <p>Loading…</p>
+        </div>
+      }
+
+      @if (selected(); as sel) {
+
+        <!-- Read-only banner for built-ins -->
+        @if (sel.is_builtin) {
+          <div class="readonly-banner">
+            <div class="readonly-banner-text">
+              <strong>Built-in — read only</strong>
+              This file is part of the CARIBOU package. Clone it to create an editable copy.
+            </div>
+            <button class="btn btn-ghost btn-sm" (click)="openCloneDialog()">Clone to Edit</button>
+          </div>
+        }
+
+        <!-- Editor header -->
+        <div class="cs-editor-header">
+          <span class="cs-filename">{{ sel.filename }}</span>
+          @if (!sel.is_builtin) {
+            <div class="editor-actions">
+              @if (saveResult(); as r) {
+                <span class="save-feedback" [class.ok]="r.ok" [class.err]="!r.ok">{{ r.message }}</span>
+              }
+              <button
+                class="btn btn-danger btn-sm"
+                (click)="requestDelete()"
+                [disabled]="deleting()">
+                {{ deleting() ? 'Deleting…' : 'Delete' }}
+              </button>
+              <button
+                class="btn btn-primary btn-sm"
+                (click)="save()"
+                [disabled]="saving() || !isDirty()">
+                {{ saving() ? 'Saving…' : 'Save' }}
+              </button>
+            </div>
+          }
+        </div>
+
+        <!-- Rich code editor -->
+        <div class="cs-editor-wrap">
+          <app-code-editor
+            [value]="editorContent()"
+            (valueChange)="onContentChange($event)"
+            language="python"
+            [readonly]="sel.is_builtin"
+            [ariaLabel]="'Editing ' + sel.filename"
+          />
+        </div>
+
+      }
+
+    </main>
+  </div>
+</div>
+
+<!-- New sample dialog -->
+@if (showNewDialog()) {
+  <div class="overlay" (click)="cancelNewDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h2>New Code Sample</h2>
+      <div class="form-grid">
+        <label>Filename</label>
+        <input
+          class="form-input"
+          type="text"
+          [(ngModel)]="newFilename"
+          placeholder="my_analysis.py"
+          (keydown.enter)="submitNew()" />
+        @if (newFilenameError()) {
+          <div class="error-banner">{{ newFilenameError() }}</div>
+        }
+      </div>
+      <p class="dialog-hint">The <code>.py</code> extension will be added automatically if omitted.</p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelNewDialog()">Cancel</button>
+        <button class="btn btn-primary" (click)="submitNew()">Create</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Clone dialog -->
+@if (showCloneDialog()) {
+  <div class="overlay" (click)="cancelCloneDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h2>Clone to Edit</h2>
+      <p class="dialog-sub">Save a copy under a new name in My Samples.</p>
+      <div class="form-grid">
+        <label>New filename</label>
+        <input
+          class="form-input"
+          type="text"
+          [(ngModel)]="cloneFilename"
+          placeholder="my_copy.py"
+          (keydown.enter)="submitClone()" />
+        @if (cloneFilenameError()) {
+          <div class="error-banner">{{ cloneFilenameError() }}</div>
+        }
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelCloneDialog()">Cancel</button>
+        <button class="btn btn-primary" (click)="submitClone()">Clone</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Delete confirm dialog -->
+@if (showDeleteConfirm()) {
+  <div class="overlay" (click)="cancelDelete()">
+    <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
+      <div class="confirm-icon" aria-hidden="true">
+        <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
+      </div>
+      <h3>Delete sample?</h3>
+      <p class="confirm-detail"><code>{{ selected()?.filename }}</code></p>
+      <p class="confirm-warning">This will permanently remove the file. This cannot be undone.</p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelDelete()">Cancel</button>
+        <button class="btn btn-danger" (click)="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+}

@@ -24,6 +24,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_AGENTS_DIR = PACKAGE_ROOT / "agents"
 PACKAGE_DATASETS_DIR = PACKAGE_ROOT / "datasets"
 PACKAGE_AUTO_METRICS_DIR = PACKAGE_ROOT / "auto_metrics"
+PACKAGE_CODE_SAMPLES_DIR = PACKAGE_ROOT / "code_samples"
 
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"

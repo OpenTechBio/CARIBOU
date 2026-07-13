@@ -11,6 +11,7 @@ Use append-only writes for notes to reduce loss if the run stops unexpectedly.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,10 @@ class SessionArtifacts:
         self.notes_ndjson_path = self.base_dir / "notes.ndjson"
         self.todos_json_path = self.base_dir / "todos.json"
 
+        # Serialize concurrent writers (streaming_runner event thread, main
+        # loop, and any tool-invoked callbacks) so notes files aren't
+        # interleaved and todos.json isn't half-written when read.
+        self._lock = threading.Lock()
         self._todos: List[TodoItem] = self._load_todos()
 
     # --- Notes ---
@@ -52,46 +57,50 @@ class SessionArtifacts:
         header = f"## Turn {turn} - {author} @ {timestamp}\n"
         content = text.strip()
 
-        with self.notes_md_path.open("a", encoding="utf-8") as fh:
-            fh.write(header)
-            fh.write(content + "\n\n")
+        with self._lock:
+            with self.notes_md_path.open("a", encoding="utf-8") as fh:
+                fh.write(header)
+                fh.write(content + "\n\n")
 
-        note_record = {
-            "run": self.run_id,
-            "ts": timestamp,
-            "turn": turn,
-            "author": author,
-            "note": content,
-        }
-        with self.notes_ndjson_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(note_record) + "\n")
+            note_record = {
+                "run": self.run_id,
+                "ts": timestamp,
+                "turn": turn,
+                "author": author,
+                "note": content,
+            }
+            with self.notes_ndjson_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(note_record) + "\n")
 
     # --- Todos ---
     def add_todo(self, text: str, author: str, turn: int) -> TodoItem:
-        next_id = (max((t.id for t in self._todos), default=0) + 1)
-        item = TodoItem(
-            id=next_id,
-            text=text.strip(),
-            status="open",
-            added_by=author,
-            turn=turn,
-            created_at=_utc_now(),
-        )
-        self._todos.append(item)
-        self._write_todos()
-        return item
+        with self._lock:
+            next_id = (max((t.id for t in self._todos), default=0) + 1)
+            item = TodoItem(
+                id=next_id,
+                text=text.strip(),
+                status="open",
+                added_by=author,
+                turn=turn,
+                created_at=_utc_now(),
+            )
+            self._todos.append(item)
+            self._write_todos()
+            return item
 
     def complete_todo(self, todo_id: int, status: str = "done") -> Optional[TodoItem]:
-        for t in self._todos:
-            if t.id == todo_id:
-                t.status = status
-                t.completed_at = _utc_now()
-                self._write_todos()
-                return t
+        with self._lock:
+            for t in self._todos:
+                if t.id == todo_id:
+                    t.status = status
+                    t.completed_at = _utc_now()
+                    self._write_todos()
+                    return t
         return None
 
     def list_todos(self) -> List[TodoItem]:
-        return list(self._todos)
+        with self._lock:
+            return list(self._todos)
 
     # --- Internal IO helpers ---
     def _load_todos(self) -> List[TodoItem]:
