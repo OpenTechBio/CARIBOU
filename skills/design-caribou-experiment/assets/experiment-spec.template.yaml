@@ -1,0 +1,74 @@
+schema_version: "caribou-experiment-draft-v1"
+spec:
+  id: "REPLACE_ME"
+  version: 1
+  title: "REPLACE_ME"
+  study_class: "pilot"  # exploratory | pilot | confirmatory
+  owner: "BLOCKED"
+  reviewers:
+    scientific: "BLOCKED"
+    infrastructure: "BLOCKED"
+  question: "REPLACE_ME"
+  hypothesis: "REPLACE_ME"
+  decision_affected: "REPLACE_ME"
+
+software:
+  repository: "REPLACE_ME"
+  commit: "REPLACE_ME"
+  require_clean_worktree: true
+  container_uri: "BLOCKED"
+  container_digest: "BLOCKED"
+
+inputs:
+  datasets: []
+  models: []
+  blueprints: []
+  prompts: []
+  rag_collections: []
+  code_samples: []
+  evaluators: []
+
+design:
+  intended_intervention: "REPLACE_ME"
+  controlled_variables: []
+  conditions: []
+  replication_unit: "independent run"
+  replicates_per_condition: "BLOCKED"
+  primary_endpoint: "REPLACE_ME"
+  secondary_endpoints: []
+  exclusion_rules: []
+  stopping_rules: []
+
+execution:
+  executor: "BLOCKED"  # local | slurm
+  resources:
+    cpus: "BLOCKED"
+    gpus: "BLOCKED"
+    memory: "BLOCKED"
+    wall_time: "BLOCKED"
+    storage: "BLOCKED"
+    concurrency: "BLOCKED"
+  budget:
+    api_calls: "BLOCKED"
+    tokens: "BLOCKED"
+    currency: "BLOCKED"
+  checkpoint_stages: []
+
+evidence:
+  preserve_all_attempts: true
+  required_records:
+    - run_manifest
+    - events
+    - metrics
+    - failures
+    - telemetry
+    - budget
+    - artifacts
+  output_root: "REPLACE_ME"
+
+gates:
+  pilot_acceptance: []
+  full_run_authorization: "BLOCKED"
+  claim_if_positive: "REPLACE_ME"
+  claim_if_equivalent: "REPLACE_ME"
+  claim_if_negative: "REPLACE_ME"
