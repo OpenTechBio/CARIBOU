@@ -66,6 +66,7 @@ class _Session:
     # Notified whenever a new event is appended
     event_condition: asyncio.Condition
     stop_flag: threading.Event
+    cancel_response_flag: threading.Event
     user_input_queue: queue.Queue
     created_at: datetime
     updated_at: datetime
@@ -75,11 +76,10 @@ class _Session:
     agent_system: Any = None
     driver_agent: Any = None
     initial_history: List[Dict] = field(default_factory=list)
-    # Live history — mutated in-place by the runner so we always have the latest state
-    live_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
+    logger: Any = None
 
     def to_response(self) -> SessionResponse:
         return SessionResponse(
