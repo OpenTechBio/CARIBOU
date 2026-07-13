@@ -23,8 +23,7 @@ At its core, CARIBOU allows you to define a team of specialized AI agents in a s
 
 Before installing CARIBOU, you need to have the following installed and configured on your system:
 
-1.  **Python** (version 3.9 or higher)
-2.  **Pip** (Python's package installer)
+1.  **Conda or Miniforge** with Python 3.10 or newer
 3.  **A Sandbox Backend:**
       * **Docker:** Must be installed and the Docker daemon must be running.
       * **Singularity (Apptainer):** Must be installed on your system.
@@ -34,14 +33,24 @@ Coming soon!
 
 ### Install from Source (For Developers)
 
-To install the latest development version, you can clone the repository and install it in editable mode:
+Use one shared Conda control-plane environment. On HPC, place the prefix on the
+designated software filesystem rather than creating a virtual environment in
+each checkout or experiment directory:
 
 ```bash
 git clone https://github.com/OpenTechBio/caribou
-cd caribou/cli/caribou
-pip install -e .
-caribou
+cd caribou
+export CARIBOU_CONDA_PREFIX=/path/on/shared-software/caribou
+export PYTHONNOUSERSITE=1
+conda env update --prefix "$CARIBOU_CONDA_PREFIX" \
+  --file caribou/environment.control-plane.yml
+PYTHONPATH=caribou/src conda run --prefix "$CARIBOU_CONDA_PREFIX" \
+  python -m caribou.cli.main --help
 ```
+
+The control-plane environment is shared by the CLI, web service, and tests.
+Biological code executes in the versioned Docker/Apptainer analysis image; a
+new Conda environment is not created for each run or Slurm job.
 
 -----
 

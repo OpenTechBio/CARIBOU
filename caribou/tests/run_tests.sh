@@ -4,6 +4,7 @@
 # Usage: ./run_tests.sh [options]
 
 set -e  # Exit on error
+export PYTHONNOUSERSITE=1
 
 # Colors for output
 RED='\033[0;31m'
@@ -63,26 +64,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Detect the correct Python and pytest to use
-# Priority: python in current environment > python3 > python
-if command -v python &> /dev/null; then
-    PYTHON_CMD="python"
+# Prefer one shared Conda prefix without requiring shell activation. This avoids
+# accidental per-worktree virtual environments on inode-constrained HPC storage.
+if [[ -n "${CARIBOU_CONDA_PREFIX:-}" ]]; then
+    if ! command -v conda &> /dev/null; then
+        echo -e "${RED}Error: CARIBOU_CONDA_PREFIX is set but conda is unavailable${NC}"
+        exit 1
+    fi
+    PYTHON_CMD=(conda run --no-capture-output --prefix "$CARIBOU_CONDA_PREFIX" python)
+elif command -v python &> /dev/null; then
+    PYTHON_CMD=(python)
 elif command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
+    PYTHON_CMD=(python3)
 else
     echo -e "${RED}Error: No Python interpreter found${NC}"
     exit 1
 fi
 
 # Check if pytest is installed for the current Python
-if ! $PYTHON_CMD -m pytest --version &> /dev/null; then
-    echo -e "${RED}Error: pytest is not installed for $PYTHON_CMD${NC}"
-    echo "Install with: $PYTHON_CMD -m pip install pytest pytest-cov"
+if ! "${PYTHON_CMD[@]}" -m pytest --version &> /dev/null; then
+    echo -e "${RED}Error: pytest is unavailable in the selected Conda environment${NC}"
+    echo "Update it with caribou/environment.control-plane.yml"
     exit 1
 fi
 
-echo "Using Python: $($PYTHON_CMD --version)"
-echo "Using pytest: $($PYTHON_CMD -m pytest --version | head -1)"
+echo "Using Python: $("${PYTHON_CMD[@]}" --version)"
+echo "Using pytest: $("${PYTHON_CMD[@]}" -m pytest --version | head -1)"
 echo ""
 
 # Run tests based on TEST_TYPE
@@ -90,17 +97,17 @@ case $TEST_TYPE in
     unit)
         echo -e "${YELLOW}Running unit tests...${NC}"
         echo ""
-        $PYTHON_CMD -m pytest caribou/tests/unit/ $VERBOSE $COVERAGE
+        "${PYTHON_CMD[@]}" -m pytest caribou/tests/unit/ $VERBOSE $COVERAGE
         ;;
     integration)
         echo -e "${YELLOW}Running integration tests...${NC}"
         echo ""
-        $PYTHON_CMD -m pytest caribou/tests/integration/ $VERBOSE $COVERAGE
+        "${PYTHON_CMD[@]}" -m pytest caribou/tests/integration/ $VERBOSE $COVERAGE
         ;;
     all)
         echo -e "${YELLOW}Running all tests...${NC}"
         echo ""
-        $PYTHON_CMD -m pytest caribou/tests/ $VERBOSE $COVERAGE
+        "${PYTHON_CMD[@]}" -m pytest caribou/tests/ $VERBOSE $COVERAGE
         ;;
 esac
 

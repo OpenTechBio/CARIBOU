@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/migration-report.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "detected_schema_version": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detected Schema Version"
+    },
+    "disposition": {
+      "enum": [
+        "requires_enrichment",
+        "quarantined",
+        "already_canonical"
+      ],
+      "title": "Disposition",
+      "type": "string"
+    },
+    "extracted": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Extracted",
+      "type": "object"
+    },
+    "migration_id": {
+      "pattern": "^migration_[0-9a-f]{32}$",
+      "title": "Migration Id",
+      "type": "string"
+    },
+    "missing_provenance": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Missing Provenance",
+      "type": "array"
+    },
+    "preserved_source_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Preserved Source Hash",
+      "type": "string"
+    },
+    "quarantine_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quarantine Reason"
+    },
+    "schema_version": {
+      "const": "caribou.migration_report.v1",
+      "default": "caribou.migration_report.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_kind": {
+      "enum": [
+        "web_session",
+        "web_event",
+        "artifact",
+        "todo_ledger",
+        "benchmark_ledger"
+      ],
+      "title": "Source Kind",
+      "type": "string"
+    },
+    "source_uri": {
+      "minLength": 1,
+      "title": "Source Uri",
+      "type": "string"
+    },
+    "target_schema_version": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Schema Version"
+    },
+    "warnings": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "migration_id",
+    "source_kind",
+    "source_uri",
+    "preserved_source_hash",
+    "disposition"
+  ],
+  "title": "MigrationReport",
+  "type": "object"
+}

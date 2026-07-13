@@ -2,26 +2,37 @@
 
 ## Installation
 
-1. **Activate your conda environment (if using conda):**
+1. **Create or update one shared Conda control-plane environment:**
 
 ```bash
-conda activate caribou  # or your environment name
+export CARIBOU_CONDA_PREFIX=/path/on/shared-software/caribou
+export PYTHONNOUSERSITE=1
+conda env update --prefix "$CARIBOU_CONDA_PREFIX" \
+  --file caribou/environment.control-plane.yml
 ```
 
-2. **Install test dependencies:**
+Do not create a `venv`, `.venv`, or per-run Conda environment in the repository
+or experiment workspace. On HPC, keep this single prefix and the Conda package
+cache on the designated software filesystem to avoid duplicating small files.
+
+2. **Run through the shared prefix:**
 
 ```bash
-cd /path/to/CARIBOU
-python -m pip install pytest pytest-cov
+CARIBOU_CONDA_PREFIX="$CARIBOU_CONDA_PREFIX" caribou/tests/run_tests.sh
 ```
 
-Or install all requirements:
+Or invoke Python directly without shell activation:
 
 ```bash
-python -m pip install -r requirements.txt
+conda run --no-capture-output --prefix "$CARIBOU_CONDA_PREFIX" \
+  python -m pytest caribou/tests
 ```
 
-**Important:** Make sure pytest is installed in the same Python environment where `anthropic`, `openai`, and other CARIBOU dependencies are installed.
+The host Conda environment is for the CLI, web control plane, and tests. Actual
+analyses remain inside versioned Docker/Apptainer images and run through Slurm;
+Conda is not rebuilt inside each job.
+The test runner sets `PYTHONNOUSERSITE=1` so packages cannot leak in from
+`~/.local` and invalidate the recorded environment identity.
 
 ## Running Tests
 
@@ -44,20 +55,20 @@ From the project root directory:
 
 ```bash
 # Run all tests
-pytest caribou/tests/
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/
 
 # Run specific test categories
-pytest caribou/tests/unit/
-pytest caribou/tests/integration/
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/integration/
 
 # Run specific test file
-pytest caribou/tests/unit/test_message_utils.py
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/test_message_utils.py
 
 # Run with verbose output
-pytest caribou/tests/ -v
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ -v
 
 # Run with coverage
-pytest caribou/tests/ --cov=caribou --cov-report=html
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ --cov=caribou --cov-report=html
 ```
 
 ## What Gets Tested
@@ -90,7 +101,8 @@ pytest caribou/tests/ --cov=caribou --cov-report=html
 Run a quick smoke test:
 
 ```bash
-pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection::test_detect_simple_delegation -v
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest \
+  caribou/tests/unit/test_message_utils.py::TestDelegationDetection::test_detect_simple_delegation -v
 ```
 
 Expected output:
