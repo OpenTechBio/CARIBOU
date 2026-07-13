@@ -17,6 +17,11 @@ class FakeSandbox:
         return True
 
 
+class FakeRunningTask:
+    def done(self):
+        return False
+
+
 def _make_session(session_id: str, output_dir: Path, sandbox=None) -> _Session:
     return _Session(
         id=session_id,
@@ -40,6 +45,7 @@ def _make_session(session_id: str, output_dir: Path, sandbox=None) -> _Session:
         events=[],
         event_condition=asyncio.Condition(),
         stop_flag=Event(),
+        cancel_response_flag=Event(),
         user_input_queue=Queue(),
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
@@ -94,5 +100,59 @@ def test_late_events_after_delete_do_not_recreate_session_file(tmp_path, monkeyp
 
         assert not (tmp_path / "session-b" / "session.json").exists()
         assert session.events == []
+
+    asyncio.run(run_test())
+
+
+def test_stopped_session_rejects_user_messages(tmp_path, monkeypatch):
+    async def run_test():
+        manager = _make_manager(tmp_path, monkeypatch)
+        session = _make_session("session-stopped", tmp_path / "session-stopped" / "outputs")
+        session.status = SessionStatus.stopped
+        manager._sessions[session.id] = session
+
+        accepted = await manager.send_user_message(session.id, "Are you still there?")
+
+        assert accepted is False
+        assert session.user_input_queue.empty()
+
+    asyncio.run(run_test())
+
+
+def test_only_one_user_message_is_accepted_while_waiting(tmp_path, monkeypatch):
+    async def run_test():
+        manager = _make_manager(tmp_path, monkeypatch)
+        session = _make_session("session-interactive", tmp_path / "session-interactive" / "outputs")
+        session.config = session.config.model_copy(update={"mode": "interactive"})
+        session.runner_task = FakeRunningTask()
+        manager._sessions[session.id] = session
+
+        first = await manager.send_user_message(session.id, "First")
+        second = await manager.send_user_message(session.id, "Second")
+
+        assert first is True
+        assert second is False
+        assert session.status == SessionStatus.running
+        assert session.user_input_queue.get_nowait() == "First"
+        assert session.user_input_queue.empty()
+
+    asyncio.run(run_test())
+
+
+def test_cancel_response_keeps_interactive_session_alive(tmp_path, monkeypatch):
+    async def run_test():
+        manager = _make_manager(tmp_path, monkeypatch)
+        session = _make_session("session-running", tmp_path / "session-running" / "outputs")
+        session.config = session.config.model_copy(update={"mode": "interactive"})
+        session.status = SessionStatus.running
+        session.runner_task = FakeRunningTask()
+        manager._sessions[session.id] = session
+
+        accepted = await manager.cancel_response(session.id)
+
+        assert accepted is True
+        assert session.cancel_response_flag.is_set()
+        assert not session.stop_flag.is_set()
+        assert session.status == SessionStatus.running
 
     asyncio.run(run_test())

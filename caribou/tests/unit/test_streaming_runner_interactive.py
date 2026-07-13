@@ -3,9 +3,10 @@ import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from caribou.server.streaming_runner import (
     _stream_tokens,
-    _stream_tokens_with_fallback,
     run_session_sync,
 )
 
@@ -94,26 +95,25 @@ def test_stream_tokens_accepts_non_streaming_openai_compatible_response():
     assert list(_stream_tokens(llm, "llama3", [{"role": "user", "content": "load"}])) == ["loaded"]
 
 
-def test_stream_tokens_with_fallback_retries_non_streaming_before_any_tokens():
+def test_stream_failure_does_not_issue_a_second_provider_request():
     llm = FakeFailingStreamingLLM()
 
-    assert list(_stream_tokens_with_fallback(llm, "deepseek-chat", [{"role": "user", "content": "hi"}])) == [
-        "fallback response"
-    ]
+    with pytest.raises(RuntimeError, match="incomplete chunked read"):
+        list(_stream_tokens(llm, "deepseek-chat", [{"role": "user", "content": "hi"}]))
+
+    assert len(llm.calls) == 1
     assert llm.calls[0]["stream"] is True
-    assert "stream" not in llm.calls[1]
 
 
-def test_stream_tokens_with_fallback_recovers_after_partial_stream():
+def test_partial_stream_failure_does_not_replay_the_prompt():
     llm = FakeFailingStreamingLLM(fail_after_token=True)
 
-    chunks = list(_stream_tokens_with_fallback(llm, "deepseek-chat", [{"role": "user", "content": "hi"}]))
+    stream = _stream_tokens(llm, "deepseek-chat", [{"role": "user", "content": "hi"}])
 
-    assert chunks == [
-        "partial",
-        "\n\n[Streaming connection interrupted. Retrying request without streaming...]\n\n",
-        "fallback response",
-    ]
+    assert next(stream) == "partial"
+    with pytest.raises(RuntimeError, match="incomplete chunked read"):
+        next(stream)
+    assert len(llm.calls) == 1
 
 
 def test_interactive_delegation_waits_for_user_before_next_agent_turn(tmp_path: Path, monkeypatch):

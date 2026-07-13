@@ -113,9 +113,7 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
             content = msg.get("content", "")
             if not content:
                 continue
-            started = await session_manager.start_run(session.id, content)
-            if not started and session.config.mode.value == "interactive":
-                await session_manager.send_user_message(session.id, content)
+            await session_manager.start_run(session.id, content)
 
         elif msg_type == "user_message":
             content = msg.get("content", "")
@@ -124,3 +122,6 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
 
         elif msg_type == "stop":
             await session_manager.stop_session(session.id)
+
+        elif msg_type == "cancel_response":
+            await session_manager.cancel_response(session.id)

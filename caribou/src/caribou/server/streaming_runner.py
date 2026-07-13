@@ -11,6 +11,7 @@ same helpers and execution model but replaces Console output with events.
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 import time
@@ -22,9 +23,6 @@ from typing import Any, Callable, Dict, List, Optional, Set
 # Consecutive no-action / code-exec failures we tolerate before ending the run.
 MAX_CONSECUTIVE_NO_ACTION = 3
 MAX_CONSECUTIVE_EXEC_FAILURES = 5
-# Transient LLM failures are retried with exponential backoff before we give up.
-_LLM_RETRY_ATTEMPTS = 3
-_LLM_RETRY_BASE_DELAY = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -56,33 +54,6 @@ def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
                 yield token
 
 
-def _complete_without_streaming(llm_client, model: str, messages: List[Dict]) -> str:
-    response = llm_client.chat.completions.create(
-        model=model, messages=messages, temperature=0.0
-    )
-    return response.choices[0].message.content or ""
-
-
-def _stream_tokens_with_fallback(llm_client, model: str, messages: List[Dict]) -> Any:
-    """
-    Stream tokens when possible, but recover from transient chunked-read
-    failures by retrying once with a non-streaming request.
-    """
-    emitted_any = False
-    try:
-        for token in _stream_tokens(llm_client, model, messages):
-            emitted_any = True
-            yield token
-        return
-    except Exception:
-        if emitted_any:
-            yield "\n\n[Streaming connection interrupted. Retrying request without streaming...]\n\n"
-
-    content = _complete_without_streaming(llm_client, model, messages)
-    if content:
-        yield content
-
-
 # ---------------------------------------------------------------------------
 # Sync runner (runs inside a ThreadPoolExecutor thread)
 # ---------------------------------------------------------------------------
@@ -102,7 +73,9 @@ def run_session_sync(
     output_dir: Path,
     emit: Callable[[Dict], None],
     stop_flag: threading.Event,
+    cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
@@ -129,6 +102,7 @@ def run_session_sync(
     from rich.console import Console
 
     console = Console(quiet=True)
+    cancel_response_flag = cancel_response_flag or threading.Event()
     output_dir.mkdir(parents=True, exist_ok=True)
     emitted_artifacts: Set[str] = set()
 
@@ -181,13 +155,51 @@ def run_session_sync(
     consecutive_failures = 0
     consecutive_no_action = 0
 
+    def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
+        """Wait for one interactive message; return false if the session stops."""
+        _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
+        if logger:
+            logger.info("Waiting for user input | turn: %s", turn)
+        if user_input_queue is None:
+            return False
+
+        while True:
+            if stop_flag.is_set():
+                if logger:
+                    logger.info("Session stopped while waiting for user input")
+                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                return False
+            try:
+                user_msg = user_input_queue.get(timeout=1.0)
+                if logger:
+                    logger.info("User message received | turn: %s | length: %s chars", turn, len(user_msg))
+                history.append({"role": "user", "content": user_msg})
+                next_turn = turns_completed + 1
+                _emit("message_complete", {
+                    "message": {
+                        "id": f"msg_{session_id}_user_{next_turn}",
+                        "turn": next_turn,
+                        "role": "user",
+                        "agent_name": "",
+                        "content": user_msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                }, turn=next_turn)
+                return True
+            except queue.Empty:
+                continue
+
     try:
         while True:
             if stop_flag.is_set():
+                if logger:
+                    logger.info("Session stopped (user requested)")
                 _emit("status_change", {"status": "stopped", "reason": "user_requested"})
                 return
 
             if is_auto and turns_completed >= max_turns:
+                if logger:
+                    logger.info("Session stopped — max turns reached (%s)", max_turns)
                 _emit("status_change", {"status": "stopped", "reason": f"max turns reached ({max_turns})"})
                 return
 
@@ -205,49 +217,63 @@ def run_session_sync(
                     m["content"] = m["content"].rstrip()
                 cleaned_context.append(m)
 
-            # --- LLM call (streaming) with retry on transient errors ---
-            msg = None
-            last_exc: Optional[Exception] = None
-            for attempt in range(1, _LLM_RETRY_ATTEMPTS + 1):
-                if stop_flag.is_set():
-                    _emit("status_change", {"status": "stopped", "reason": "user_requested"})
-                    return
-                try:
-                    full_msg = ""
-                    for token in _stream_tokens_with_fallback(llm_client, model_name, cleaned_context):
-                        if stop_flag.is_set():
-                            break
-                        full_msg += token
-                        _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
-                    msg = full_msg
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if attempt >= _LLM_RETRY_ATTEMPTS:
+            if logger:
+                logger.info(
+                    "Turn %s | agent: %s | messages_in_context: %s",
+                    turn,
+                    current_agent.name,
+                    len(cleaned_context),
+                )
+
+            # A user turn issues exactly one provider request. A failed stream
+            # is surfaced instead of silently replaying the prompt.
+            try:
+                if logger:
+                    logger.info("LLM request | turn: %s | model: %s", turn, model_name)
+                llm_started = time.monotonic()
+                first_token_at: Optional[float] = None
+                full_msg = ""
+                token_chars = 0
+                for token in _stream_tokens(llm_client, model_name, cleaned_context):
+                    if stop_flag.is_set() or cancel_response_flag.is_set():
                         break
-                    delay = _LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                    _emit("error", {
-                        "code": "LLM_TRANSIENT_ERROR",
-                        "message": f"{exc} (attempt {attempt}/{_LLM_RETRY_ATTEMPTS}; retrying in {delay:.1f}s)",
-                        "fatal": False,
-                    })
-                    # Wait but stay responsive to stop signals.
-                    waited = 0.0
-                    while waited < delay:
-                        if stop_flag.is_set():
-                            _emit("status_change", {"status": "stopped", "reason": "user_requested"})
-                            return
-                        time.sleep(min(0.5, delay - waited))
-                        waited += 0.5
-            if last_exc is not None:
-                _emit("error", {"code": "LLM_ERROR", "message": str(last_exc), "fatal": True})
-                _emit("status_change", {"status": "error", "reason": str(last_exc)})
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if logger:
+                            logger.info(
+                                "First token received | turn: %s | latency: %sms",
+                                turn,
+                                int((first_token_at - llm_started) * 1000),
+                            )
+                    full_msg += token
+                    token_chars += len(token)
+                    _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
+                msg = full_msg
+                if logger:
+                    logger.info(
+                        "LLM response complete | turn: %s | duration: %sms | ~%s chars",
+                        turn,
+                        int((time.monotonic() - llm_started) * 1000),
+                        token_chars,
+                    )
+            except Exception as exc:
+                if logger:
+                    logger.error("LLM error | turn: %s | %s", turn, exc, exc_info=True)
+                _emit("error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True})
+                _emit("status_change", {"status": "error", "reason": str(exc)})
                 return
 
             if stop_flag.is_set():
                 _emit("status_change", {"status": "stopped", "reason": "user_requested"})
                 return
+
+            if cancel_response_flag.is_set() and not is_auto:
+                cancel_response_flag.clear()
+                if logger:
+                    logger.info("Response cancelled | turn: %s", turn)
+                if not _wait_for_user(turn, "response_cancelled"):
+                    return
+                continue
 
             history.append({"role": "assistant", "content": msg})
             turns_completed += 1
@@ -267,10 +293,14 @@ def run_session_sync(
             has_delegation = detect_delegation(msg) is not None
             if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
                 if is_auto:
+                    if logger:
+                        logger.info("Session finished — agent signalled end | turn: %s", turn)
                     _emit("status_change", {"status": "stopped", "reason": "agent_finished"})
                     return
                 else:
-                    _emit("status_change", {"status": "idle", "reason": "agent_requested_end"})
+                    if logger:
+                        logger.info("Agent requested session end | turn: %s", turn)
+                    _emit("status_change", {"status": "stopped", "reason": "agent_requested_end"})
                     return
 
             _action_fired = False
@@ -304,6 +334,14 @@ def run_session_sync(
                 target_name = current_agent.commands[cmd].target_agent
                 new_agent = agent_system.get_agent(target_name)
                 if new_agent:
+                    if logger:
+                        logger.info(
+                            "Agent switch: %s -> %s | command: %s | turn: %s",
+                            current_agent.name,
+                            target_name,
+                            cmd,
+                            turn,
+                        )
                     _emit("agent_switch", {
                         "from_agent": current_agent.name,
                         "to_agent": target_name,
@@ -330,8 +368,17 @@ def run_session_sync(
             if code_blocks:
                 _action_fired = True
                 for idx, code in enumerate(code_blocks, start=1):
-                    if stop_flag.is_set():
+                    if stop_flag.is_set() or cancel_response_flag.is_set():
                         break
+
+                    if logger:
+                        logger.info(
+                            "Code block %s/%s -> sandbox | turn: %s | lines: %s",
+                            idx,
+                            len(code_blocks),
+                            turn,
+                            code.count("\n") + 1,
+                        )
 
                     _emit("code_submitted", {
                         "agent_name": current_agent.name,
@@ -346,6 +393,15 @@ def run_session_sync(
 
                     success = exec_result.get("status") == "ok"
                     consecutive_failures = 0 if success else consecutive_failures + 1
+                    if logger:
+                        logger.info(
+                            "Code block %s/%s <- sandbox | turn: %s | duration: %sms | success: %s",
+                            idx,
+                            len(code_blocks),
+                            turn,
+                            duration_ms,
+                            success,
+                        )
 
                     _emit("code_result", {
                         "agent_name": current_agent.name,
@@ -366,6 +422,14 @@ def run_session_sync(
                     )
                     history.append({"role": "system", "content": action_space.to_message()})
                     history.append({"role": "assistant", "content": feedback})
+
+            if cancel_response_flag.is_set() and not is_auto:
+                cancel_response_flag.clear()
+                if logger:
+                    logger.info("Response cancelled after action | turn: %s", turn)
+                if not _wait_for_user(turn, "response_cancelled"):
+                    return
+                continue
 
             if _delegated and is_auto:
                 consecutive_no_action = 0
@@ -403,35 +467,12 @@ def run_session_sync(
                 continue
 
             # --- Interactive: wait for next user message ---
-            _emit("status_change", {"status": "idle", "reason": None}, turn=turn)
-
-            if user_input_queue is None:
+            if not _wait_for_user(turn):
                 return
 
-            # Block until user sends a message or session is stopped
-            while True:
-                if stop_flag.is_set():
-                    _emit("status_change", {"status": "stopped", "reason": "user_requested"})
-                    return
-                try:
-                    user_msg = user_input_queue.get(timeout=1.0)
-                    history.append({"role": "user", "content": user_msg})
-                    next_turn = turns_completed + 1
-                    _emit("message_complete", {
-                        "message": {
-                            "id": f"msg_{session_id}_user_{next_turn}",
-                            "turn": next_turn,
-                            "role": "user",
-                            "agent_name": "",
-                            "content": user_msg,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        }
-                    }, turn=next_turn)
-                    break
-                except queue.Empty:
-                    continue
-
     except Exception as exc:
+        if logger:
+            logger.error("Runner error: %s", exc, exc_info=True)
         _emit("error", {
             "code": "RUNNER_ERROR",
             "message": str(exc),
@@ -460,7 +501,9 @@ async def run_session_async(
     output_dir: Path,
     event_callback: Callable[[Dict], None],
     stop_flag: threading.Event,
+    cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -487,5 +530,7 @@ async def run_session_async(
         output_dir=output_dir,
         emit=_emit,
         stop_flag=stop_flag,
+        cancel_response_flag=cancel_response_flag,
         user_input_queue=user_input_queue,
+        logger=logger,
     )

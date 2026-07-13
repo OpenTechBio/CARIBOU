@@ -105,6 +105,10 @@ export class AgentStreamService implements OnDestroy {
     this.send({ type: 'stop' });
   }
 
+  cancelResponse(): void {
+    this.send({ type: 'cancel_response' });
+  }
+
   /** Force an immediate reconnect attempt (bypasses backoff). */
   retryNow(): void {
     if (!this.sessionId) return;

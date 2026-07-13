@@ -87,10 +87,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   errorLog = signal<ErrorRecord[]>([]);
   statusLog = signal<StatusEntry[]>([]);
   waitingForAgent = signal(false);
-  showExtend = signal(false);
-  extendTurns = signal(10);
-  extending = signal(false);
-  extendError = signal<string | null>(null);
+  cancellingResponse = signal(false);
   awaitingCodeResult = signal(false);
   showTimeline = signal(false);
   artifactFilter = signal<ArtifactFilter>('all');
@@ -120,6 +117,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   currentAgent = computed(() => this.session()?.current_agent ?? '');
   isIdle = computed(() => this.status() === 'idle');
   isRunning = computed(() => this.status() === 'running');
+  isStopped = computed(() => this.status() === 'stopped');
   isError = computed(() => this.status() === 'error');
   isInitializing = computed(() => this.status() === 'initializing');
   isThinking = computed(() => this.isRunning() && !this.stream.isStreaming() && !this.awaitingCodeResult());
@@ -167,10 +165,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     const hidden = this.hiddenChatItemCount();
     return hidden ? items.slice(hidden) : items;
   });
-  canExtend = computed(() =>
-    this.session()?.mode === 'auto' && this.status() === 'stopped'
-  );
-
   /** Turn -> chatItem index (first item at that turn). Used for jump-to-turn. */
   turnAnchors = computed(() => {
     const anchors: { turn: number; index: number }[] = [];
@@ -372,8 +366,11 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     }));
 
     this.subs.add(this.stream.statusChanges$.subscribe(ev => {
-      this.waitingForAgent.set(false);
       const d = ev.data as StatusChangeData;
+      if (d.status === 'idle' || d.status === 'stopped' || d.status === 'error') {
+        this.waitingForAgent.set(false);
+        this.cancellingResponse.set(false);
+      }
       this.statusLog.update(log => {
         const last = log[log.length - 1];
         if (last && last.status === d.status && last.reason === d.reason) {
@@ -401,7 +398,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     const content = this.userInput().trim();
     if (!content) return;
     const s = this.session();
-    if (!s) return;
+    if (!s || s.status !== 'idle' || this.waitingForAgent()) return;
 
     if (s.status === 'idle' && s.current_turn === 0 && s.mode === 'interactive') {
       this.stream.startRun(content);
@@ -432,15 +429,19 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.stream.stop();
   }
 
-  retryReconnect(): void {
-    this.stream.retryNow();
+  endSession(): void {
+    if (!window.confirm('End this session? This cannot be undone.')) return;
+    this.stream.stop();
   }
 
-  retryLastAction(): void {
-    // Best-effort recovery: for a session in error, users can extend to try again.
-    if (this.canExtend()) {
-      this.showExtend.set(true);
-    }
+  cancelResponse(): void {
+    if (!this.isRunning() || this.session()?.mode !== 'interactive') return;
+    this.cancellingResponse.set(true);
+    this.stream.cancelResponse();
+  }
+
+  retryReconnect(): void {
+    this.stream.retryNow();
   }
 
   copyToClipboard(text: string): void {
@@ -500,23 +501,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   toggleTimeline(): void {
     this.showTimeline.update(v => !v);
-  }
-
-  confirmExtend(): void {
-    const s = this.session();
-    if (!s) return;
-    this.extending.set(true);
-    this.extendError.set(null);
-    this.sessionSvc.extendSession(s.id, this.extendTurns()).subscribe({
-      next: () => {
-        this.extending.set(false);
-        this.showExtend.set(false);
-      },
-      error: (err) => {
-        this.extending.set(false);
-        this.extendError.set(err?.error?.detail ?? 'Failed to continue the run.');
-      },
-    });
   }
 
   goBack(): void {

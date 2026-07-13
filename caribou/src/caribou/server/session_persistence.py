@@ -27,15 +27,19 @@ from caribou.server.session_state import SESSIONS_DIR, _Session
 _log = logging.getLogger(__name__)
 
 
-def session_file(session_id: str) -> Path:
-    return SESSIONS_DIR / session_id / "session.json"
+def session_file(session_id: str, sessions_dir: Path = SESSIONS_DIR) -> Path:
+    return sessions_dir / session_id / "session.json"
 
 
-def session_dir(session_id: str) -> Path:
-    return SESSIONS_DIR / session_id
+def session_dir(session_id: str, sessions_dir: Path = SESSIONS_DIR) -> Path:
+    return sessions_dir / session_id
 
 
-def save_session(session: _Session, is_deleted: Callable[[str], bool]) -> None:
+def save_session(
+    session: _Session,
+    is_deleted: Callable[[str], bool],
+    sessions_dir: Path = SESSIONS_DIR,
+) -> None:
     """
     Write session state to disk. Called after every non-token event.
 
@@ -45,7 +49,7 @@ def save_session(session: _Session, is_deleted: Callable[[str], bool]) -> None:
     if is_deleted(session.id):
         return
     try:
-        path = session_file(session.id)
+        path = session_file(session.id, sessions_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "id": session.id,
@@ -68,12 +72,12 @@ def save_session(session: _Session, is_deleted: Callable[[str], bool]) -> None:
         _log.warning("Failed to persist session %s: %s", session.id, exc)
 
 
-def load_persisted_sessions() -> Dict[str, _Session]:
+def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Session]:
     """On startup, reload all sessions saved to disk."""
     sessions: Dict[str, _Session] = {}
-    if not SESSIONS_DIR.exists():
+    if not sessions_dir.exists():
         return sessions
-    for sess_dir in sorted(SESSIONS_DIR.iterdir()):
+    for sess_dir in sorted(sessions_dir.iterdir()):
         f = sess_dir / "session.json"
         if not f.exists():
             continue
@@ -99,6 +103,7 @@ def load_persisted_sessions() -> Dict[str, _Session]:
                 events=data.get("events", []),
                 event_condition=asyncio.Condition(),
                 stop_flag=threading.Event(),
+                cancel_response_flag=threading.Event(),
                 user_input_queue=queue.Queue(),
                 created_at=datetime.fromisoformat(data["created_at"]),
                 updated_at=datetime.fromisoformat(data["updated_at"]),

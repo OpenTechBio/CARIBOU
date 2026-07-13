@@ -43,6 +43,7 @@ def _make_session(session_id: str, status: SessionStatus, sandbox=None) -> _Sess
         events=[],
         event_condition=asyncio.Condition(),
         stop_flag=Event(),
+        cancel_response_flag=Event(),
         user_input_queue=Queue(),
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
