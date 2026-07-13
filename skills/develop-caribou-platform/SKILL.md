@@ -75,6 +75,15 @@ behind a portable execution interface. CARIBOU's live policy requires partition
 `peerd`: default it in shared run resolution, render it into submitted scripts and
 provenance, and reject conflicting interface or environment overrides.
 
+Use one shared Conda prefix for host-side CLI, web-control-plane, build, and test
+work. Read the live program decisions for its site-specific location. Never create
+a repository-local virtualenv or a Conda environment per checkout, experiment, or
+Slurm job. Disable Python user-site loading for tests and evidence capture so the
+recorded prefix cannot silently import packages from `~/.local`. Keep biological
+execution dependencies in the versioned
+Docker/Apptainer image, and record the Conda prefix identity for host-side evidence
+without treating it as the analysis environment.
+
 ## Test across boundaries
 
 Use proportionate layers:

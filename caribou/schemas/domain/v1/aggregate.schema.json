@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "AggregateStatus": {
+      "enum": [
+        "complete",
+        "partial",
+        "invalid"
+      ],
+      "title": "AggregateStatus",
+      "type": "string"
+    },
+    "ContentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "accession": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accession"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "uri",
+        "content_hash"
+      ],
+      "title": "ContentReference",
+      "type": "object"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/aggregate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "aggregate_id": {
+      "pattern": "^agg_[0-9a-f]{32}$",
+      "title": "Aggregate Id",
+      "type": "string"
+    },
+    "artifact_ids": {
+      "items": {
+        "pattern": "^art_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Artifact Ids",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "excluded_run_ids": {
+      "items": {
+        "pattern": "^run_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Excluded Run Ids",
+      "type": "array"
+    },
+    "exclusion_reasons": {
+      "patternProperties": {
+        "^run_[0-9a-f]{32}$": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "title": "Exclusion Reasons",
+      "type": "object"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "included_run_ids": {
+      "items": {
+        "pattern": "^run_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Included Run Ids",
+      "type": "array"
+    },
+    "method": {
+      "$ref": "#/$defs/ContentReference"
+    },
+    "metric_record_ids": {
+      "items": {
+        "pattern": "^metric_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Metric Record Ids",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "caribou.aggregate.v1",
+      "default": "caribou.aggregate.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "spec_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Spec Hash",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/AggregateStatus"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "spec_hash",
+    "status",
+    "included_run_ids",
+    "method"
+  ],
+  "title": "Aggregate",
+  "type": "object"
+}

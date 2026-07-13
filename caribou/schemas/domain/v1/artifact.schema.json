@@ -1,0 +1,172 @@
+{
+  "$defs": {
+    "ArtifactType": {
+      "enum": [
+        "dataset",
+        "plot",
+        "code",
+        "report",
+        "note",
+        "todo",
+        "notebook",
+        "log",
+        "checkpoint",
+        "manifest",
+        "metric_table",
+        "message_history",
+        "other"
+      ],
+      "title": "ArtifactType",
+      "type": "string"
+    },
+    "RetentionPolicy": {
+      "enum": [
+        "temporary",
+        "experiment",
+        "evidence",
+        "release"
+      ],
+      "title": "RetentionPolicy",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "pattern": "^art_[0-9a-f]{32}$",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "artifact_type": {
+      "$ref": "#/$defs/ArtifactType"
+    },
+    "content_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "filename": {
+      "minLength": 1,
+      "title": "Filename",
+      "type": "string"
+    },
+    "media_type": {
+      "minLength": 1,
+      "title": "Media Type",
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "parent_artifact_ids": {
+      "items": {
+        "pattern": "^art_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Parent Artifact Ids",
+      "type": "array"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_event_id": {
+      "pattern": "^evt_[0-9a-f]{32}$",
+      "title": "Producer Event Id",
+      "type": "string"
+    },
+    "retention": {
+      "$ref": "#/$defs/RetentionPolicy",
+      "default": "experiment"
+    },
+    "role": {
+      "minLength": 1,
+      "title": "Role",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^run_[0-9a-f]{32}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_type": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schema Type"
+    },
+    "schema_version": {
+      "const": "caribou.artifact.v1",
+      "default": "caribou.artifact.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "schema_version_name": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schema Version Name"
+    },
+    "sensitivity": {
+      "default": "internal",
+      "minLength": 1,
+      "title": "Sensitivity",
+      "type": "string"
+    },
+    "size_bytes": {
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "storage_uri": {
+      "minLength": 1,
+      "title": "Storage Uri",
+      "type": "string"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "run_id",
+    "producer_event_id",
+    "producer",
+    "artifact_type",
+    "role",
+    "filename",
+    "storage_uri",
+    "content_hash",
+    "media_type",
+    "size_bytes",
+    "owner"
+  ],
+  "title": "Artifact",
+  "type": "object"
+}
