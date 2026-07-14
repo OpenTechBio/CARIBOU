@@ -5,7 +5,7 @@ import math
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypedDict, cast
@@ -80,6 +80,71 @@ class RunnerEvent(TypedDict):
 RunnerEventCallback = Callable[[RunnerEvent], None]
 LlmAttemptCallback = Callable[[Dict[str, object]], None]
 CancellationCheck = Callable[[], bool]
+CheckpointCheck = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class AgentSessionCheckpointState:
+    """JSON-serializable state captured only at a completed-turn boundary.
+
+    This is deliberately narrower than a Python-process snapshot. The full message
+    history is stored as its own checkpoint component; this record restores the
+    runner cursor, current agent, counters, and action-space state needed to make
+    the next model call without replaying a completed turn.
+    """
+
+    schema_version: str
+    current_agent_name: str
+    turns_completed: int
+    next_turn: int
+    code_blocks_produced: int
+    code_exec_attempts: int
+    code_exec_failures: int
+    consecutive_exec_failures: int
+    consecutive_no_action: int
+    correction_count: int
+    action_space_past_actions: tuple[Dict[str, object], ...]
+    elapsed_seconds: float
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "caribou.agent_session_checkpoint_state.v1":
+            raise ValueError("unsupported agent checkpoint state schema")
+        if not self.current_agent_name.strip():
+            raise ValueError("checkpoint current agent must be non-empty")
+        integer_fields = (
+            self.turns_completed,
+            self.next_turn,
+            self.code_blocks_produced,
+            self.code_exec_attempts,
+            self.code_exec_failures,
+            self.consecutive_exec_failures,
+            self.consecutive_no_action,
+            self.correction_count,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in integer_fields
+        ):
+            raise ValueError("checkpoint counters must be nonnegative integers")
+        if self.next_turn != self.turns_completed + 1:
+            raise ValueError("checkpoint next turn must follow turns_completed")
+        if self.code_exec_failures > self.code_exec_attempts:
+            raise ValueError("checkpoint failures exceed execution attempts")
+        if (
+            isinstance(self.elapsed_seconds, bool)
+            or not isinstance(self.elapsed_seconds, (int, float))
+            or self.elapsed_seconds < 0
+            or not math.isfinite(self.elapsed_seconds)
+        ):
+            raise ValueError(
+                "checkpoint elapsed seconds must be finite and nonnegative"
+            )
+        for action in self.action_space_past_actions:
+            if not isinstance(action, dict):
+                raise ValueError("checkpoint action-space entries must be objects")
+
+
+CheckpointCallback = Callable[[AgentSessionCheckpointState], None]
 
 
 @dataclass(frozen=True)
@@ -110,6 +175,7 @@ class _LlmCallCancelled(Exception):
 _UNSUCCESSFUL_END_REASONS = frozenset(
     {
         "cancelled",
+        "checkpointed",
         "llm_error",
         "max_turns_reached",
         "stuck_no_action",
@@ -408,6 +474,9 @@ def run_agent_session(
     should_cancel: Optional[CancellationCheck] = None,
     event_callback: Optional[RunnerEventCallback] = None,
     llm_attempt_callback: Optional[LlmAttemptCallback] = None,
+    should_checkpoint: Optional[CheckpointCheck] = None,
+    checkpoint_callback: Optional[CheckpointCallback] = None,
+    resume_state: Optional[AgentSessionCheckpointState] = None,
     timeout_seconds: Optional[float] = None,
     max_consecutive_no_action: int = MAX_CONSECUTIVE_NO_ACTION,
     max_consecutive_exec_failures: int = MAX_CONSECUTIVE_EXEC_FAILURES,
@@ -418,14 +487,26 @@ def run_agent_session(
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
     """
-    _init_paths(output_dir)
-
     if durable_run_id is not None and not durable_run_id.strip():
         raise ValueError("durable_run_id must be non-empty when provided")
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be greater than zero")
     if max_consecutive_no_action < 1 or max_consecutive_exec_failures < 1:
         raise ValueError("consecutive failure limits must be positive")
+    if (should_checkpoint is None) != (checkpoint_callback is None):
+        raise ValueError(
+            "should_checkpoint and checkpoint_callback must be supplied together"
+        )
+    if resume_state is not None and not isinstance(
+        resume_state, AgentSessionCheckpointState
+    ):
+        raise ValueError("resume_state must be an AgentSessionCheckpointState")
+    if resume_state is not None:
+        # Frozen dataclasses can still be corrupted through low-level mutation or
+        # untrusted deserialization. Reconstruct before any provider/sandbox work.
+        resume_state = replace(resume_state)
+
+    _init_paths(output_dir)
     run_id = durable_run_id or f"run_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     default_runs_dir = get_default_runs_dir()
     artifacts_dir = (
@@ -454,14 +535,27 @@ def run_agent_session(
         report_memory = AgentReportMemory(base_globals, agent_prompt_content)
         current_agent_history_start = min(len(history), 2)
 
-    action_space = AgentActionSpace(driver_agent.name)
-    action_space.set_possible_actions(_extract_possible_actions(driver_agent))
-    action_init_msg = action_space.to_message()
-    history.append({"role": "system", "content": action_init_msg})
-    if memory_manager:
-        memory_manager.add_message("system", action_init_msg)
-    if agent_report_memory:
-        current_agent_history_start = min(len(history), 2)
+    current_agent = driver_agent
+    if resume_state is not None:
+        restored_agent = agent_system.get_agent(resume_state.current_agent_name)
+        if restored_agent is None:
+            raise ValueError(
+                "checkpoint current agent is absent from the frozen blueprint"
+            )
+        current_agent = restored_agent
+    action_space = AgentActionSpace(current_agent.name)
+    action_space.set_possible_actions(_extract_possible_actions(current_agent))
+    if resume_state is None:
+        action_init_msg = action_space.to_message()
+        history.append({"role": "system", "content": action_init_msg})
+        if memory_manager:
+            memory_manager.add_message("system", action_init_msg)
+        if agent_report_memory:
+            current_agent_history_start = min(len(history), 2)
+    else:
+        action_space.past_actions = [
+            dict(action) for action in resume_state.action_space_past_actions
+        ]
 
     # --- Display the initial context provided by the CLI ---
     for message in history:
@@ -470,20 +564,34 @@ def run_agent_session(
         if role in ["system", "user"]:
             display(console, role, content)
 
-    current_agent = driver_agent
-    turns_completed = 0
-    final_turn = 0
-    code_block_count = 0
-    code_exec_attempts = 0
-    code_exec_failures = 0
-    consecutive_failures = 0
-    consecutive_no_action = 0
-    correction_count = 0
+    turns_completed = resume_state.turns_completed if resume_state is not None else 0
+    final_turn = turns_completed
+    code_block_count = (
+        resume_state.code_blocks_produced if resume_state is not None else 0
+    )
+    code_exec_attempts = (
+        resume_state.code_exec_attempts if resume_state is not None else 0
+    )
+    code_exec_failures = (
+        resume_state.code_exec_failures if resume_state is not None else 0
+    )
+    consecutive_failures = (
+        resume_state.consecutive_exec_failures if resume_state is not None else 0
+    )
+    consecutive_no_action = (
+        resume_state.consecutive_no_action if resume_state is not None else 0
+    )
+    correction_count = resume_state.correction_count if resume_state is not None else 0
+    prior_elapsed_seconds = (
+        resume_state.elapsed_seconds if resume_state is not None else 0.0
+    )
     session_start_ts = _utc_now()
     session_start_time = time.monotonic()
-    session_deadline = (
-        session_start_time + timeout_seconds if timeout_seconds is not None else None
-    )
+    session_deadline = None
+    if timeout_seconds is not None:
+        session_deadline = session_start_time + max(
+            0.0, timeout_seconds - prior_elapsed_seconds
+        )
 
     def session_stop_reason() -> str | None:
         if _cancellation_requested(should_cancel):
@@ -494,6 +602,32 @@ def run_agent_session(
 
     session_end_reason = "completed"
     last_code_snippet: str | None = None
+
+    def checkpoint_at_completed_turn() -> bool:
+        if should_checkpoint is None or not should_checkpoint():
+            return False
+        assert checkpoint_callback is not None
+        checkpoint_callback(
+            AgentSessionCheckpointState(
+                schema_version="caribou.agent_session_checkpoint_state.v1",
+                current_agent_name=current_agent.name,
+                turns_completed=turns_completed,
+                next_turn=turns_completed + 1,
+                code_blocks_produced=code_block_count,
+                code_exec_attempts=code_exec_attempts,
+                code_exec_failures=code_exec_failures,
+                consecutive_exec_failures=consecutive_failures,
+                consecutive_no_action=consecutive_no_action,
+                correction_count=correction_count,
+                action_space_past_actions=tuple(
+                    dict(action) for action in action_space.past_actions
+                ),
+                elapsed_seconds=(
+                    prior_elapsed_seconds + time.monotonic() - session_start_time
+                ),
+            )
+        )
+        return True
 
     while True:
         stop_reason = session_stop_reason()
@@ -904,6 +1038,9 @@ def run_agent_session(
                 session_end_reason = session_stop_reason() or "cancelled"
                 break
             if rag_short_circuit:
+                if checkpoint_at_completed_turn():
+                    session_end_reason = "checkpointed"
+                    break
                 continue
             # Escalate if the same code path keeps failing — don't loop forever.
             if is_auto and consecutive_failures >= max_consecutive_exec_failures:
@@ -925,6 +1062,9 @@ def run_agent_session(
         # In auto mode, delegation immediately hands execution to the new agent.
         # In interactive mode, the user gets control back after the handoff.
         if _delegated and is_auto:
+            if checkpoint_at_completed_turn():
+                session_end_reason = "checkpointed"
+                break
             continue
 
         if is_auto and not _action_fired:
@@ -994,6 +1134,10 @@ def run_agent_session(
             history.append({"role": "user", "content": auto_continue_msg})
             if memory_manager:
                 memory_manager.add_message("user", auto_continue_msg)
+
+            if checkpoint_at_completed_turn():
+                session_end_reason = "checkpointed"
+                break
 
             console.print(
                 f"[yellow]Auto-continuing... {turns_completed}/{max_turns} turns complete.[/yellow]"
@@ -1100,7 +1244,9 @@ def run_agent_session(
             break
 
     session_end_ts = _utc_now()
-    duration_seconds = round(time.monotonic() - session_start_time, 2)
+    duration_seconds = round(
+        prior_elapsed_seconds + time.monotonic() - session_start_time, 6
+    )
 
     if make_report:
         session_stats: dict[str, object] = {

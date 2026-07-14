@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Iterator, Literal, Optional, Sequence, Type, TypeVar
 
 import fcntl
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from .enums import EventType, ExperimentState
+from .enums import EventType, ExperimentState, RunState
 from .lifecycle import (
     EXPERIMENT_TRANSITIONS,
     RUN_TRANSITIONS,
@@ -23,6 +23,7 @@ from .lifecycle import (
 from .models import (
     ArtifactCreatedPayload,
     BudgetRecordedPayload,
+    Checkpoint,
     CheckpointCreatedPayload,
     DomainModel,
     Event,
@@ -32,6 +33,7 @@ from .models import (
     MetricRecordedPayload,
     Run,
     StateTransitionPayload,
+    checkpoint_integrity_hash,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -55,10 +57,38 @@ class RunJournal(DomainModel):
     schema_version: Literal["caribou.run_journal.v1"] = "caribou.run_journal.v1"
     run: Run
     events: list[Event]
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_snapshot_and_events(self) -> "RunJournal":
         validate_run_event_pair(self.run, self.events)
+        checkpoint_ids = [checkpoint.checkpoint_id for checkpoint in self.checkpoints]
+        if len(checkpoint_ids) != len(set(checkpoint_ids)):
+            raise ValueError("run journal checkpoint IDs must be unique")
+        if checkpoint_ids != self.run.checkpoint_ids:
+            raise ValueError(
+                "run journal checkpoints must match the run checkpoint IDs"
+            )
+        event_by_id = {event.event_id: event for event in self.events}
+        for checkpoint in self.checkpoints:
+            event = event_by_id.get(checkpoint.event_id)
+            if (
+                checkpoint.run_id != self.run.run_id
+                or checkpoint.experiment_id != self.run.experiment_id
+                or checkpoint.spec_hash != self.run.spec_hash
+                or checkpoint.code_commit != self.run.code.commit
+                or checkpoint.container_digest != self.run.container.image.content_hash
+                or checkpoint.model_identity
+                != f"{self.run.resolved_model.provider}:{self.run.resolved_model.model}"
+                or checkpoint.integrity_hash != checkpoint_integrity_hash(checkpoint)
+                or event is None
+                or event.event_type != EventType.checkpoint_created
+                or not isinstance(event.payload, CheckpointCreatedPayload)
+                or event.payload.checkpoint_id != checkpoint.checkpoint_id
+                or event.sequence != checkpoint.event_sequence
+                or event.turn != checkpoint.turn
+            ):
+                raise ValueError("run journal contains an invalid checkpoint linkage")
         return self
 
 
@@ -263,7 +293,11 @@ def commit_run_transition(
             raise IntegrityError(
                 "transition attempted to mutate immutable run configuration"
             )
-        updated = RunJournal(run=transition.run, events=[*current.events, event])
+        updated = RunJournal(
+            run=transition.run,
+            events=[*current.events, event],
+            checkpoints=current.checkpoints,
+        )
         validate_run_event_pair(updated.run, updated.events)
         data = canonical_json_bytes(updated)
         _atomic_replace(path, data)
@@ -372,7 +406,123 @@ def commit_run_event(
             raise IntegrityError(
                 "event update attempted to mutate frozen run configuration or state"
             )
-        updated = RunJournal(run=updated_run, events=[*current.events, event])
+        updated = RunJournal(
+            run=updated_run,
+            events=[*current.events, event],
+            checkpoints=current.checkpoints,
+        )
+        data = canonical_json_bytes(updated)
+        _atomic_replace(path, data)
+    return sha256_bytes(data)
+
+
+def commit_run_checkpoint(
+    path: Path,
+    updated_run: Run,
+    checkpoint: Checkpoint,
+    event: Event,
+    *,
+    expected_hash: str,
+) -> str:
+    """Atomically publish one complete checkpoint and its durable event.
+
+    Component artifacts are committed before this call. They do not constitute a
+    resumable checkpoint until this single journal replacement links the validated
+    envelope, event, and run cursor together.
+    """
+
+    if (
+        not event.durable
+        or event.event_type != EventType.checkpoint_created
+        or not isinstance(event.payload, CheckpointCreatedPayload)
+        or event.payload.checkpoint_id != checkpoint.checkpoint_id
+    ):
+        raise PersistenceError(
+            "checkpoint commit requires a matching checkpoint_created event"
+        )
+    with _exclusive_lock(path):
+        if not path.exists():
+            raise IntegrityError(f"run journal does not exist: {path}")
+        current_hash = file_hash(path)
+        if current_hash != expected_hash:
+            raise ConcurrentUpdateError(
+                f"compare-and-swap conflict for {path}: expected {expected_hash}, "
+                f"found {current_hash}"
+            )
+        try:
+            current = RunJournal.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError) as exc:
+            raise IntegrityError(f"invalid run journal at {path}: {exc}") from exc
+        if current.run.state not in {RunState.running, RunState.checkpointed}:
+            raise IntegrityError(
+                "checkpoint can be committed only at an active boundary"
+            )
+        if checkpoint.checkpoint_id in current.run.checkpoint_ids:
+            raise IntegrityError("checkpoint is already linked to the run")
+        if (
+            updated_run.run_id != current.run.run_id
+            or checkpoint.run_id != current.run.run_id
+            or checkpoint.experiment_id != current.run.experiment_id
+            or event.run_id != current.run.run_id
+            or event.experiment_id != current.run.experiment_id
+        ):
+            raise IntegrityError(
+                "checkpoint commit crosses a run or experiment boundary"
+            )
+        if (
+            updated_run.event_sequence != current.run.event_sequence + 1
+            or event.sequence != updated_run.event_sequence
+            or checkpoint.event_sequence != event.sequence
+            or checkpoint.event_id != event.event_id
+        ):
+            raise IntegrityError(
+                "checkpoint commit must advance the cursor exactly once"
+            )
+        if (
+            checkpoint.turn != current.run.current_turn
+            or event.turn != checkpoint.turn
+            or updated_run.current_turn != checkpoint.turn
+        ):
+            raise IntegrityError("checkpoint must describe the completed current turn")
+        if checkpoint.integrity_hash != checkpoint_integrity_hash(checkpoint):
+            raise IntegrityError("checkpoint integrity hash is invalid")
+        if (
+            checkpoint.spec_hash != current.run.spec_hash
+            or checkpoint.code_commit != current.run.code.commit
+            or checkpoint.container_digest != current.run.container.image.content_hash
+            or checkpoint.model_identity
+            != f"{current.run.resolved_model.provider}:{current.run.resolved_model.model}"
+        ):
+            raise IntegrityError("checkpoint is incompatible with the frozen run")
+
+        previous_values = current.run.model_dump(mode="python")
+        next_values = updated_run.model_dump(mode="python")
+        for field in {
+            "updated_at",
+            "event_sequence",
+            "current_turn",
+            "current_agent",
+            "checkpoint_ids",
+        }:
+            previous_values.pop(field, None)
+            next_values.pop(field, None)
+        if previous_values != next_values:
+            raise IntegrityError(
+                "checkpoint commit attempted to mutate frozen run configuration or state"
+            )
+        if updated_run.checkpoint_ids != [
+            *current.run.checkpoint_ids,
+            checkpoint.checkpoint_id,
+        ]:
+            raise IntegrityError("checkpoint commit has invalid run linkage")
+        if updated_run.updated_at != event.occurred_at:
+            raise IntegrityError("checkpoint timestamp must equal its event timestamp")
+
+        updated = RunJournal(
+            run=updated_run,
+            events=[*current.events, event],
+            checkpoints=[*current.checkpoints, checkpoint],
+        )
         data = canonical_json_bytes(updated)
         _atomic_replace(path, data)
     return sha256_bytes(data)
@@ -454,7 +604,11 @@ def commit_run_scheduler_binding(
             raise IntegrityError(
                 "scheduler binding attempted to mutate frozen run configuration"
             )
-        updated = RunJournal(run=updated_run, events=[*current.events, event])
+        updated = RunJournal(
+            run=updated_run,
+            events=[*current.events, event],
+            checkpoints=current.checkpoints,
+        )
         validate_run_event_pair(updated.run, updated.events)
         data = canonical_json_bytes(updated)
         _atomic_replace(path, data)
@@ -516,6 +670,70 @@ def commit_experiment_transition(
         updated = ExperimentJournal(
             experiment=transition.experiment,
             transitions=[*current.transitions, record],
+        )
+        data = canonical_json_bytes(updated)
+        _atomic_replace(path, data)
+    return sha256_bytes(data)
+
+
+def commit_experiment_run_link(
+    path: Path,
+    updated_experiment: Experiment,
+    child_run: Run,
+    *,
+    expected_hash: str,
+) -> str:
+    """Atomically append one linked resume attempt to an active experiment."""
+
+    with _exclusive_lock(path):
+        if not path.exists():
+            raise IntegrityError(f"experiment journal does not exist: {path}")
+        current_hash = file_hash(path)
+        if current_hash != expected_hash:
+            raise ConcurrentUpdateError(
+                f"compare-and-swap conflict for {path}: expected {expected_hash}, "
+                f"found {current_hash}"
+            )
+        try:
+            current = ExperimentJournal.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError) as exc:
+            raise IntegrityError(
+                f"invalid experiment journal at {path}: {exc}"
+            ) from exc
+        if current.experiment.state != ExperimentState.active:
+            raise IntegrityError(
+                "resume attempts can be linked only to an active experiment"
+            )
+        if (
+            updated_experiment.experiment_id != current.experiment.experiment_id
+            or child_run.experiment_id != current.experiment.experiment_id
+        ):
+            raise IntegrityError("resume attempt belongs to another experiment")
+        if (
+            child_run.resumed_from_run_id is None
+            or child_run.resume_checkpoint_id is None
+            or child_run.resumed_from_run_id not in current.experiment.run_ids
+        ):
+            raise IntegrityError("resume attempt has invalid source lineage")
+        if updated_experiment.run_ids != [
+            *current.experiment.run_ids,
+            child_run.run_id,
+        ]:
+            raise IntegrityError("experiment must append exactly one resume attempt")
+        if child_run.run_id in current.experiment.run_ids:
+            raise IntegrityError("resume attempt is already linked")
+        before = current.experiment.model_dump(mode="python")
+        after = updated_experiment.model_dump(mode="python")
+        for field in {"run_ids", "updated_at"}:
+            before.pop(field, None)
+            after.pop(field, None)
+        if before != after:
+            raise IntegrityError("run linkage mutated frozen experiment fields")
+        if updated_experiment.updated_at < current.experiment.updated_at:
+            raise IntegrityError("experiment linkage timestamp moved backward")
+        updated = ExperimentJournal(
+            experiment=updated_experiment,
+            transitions=current.transitions,
         )
         data = canonical_json_bytes(updated)
         _atomic_replace(path, data)

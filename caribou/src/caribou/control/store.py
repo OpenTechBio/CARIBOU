@@ -18,30 +18,41 @@ from pydantic import BaseModel
 from caribou.config import CARIBOU_HOME
 from caribou.domain.enums import (
     ArtifactType,
+    CheckpointComponent,
     EventType,
     ExecutorKind,
     ExperimentState,
     InterfaceOrigin,
+    MemoryStrategy,
     RetentionPolicy,
     RunState,
 )
 from caribou.domain.ids import new_id
-from caribou.domain.lifecycle import transition_experiment, transition_run
+from caribou.domain.lifecycle import (
+    create_resume_attempt,
+    transition_experiment,
+    transition_run,
+)
 from caribou.domain.models import (
     Artifact,
     ArtifactCreatedPayload,
+    Checkpoint,
+    CheckpointCreatedPayload,
     Event,
     EventPayload,
     Experiment,
     ExperimentSpec,
     HeartbeatPayload,
     Run,
+    checkpoint_integrity_hash,
     utc_now,
 )
 from caribou.domain.serialization import (
     IntegrityError,
     canonical_json_bytes,
+    commit_experiment_run_link,
     commit_experiment_transition,
+    commit_run_checkpoint,
     commit_run_event,
     commit_run_scheduler_binding,
     commit_run_transition,
@@ -61,6 +72,7 @@ from .api import ControlError, ExitCode
 from .records import (
     ArtifactManifest,
     CancelRequest,
+    CheckpointRequest,
     ExecutionHandle,
     IdempotencyClaim,
     SlurmAccounting,
@@ -70,7 +82,13 @@ from .records import (
     SlurmSubmissionLedger,
     StoreIndex,
 )
-from .specs import build_local_plan, validate_control_spec
+from .specs import (
+    ADAPTER_PARAMETER,
+    AGENT_PATH_SMOKE_ADAPTER,
+    CARIBOU_AGENT_ADAPTER,
+    build_local_plan,
+    validate_control_spec,
+)
 
 
 TERMINAL_RUN_STATES = frozenset(
@@ -80,6 +98,14 @@ TERMINAL_RUN_STATES = frozenset(
         RunState.cancelled,
         RunState.rejected,
         RunState.resumable,
+    }
+)
+
+SUPPORTED_RESUME_REQUIREMENTS = frozenset(
+    {
+        "dataset_binding=checkpoint",
+        "memory_strategy=full",
+        "runner_state_schema=caribou.agent_session_checkpoint_state.v1",
     }
 )
 
@@ -100,6 +126,14 @@ class Submission:
     experiment: Experiment
     runs: tuple[Run, ...]
     plan: dict
+    idempotent_replay: bool
+
+
+@dataclass(frozen=True)
+class ResumeSubmission:
+    source: Run
+    checkpoint: Checkpoint
+    child: Run
     idempotent_replay: bool
 
 
@@ -147,6 +181,9 @@ class ExperimentStore:
 
     def cancel_request_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "control.json"
+
+    def checkpoint_request_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "checkpoint-request.json"
 
     def scheduler_handle_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "scheduler.json"
@@ -519,6 +556,7 @@ class ExperimentStore:
         *,
         reason: str,
         actor: str,
+        checkpoint: Optional[Checkpoint] = None,
         exit_code: Optional[int] = None,
     ) -> tuple[Run, bool]:
         path = self.run_journal_path(run_id)
@@ -528,6 +566,7 @@ class ExperimentStore:
             target,
             reason=reason,
             actor=actor,
+            checkpoint=checkpoint,
             exit_code=exit_code,
         )
         if not transition.applied:
@@ -542,6 +581,7 @@ class ExperimentStore:
         *,
         reason: str,
         actor: str,
+        checkpoint: Optional[Checkpoint] = None,
         exit_code: Optional[int] = None,
     ) -> tuple[Run, bool]:
         with self.mutation_lock():
@@ -550,6 +590,7 @@ class ExperimentStore:
                 target,
                 reason=reason,
                 actor=actor,
+                checkpoint=checkpoint,
                 exit_code=exit_code,
             )
 
@@ -579,6 +620,587 @@ class ExperimentStore:
 
     def cancel_requested(self, run_id: str) -> bool:
         return self.cancel_request_path(run_id).is_file()
+
+    def checkpoint_request(self, run_id: str) -> Optional[CheckpointRequest]:
+        path = self.checkpoint_request_path(run_id)
+        return self._read(path, CheckpointRequest) if path.is_file() else None
+
+    @staticmethod
+    def _require_supported_checkpoint_memory(run: Run) -> None:
+        if run.resolved_memory.strategy != MemoryStrategy.full:
+            raise ControlError(
+                "CHECKPOINT_MEMORY_UNSUPPORTED",
+                "checkpoint recovery currently supports only full-history memory",
+                exit_code=ExitCode.conflict,
+                details={"memory_strategy": run.resolved_memory.strategy.value},
+            )
+
+    def _require_supported_checkpoint_adapter(self, run: Run) -> None:
+        condition = next(
+            item
+            for item in self.spec(run.experiment_id).conditions
+            if item.condition_id == run.condition_id
+        )
+        adapter = condition.parameters.get(ADAPTER_PARAMETER)
+        if adapter not in {AGENT_PATH_SMOKE_ADAPTER, CARIBOU_AGENT_ADAPTER}:
+            raise ControlError(
+                "CHECKPOINT_ADAPTER_UNSUPPORTED",
+                "checkpoint recovery is available only for agent workloads",
+                exit_code=ExitCode.conflict,
+                details={"run_id": run.run_id, "adapter": adapter},
+            )
+
+    def request_checkpoint(
+        self,
+        run_id: str,
+        *,
+        idempotency_key: str,
+        actor: str,
+        reason: str,
+    ) -> tuple[Run, CheckpointRequest, bool]:
+        """Request one cooperative stop at the next completed-turn boundary."""
+
+        if (
+            not idempotency_key.strip()
+            or idempotency_key != idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ControlError(
+                "IDEMPOTENCY_KEY_INVALID",
+                "checkpoint idempotency key must be trimmed and at most 256 characters",
+                exit_code=ExitCode.validation,
+            )
+        key_hash = self._idempotency_hash(f"checkpoint:v1:{idempotency_key}")
+        with self.mutation_lock():
+            run = self.run(run_id)
+            self._require_supported_checkpoint_memory(run)
+            self._require_supported_checkpoint_adapter(run)
+            existing = self.checkpoint_request(run_id)
+            if existing is not None:
+                if existing.idempotency_key_hash != key_hash:
+                    raise ControlError(
+                        "CHECKPOINT_REQUEST_CONFLICT",
+                        "the run already has another checkpoint request",
+                        exit_code=ExitCode.conflict,
+                        details={"run_id": run_id},
+                    )
+                return run, existing, False
+            if run.state in TERMINAL_RUN_STATES:
+                raise ControlError(
+                    "RUN_TERMINAL",
+                    "a terminal run cannot accept a new checkpoint request",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": run.state.value},
+                )
+            request = CheckpointRequest(
+                run_id=run_id,
+                idempotency_key_hash=key_hash,
+                actor=actor,
+                reason=reason,
+            )
+            write_model(self.checkpoint_request_path(run_id), request)
+            return run, request, True
+
+    def checkpoint_requested(self, run_id: str) -> bool:
+        return self.checkpoint_request_path(run_id).is_file()
+
+    def checkpoints(self, run_id: str) -> tuple[Checkpoint, ...]:
+        self.run(run_id)
+        return tuple(read_run_journal(self.run_journal_path(run_id)).checkpoints)
+
+    def checkpoint(self, run_id: str, checkpoint_id: str) -> Checkpoint:
+        checkpoint = next(
+            (
+                item
+                for item in self.checkpoints(run_id)
+                if item.checkpoint_id == checkpoint_id
+            ),
+            None,
+        )
+        if checkpoint is None:
+            raise ControlError(
+                "CHECKPOINT_NOT_FOUND",
+                f"checkpoint {checkpoint_id} is not linked to run {run_id}",
+                exit_code=ExitCode.not_found,
+            )
+        return checkpoint
+
+    @staticmethod
+    def _checkpoint_id(run_id: str, request: CheckpointRequest) -> str:
+        digest = sha256_bytes(
+            f"checkpoint:v1:{run_id}:{request.idempotency_key_hash}".encode("utf-8")
+        )
+        return f"chk_{digest.removeprefix('sha256:')[:32]}"
+
+    def record_checkpoint(
+        self,
+        run_id: str,
+        *,
+        stage: str,
+        turn: int,
+        current_agent: str,
+        dataset_artifact_id: str,
+        message_history_artifact_id: str,
+        agent_state_artifact_id: str,
+        executed_actions_artifact_id: str,
+        artifact_manifest_id: str,
+        resume_requirements: list[str],
+        actor: str,
+    ) -> Checkpoint:
+        """Atomically publish one complete checkpoint envelope and event."""
+
+        if (
+            len(resume_requirements) != len(set(resume_requirements))
+            or frozenset(resume_requirements) != SUPPORTED_RESUME_REQUIREMENTS
+        ):
+            raise ControlError(
+                "CHECKPOINT_REQUIREMENTS_UNSUPPORTED",
+                "checkpoint resume requirements do not match the supported slice",
+                exit_code=ExitCode.validation,
+                details={"requirements": resume_requirements},
+            )
+        with self.mutation_lock():
+            request = self.checkpoint_request(run_id)
+            if request is None:
+                raise ControlError(
+                    "CHECKPOINT_NOT_REQUESTED",
+                    "a checkpoint cannot be published without a durable request",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id},
+                )
+            checkpoint_id = self._checkpoint_id(run_id, request)
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            self._require_supported_checkpoint_memory(journal.run)
+            self._require_supported_checkpoint_adapter(journal.run)
+            existing = next(
+                (
+                    item
+                    for item in journal.checkpoints
+                    if item.checkpoint_id == checkpoint_id
+                ),
+                None,
+            )
+            if existing is not None:
+                expected_ids = (
+                    existing.dataset_artifact_id,
+                    existing.message_history_artifact_id,
+                    existing.agent_state_artifact_id,
+                    existing.executed_actions_artifact_id,
+                    existing.artifact_manifest_id,
+                )
+                supplied_ids = (
+                    dataset_artifact_id,
+                    message_history_artifact_id,
+                    agent_state_artifact_id,
+                    executed_actions_artifact_id,
+                    artifact_manifest_id,
+                )
+                if expected_ids != supplied_ids:
+                    raise ControlError(
+                        "CHECKPOINT_REPLAY_CONFLICT",
+                        "checkpoint replay supplied different component artifacts",
+                        exit_code=ExitCode.integrity,
+                        details={"checkpoint_id": checkpoint_id},
+                    )
+                if journal.run.state == RunState.running:
+                    self._transition_run_unlocked(
+                        run_id,
+                        RunState.checkpointed,
+                        reason=request.reason,
+                        actor=actor,
+                        checkpoint=existing,
+                    )
+                return existing
+            if journal.checkpoints:
+                raise ControlError(
+                    "CHECKPOINT_ALREADY_EXISTS",
+                    "the first checkpoint slice supports one checkpoint per attempt",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id},
+                )
+            if journal.run.state != RunState.running:
+                raise ControlError(
+                    "RUN_NOT_CHECKPOINTABLE",
+                    "checkpoint finalization requires a running attempt",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            if (
+                turn != journal.run.current_turn
+                or current_agent != journal.run.current_agent
+            ):
+                raise ControlError(
+                    "CHECKPOINT_CURSOR_MISMATCH",
+                    "checkpoint state differs from the durable completed-turn cursor",
+                    exit_code=ExitCode.integrity,
+                    details={
+                        "run_id": run_id,
+                        "checkpoint_turn": turn,
+                        "run_turn": journal.run.current_turn,
+                    },
+                )
+            component_ids = (
+                dataset_artifact_id,
+                message_history_artifact_id,
+                agent_state_artifact_id,
+                executed_actions_artifact_id,
+                artifact_manifest_id,
+            )
+            if len(set(component_ids)) != len(component_ids):
+                raise ControlError(
+                    "CHECKPOINT_COMPONENT_DUPLICATED",
+                    "checkpoint components must reference distinct artifacts",
+                    exit_code=ExitCode.integrity,
+                )
+            manifest = self.artifact_manifest(run_id)
+            artifacts = {
+                artifact.artifact_id: artifact for artifact in manifest.artifacts
+            }
+            if any(identifier not in artifacts for identifier in component_ids):
+                raise ControlError(
+                    "CHECKPOINT_COMPONENT_MISSING",
+                    "checkpoint references an artifact absent from the run manifest",
+                    exit_code=ExitCode.integrity,
+                    details={"run_id": run_id},
+                )
+            expected_roles = (
+                "checkpoint_dataset_state",
+                "checkpoint_message_history",
+                "checkpoint_agent_state",
+                "checkpoint_executed_actions",
+                "checkpoint_artifact_manifest",
+            )
+            observed_roles = tuple(
+                artifacts[identifier].role for identifier in component_ids
+            )
+            if observed_roles != expected_roles:
+                raise ControlError(
+                    "CHECKPOINT_COMPONENT_ROLE_INVALID",
+                    "checkpoint components do not match their declared semantic roles",
+                    exit_code=ExitCode.integrity,
+                    details={
+                        "expected_roles": list(expected_roles),
+                        "observed_roles": list(observed_roles),
+                    },
+                )
+            self.verify_artifacts(run_id)
+
+            timestamp = utc_now()
+            event = Event(
+                experiment_id=journal.run.experiment_id,
+                run_id=run_id,
+                sequence=journal.run.event_sequence + 1,
+                occurred_at=timestamp,
+                event_type=EventType.checkpoint_created,
+                turn=turn,
+                actor=actor,
+                payload=CheckpointCreatedPayload(checkpoint_id=checkpoint_id),
+            )
+            provisional = Checkpoint(
+                checkpoint_id=checkpoint_id,
+                experiment_id=journal.run.experiment_id,
+                run_id=run_id,
+                event_id=event.event_id,
+                event_sequence=event.sequence,
+                stage=stage,
+                turn=turn,
+                created_at=timestamp,
+                components=[
+                    CheckpointComponent.dataset_state,
+                    CheckpointComponent.message_history,
+                    CheckpointComponent.agent_state,
+                    CheckpointComponent.executed_actions,
+                    CheckpointComponent.artifact_manifest,
+                ],
+                dataset_artifact_id=dataset_artifact_id,
+                message_history_artifact_id=message_history_artifact_id,
+                agent_state_artifact_id=agent_state_artifact_id,
+                executed_actions_artifact_id=executed_actions_artifact_id,
+                artifact_manifest_id=artifact_manifest_id,
+                spec_hash=journal.run.spec_hash,
+                code_commit=journal.run.code.commit,
+                container_digest=journal.run.container.image.content_hash,
+                model_identity=(
+                    f"{journal.run.resolved_model.provider}:"
+                    f"{journal.run.resolved_model.model}"
+                ),
+                integrity_hash="sha256:" + "0" * 64,
+                resume_requirements=resume_requirements,
+            )
+            checkpoint = Checkpoint.model_validate_json(
+                provisional.model_copy(
+                    update={"integrity_hash": checkpoint_integrity_hash(provisional)}
+                ).model_dump_json()
+            )
+            updated_run = self._validated_run(
+                journal.run,
+                {
+                    "checkpoint_ids": [*journal.run.checkpoint_ids, checkpoint_id],
+                    "event_sequence": event.sequence,
+                    "current_turn": turn,
+                    "current_agent": current_agent,
+                    "updated_at": timestamp,
+                },
+            )
+            commit_run_checkpoint(
+                journal_path,
+                updated_run,
+                checkpoint,
+                event,
+                expected_hash=file_hash(journal_path),
+            )
+            self._transition_run_unlocked(
+                run_id,
+                RunState.checkpointed,
+                reason=request.reason,
+                actor=actor,
+                checkpoint=checkpoint,
+            )
+            return checkpoint
+
+    @staticmethod
+    def _resume_run_id(idempotency_key: str) -> str:
+        digest = sha256_bytes(
+            f"resume:v1:{idempotency_key}".encode("utf-8")
+        ).removeprefix("sha256:")
+        return f"run_{digest[:32]}"
+
+    @staticmethod
+    def _validate_resume_child(
+        source: Run,
+        checkpoint: Checkpoint,
+        child: Run,
+        *,
+        idempotency_key: str,
+        interface: InterfaceOrigin,
+    ) -> None:
+        expected = create_resume_attempt(
+            source,
+            checkpoint=checkpoint,
+            idempotency_key=idempotency_key,
+            run_id=child.run_id,
+            interface=interface,
+            at=child.created_at,
+        )
+        mutable_fields = {
+            "state",
+            "scheduler_job_id",
+            "current_turn",
+            "current_agent",
+            "event_sequence",
+            "artifact_ids",
+            "metric_record_ids",
+            "failure_ids",
+            "checkpoint_ids",
+            "budget_record_ids",
+            "updated_at",
+            "queued_at",
+            "started_at",
+            "ended_at",
+            "terminal_outcome",
+            "end_reason",
+            "exit_code",
+            "resume_eligible",
+        }
+        observed_values = child.model_dump(mode="python")
+        expected_values = expected.model_dump(mode="python")
+        for field in mutable_fields:
+            observed_values.pop(field, None)
+            expected_values.pop(field, None)
+        if observed_values != expected_values:
+            raise ControlError(
+                "RESUME_CHILD_INCOMPATIBLE",
+                "the durable child differs from its frozen source checkpoint",
+                exit_code=ExitCode.integrity,
+                details={"child_run_id": child.run_id},
+            )
+
+    def resume(
+        self,
+        source_run_id: str,
+        *,
+        checkpoint_id: str,
+        idempotency_key: str,
+        interface: InterfaceOrigin = InterfaceOrigin.cli,
+    ) -> ResumeSubmission:
+        """Create or repair one idempotent child attempt from a checkpoint."""
+
+        if (
+            not idempotency_key.strip()
+            or idempotency_key != idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ControlError(
+                "IDEMPOTENCY_KEY_INVALID",
+                "resume idempotency key must be trimmed and at most 256 characters",
+                exit_code=ExitCode.validation,
+            )
+        child_id = self._resume_run_id(idempotency_key)
+        with self.mutation_lock():
+            source = self.run(source_run_id)
+            self._require_supported_checkpoint_memory(source)
+            self._require_supported_checkpoint_adapter(source)
+            checkpoint = self.checkpoint(source_run_id, checkpoint_id)
+            if source.state != RunState.resumable or not source.resume_eligible:
+                raise ControlError(
+                    "RUN_NOT_RESUMABLE",
+                    "only a terminal resumable attempt can create a child",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": source_run_id, "state": source.state.value},
+                )
+            if checkpoint_id not in source.checkpoint_ids:
+                raise ControlError(
+                    "CHECKPOINT_NOT_ATTACHED",
+                    "the selected checkpoint is not attached to the source attempt",
+                    exit_code=ExitCode.integrity,
+                )
+            if (
+                frozenset(checkpoint.resume_requirements)
+                != SUPPORTED_RESUME_REQUIREMENTS
+            ):
+                raise ControlError(
+                    "CHECKPOINT_REQUIREMENTS_UNSUPPORTED",
+                    "the checkpoint requires an unsupported restore capability",
+                    exit_code=ExitCode.conflict,
+                    details={"requirements": checkpoint.resume_requirements},
+                )
+            self.verify_artifacts(source_run_id)
+
+            experiment_path = self.experiment_journal_path(source.experiment_id)
+            experiment_journal = read_experiment_journal(experiment_path)
+            existing_children = []
+            for run_id in experiment_journal.experiment.run_ids:
+                candidate = self.run(run_id)
+                if (
+                    candidate.resumed_from_run_id == source_run_id
+                    and candidate.resume_checkpoint_id == checkpoint_id
+                ):
+                    existing_children.append(candidate)
+            if len(existing_children) > 1:
+                raise ControlError(
+                    "CHECKPOINT_RESUME_AMBIGUOUS",
+                    "multiple children consume one non-branching checkpoint",
+                    exit_code=ExitCode.integrity,
+                    details={"checkpoint_id": checkpoint_id},
+                )
+            if existing_children:
+                existing_child = existing_children[0]
+                if (
+                    existing_child.run_id != child_id
+                    or existing_child.idempotency_key != idempotency_key
+                ):
+                    raise ControlError(
+                        "CHECKPOINT_ALREADY_RESUMED",
+                        "the checkpoint is already bound to another resume request",
+                        exit_code=ExitCode.conflict,
+                        details={"child_run_id": existing_child.run_id},
+                    )
+                child = existing_child
+                replay = True
+            elif self.run_journal_path(child_id).exists():
+                child = self.run(child_id)
+                if (
+                    child.resumed_from_run_id != source_run_id
+                    or child.resume_checkpoint_id != checkpoint_id
+                    or child.idempotency_key != idempotency_key
+                ):
+                    raise ControlError(
+                        "RESUME_IDEMPOTENCY_CONFLICT",
+                        "the resume key is already bound to different lineage",
+                        exit_code=ExitCode.conflict,
+                        details={"child_run_id": child_id},
+                    )
+                replay = True
+            else:
+                child = create_resume_attempt(
+                    source,
+                    checkpoint=checkpoint,
+                    idempotency_key=idempotency_key,
+                    run_id=child_id,
+                    interface=interface,
+                )
+                child_directory = self.run_dir(child.run_id)
+                child_directory.mkdir(parents=True, mode=0o700)
+                initialize_run_journal(self.run_journal_path(child.run_id), child)
+                write_model(
+                    self.artifact_manifest_path(child.run_id),
+                    ArtifactManifest(run_id=child.run_id),
+                )
+                replay = False
+
+            self._validate_resume_child(
+                source,
+                checkpoint,
+                child,
+                idempotency_key=idempotency_key,
+                interface=interface,
+            )
+
+            experiment_journal = read_experiment_journal(experiment_path)
+            if child.run_id not in experiment_journal.experiment.run_ids:
+                linked_experiment = Experiment.model_validate_json(
+                    experiment_journal.experiment.model_copy(
+                        update={
+                            "run_ids": [
+                                *experiment_journal.experiment.run_ids,
+                                child.run_id,
+                            ],
+                            "updated_at": utc_now(),
+                        }
+                    ).model_dump_json()
+                )
+                commit_experiment_run_link(
+                    experiment_path,
+                    linked_experiment,
+                    child,
+                    expected_hash=file_hash(experiment_path),
+                )
+
+            index = self._read_index_unlocked()
+            indexed_experiment = index.runs.get(child.run_id)
+            if indexed_experiment not in {None, source.experiment_id}:
+                raise ControlError(
+                    "RESUME_INDEX_CONFLICT",
+                    "the child run ID is indexed to another experiment",
+                    exit_code=ExitCode.integrity,
+                )
+            experiment_runs = list(index.experiments.get(source.experiment_id, ()))
+            if child.run_id not in experiment_runs:
+                experiment_runs.append(child.run_id)
+            experiments = dict(index.experiments)
+            experiments[source.experiment_id] = tuple(experiment_runs)
+            runs = dict(index.runs)
+            runs[child.run_id] = source.experiment_id
+            if (
+                index.experiments.get(source.experiment_id) != tuple(experiment_runs)
+                or indexed_experiment is None
+            ):
+                write_model(
+                    self.index_path,
+                    StoreIndex(
+                        experiments=experiments,
+                        runs=runs,
+                        idempotency=index.idempotency,
+                        updated_at=utc_now(),
+                    ),
+                    expected_hash=file_hash(self.index_path),
+                )
+
+            child = self.run(child.run_id)
+            if child.state == RunState.planned:
+                child, _ = self._transition_run_unlocked(
+                    child.run_id,
+                    RunState.queued,
+                    reason=f"resume accepted by {child.executor.value} executor",
+                    actor="control-plane",
+                )
+            return ResumeSubmission(
+                source=source,
+                checkpoint=checkpoint,
+                child=child,
+                idempotent_replay=replay,
+            )
 
     def artifact_manifest(self, run_id: str) -> ArtifactManifest:
         return self._read(self.artifact_manifest_path(run_id), ArtifactManifest)
@@ -911,6 +1533,147 @@ class ExperimentStore:
                 current_agent=current_agent,
             )
 
+    def record_idempotent_file_artifact(
+        self,
+        run_id: str,
+        *,
+        source: Path,
+        filename: str,
+        role: str,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str,
+        schema_type: Optional[str] = None,
+        schema_version_name: Optional[str] = None,
+        turn: Optional[int] = None,
+        current_agent: Optional[str] = None,
+    ) -> Artifact:
+        """Copy or repair one immutable named file artifact exactly once."""
+
+        if filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise ControlError(
+                "ARTIFACT_FILENAME_INVALID",
+                "artifact filename must be one path-safe component",
+                exit_code=ExitCode.validation,
+                details={"filename": filename},
+            )
+        candidate = source.expanduser()
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ControlError(
+                "ARTIFACT_SOURCE_INVALID",
+                "artifact source must be a regular non-symlink file",
+                exit_code=ExitCode.integrity,
+                details={"source": str(candidate)},
+            )
+        expected_hash = file_hash(candidate)
+        expected_size = candidate.stat().st_size
+        with self.mutation_lock():
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
+                raise ControlError(
+                    "RUN_NOT_WRITABLE",
+                    "artifacts can be registered only while an attempt is running",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            existing = self._repair_named_artifact_unlocked(
+                journal_path=journal_path,
+                journal_run=journal.run,
+                filename=filename,
+                role=role,
+                content_hash=expected_hash,
+                size_bytes=expected_size,
+                producer=producer,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                schema_type=schema_type,
+                schema_version_name=schema_version_name,
+                turn=turn,
+                current_agent=current_agent,
+            )
+            if existing is not None:
+                return existing
+            artifact_id = new_id("art")
+            storage_uri = f"artifacts/{artifact_id}-{filename}"
+            destination = self.run_dir(run_id) / storage_uri
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+            )
+            temporary = Path(temporary_name)
+            try:
+                with (
+                    os.fdopen(descriptor, "wb") as output,
+                    candidate.open("rb") as input_file,
+                ):
+                    shutil.copyfileobj(input_file, output, length=1024 * 1024)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if (
+                    file_hash(temporary) != expected_hash
+                    or temporary.stat().st_size != expected_size
+                ):
+                    raise ControlError(
+                        "ARTIFACT_SOURCE_CHANGED",
+                        "artifact source changed while it was copied",
+                        exit_code=ExitCode.integrity,
+                        details={"source": str(candidate)},
+                    )
+                os.replace(temporary, destination)
+                directory_fd = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+            try:
+                return self._commit_artifact_unlocked(
+                    journal_path=journal_path,
+                    journal_run=journal.run,
+                    artifact_id=artifact_id,
+                    filename=filename,
+                    storage_uri=storage_uri,
+                    role=role,
+                    producer=producer,
+                    artifact_type=artifact_type,
+                    media_type=media_type,
+                    schema_type=schema_type,
+                    schema_version_name=schema_version_name,
+                    content_hash=expected_hash,
+                    size_bytes=expected_size,
+                    turn=turn,
+                    current_agent=current_agent,
+                )
+            except Exception:
+                current = read_run_journal(journal_path)
+                recovered = self._repair_named_artifact_unlocked(
+                    journal_path=journal_path,
+                    journal_run=current.run,
+                    filename=filename,
+                    role=role,
+                    content_hash=expected_hash,
+                    size_bytes=expected_size,
+                    producer=producer,
+                    artifact_type=artifact_type,
+                    media_type=media_type,
+                    schema_type=schema_type,
+                    schema_version_name=schema_version_name,
+                    turn=turn,
+                    current_agent=current_agent,
+                )
+                if recovered is None:
+                    raise
+                return recovered
+
     def _record_artifact_bytes_unlocked(
         self,
         *,
@@ -955,7 +1718,9 @@ class ExperimentStore:
         journal_run: Run,
         filename: str,
         role: str,
-        data: bytes,
+        data: Optional[bytes] = None,
+        content_hash: Optional[str] = None,
+        size_bytes: Optional[int] = None,
         producer: str,
         artifact_type: ArtifactType,
         media_type: str,
@@ -964,6 +1729,17 @@ class ExperimentStore:
         turn: Optional[int],
         current_agent: Optional[str],
     ) -> Optional[Artifact]:
+        if data is not None:
+            expected_hash = sha256_bytes(data)
+            expected_size = len(data)
+            if content_hash is not None and content_hash != expected_hash:
+                raise ValueError("artifact data and supplied hash disagree")
+            if size_bytes is not None and size_bytes != expected_size:
+                raise ValueError("artifact data and supplied size disagree")
+            content_hash = expected_hash
+            size_bytes = expected_size
+        if content_hash is None or size_bytes is None:
+            raise ValueError("idempotent artifact repair requires hash and size")
         matches = tuple(
             artifact
             for artifact in self.artifact_manifest(journal_run.run_id).artifacts
@@ -983,7 +1759,6 @@ class ExperimentStore:
                 },
             )
         existing = matches[0]
-        content_hash = sha256_bytes(data)
         if (
             existing.producer != producer
             or existing.artifact_type != artifact_type
@@ -991,7 +1766,7 @@ class ExperimentStore:
             or existing.schema_type != schema_type
             or existing.schema_version_name != schema_version_name
             or existing.content_hash != content_hash
-            or existing.size_bytes != len(data)
+            or existing.size_bytes != size_bytes
         ):
             raise ControlError(
                 "IDEMPOTENT_ARTIFACT_CONFLICT",
@@ -1687,9 +2462,33 @@ class ExperimentStore:
             journal = read_experiment_journal(experiment_path)
             if journal.experiment.state != ExperimentState.active:
                 return journal.experiment
-            if not all(run.state in TERMINAL_RUN_STATES for run in runs):
+            attempts: dict[tuple[str, int], list[Run]] = {}
+            for run in runs:
+                attempts.setdefault((run.condition_id, run.replicate_index), []).append(
+                    run
+                )
+            leaves: list[Run] = []
+            for key, lineage in attempts.items():
+                indices = [run.attempt_index for run in lineage]
+                if len(indices) != len(set(indices)):
+                    raise ControlError(
+                        "ATTEMPT_LINEAGE_AMBIGUOUS",
+                        "a condition replicate has duplicate attempt indices",
+                        exit_code=ExitCode.integrity,
+                        details={
+                            "experiment_id": experiment_id,
+                            "condition_id": key[0],
+                            "replicate_index": key[1],
+                        },
+                    )
+                leaves.append(max(lineage, key=lambda item: item.attempt_index))
+            if any(run.state == RunState.resumable for run in leaves):
+                # A resumable leaf is deliberately terminal at the attempt level,
+                # but the logical experiment remains active while awaiting a child.
                 return journal.experiment
-            if all(run.state == RunState.succeeded for run in runs):
+            if not all(run.state in TERMINAL_RUN_STATES for run in leaves):
+                return journal.experiment
+            if all(run.state == RunState.succeeded for run in leaves):
                 first = transition_experiment(
                     journal.experiment,
                     ExperimentState.aggregating,
@@ -1712,7 +2511,7 @@ class ExperimentStore:
             target = (
                 ExperimentState.failed
                 if any(
-                    run.state in {RunState.failed, RunState.rejected} for run in runs
+                    run.state in {RunState.failed, RunState.rejected} for run in leaves
                 )
                 else ExperimentState.cancelled
             )

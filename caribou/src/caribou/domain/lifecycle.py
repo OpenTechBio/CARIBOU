@@ -20,6 +20,7 @@ from .models import (
     ExperimentTransitionRecord,
     NonEmptyStr,
     Run,
+    RunId,
     StateTransitionPayload,
     checkpoint_integrity_hash,
     utc_now,
@@ -308,6 +309,7 @@ def create_resume_attempt(
     *,
     checkpoint: Checkpoint,
     idempotency_key: NonEmptyStr,
+    run_id: Optional[RunId] = None,
     interface: Optional[InterfaceOrigin] = None,
     at: Optional[datetime] = None,
 ) -> Run:
@@ -327,7 +329,7 @@ def create_resume_attempt(
         )
     timestamp = at or utc_now()
     updates = {
-        "run_id": new_id("run"),
+        "run_id": run_id or new_id("run"),
         "attempt_index": interrupted.attempt_index + 1,
         "idempotency_key": idempotency_key,
         "interface": interface or interrupted.interface,

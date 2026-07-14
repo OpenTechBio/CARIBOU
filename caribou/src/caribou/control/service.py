@@ -8,13 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from caribou.domain.enums import ExecutorKind, RunState
-from caribou.domain.models import Artifact, Event, ExperimentSpec, Run
+from caribou.domain.models import Artifact, Checkpoint, Event, ExperimentSpec, Run
 
 from .api import ControlError, ExitCode
 from .executor import LaunchResult, LocalProcessExecutor
 from .slurm import ReconciliationResult, SchedulerObservation, SlurmExecutor
 from .specs import build_local_plan, load_experiment_spec
-from .store import ExperimentStore, Submission
+from .records import CheckpointRequest
+from .store import ExperimentStore, ResumeSubmission, Submission
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,19 @@ class CancellationResult:
     run: Run
     applied: bool
     scheduler_signalled: bool
+
+
+@dataclass(frozen=True)
+class CheckpointRequestResult:
+    run: Run
+    request: CheckpointRequest
+    applied: bool
+
+
+@dataclass(frozen=True)
+class ResumedExperiment:
+    submission: ResumeSubmission
+    launches: tuple[LaunchResult, ...]
 
 
 class ExperimentService:
@@ -106,10 +120,7 @@ class ExperimentService:
     def cancel(self, run_id: str, *, reason: str) -> CancellationResult:
         run, applied = self.store.request_cancel(run_id, actor="cli", reason=reason)
         scheduler_signalled = False
-        if (
-            run.executor == ExecutorKind.slurm
-            and run.state == RunState.cancelling
-        ):
+        if run.executor == ExecutorKind.slurm and run.state == RunState.cancelling:
             scheduler_signalled = self.slurm_executor.cancel(self.store, run_id)
             run = self.store.run(run_id)
             if run.state == RunState.cancelled:
@@ -119,6 +130,51 @@ class ExperimentService:
             applied=applied,
             scheduler_signalled=scheduler_signalled,
         )
+
+    def request_checkpoint(
+        self, run_id: str, *, idempotency_key: str, reason: str
+    ) -> CheckpointRequestResult:
+        run, request, applied = self.store.request_checkpoint(
+            run_id,
+            idempotency_key=idempotency_key,
+            actor="cli",
+            reason=reason,
+        )
+        return CheckpointRequestResult(run=run, request=request, applied=applied)
+
+    def checkpoints(self, run_id: str) -> tuple[Checkpoint, ...]:
+        return self.store.checkpoints(run_id)
+
+    def resume(
+        self,
+        run_id: str,
+        *,
+        checkpoint_id: str,
+        idempotency_key: str,
+    ) -> ResumedExperiment:
+        submission = self.store.resume(
+            run_id,
+            checkpoint_id=checkpoint_id,
+            idempotency_key=idempotency_key,
+        )
+        child = submission.child
+        selected_executor = (
+            self.slurm_executor
+            if child.executor == ExecutorKind.slurm
+            else self.executor
+        )
+        launches = (
+            (selected_executor.launch(self.store, child.run_id),)
+            if child.state == RunState.queued
+            else ()
+        )
+        refreshed = ResumeSubmission(
+            source=self.store.run(submission.source.run_id),
+            checkpoint=submission.checkpoint,
+            child=self.store.run(child.run_id),
+            idempotent_replay=submission.idempotent_replay,
+        )
+        return ResumedExperiment(submission=refreshed, launches=launches)
 
     def inspect_scheduler(self, run_id: str) -> SchedulerObservation:
         return self.slurm_executor.inspect(self.store, run_id)

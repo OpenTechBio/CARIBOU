@@ -168,6 +168,19 @@ class CancelRequest(ControlRecord):
     reason: NonEmptyStr
 
 
+class CheckpointRequest(ControlRecord):
+    """One idempotent request to stop a run at its next safe turn boundary."""
+
+    schema_version: Literal["caribou.checkpoint_request.v1"] = (
+        "caribou.checkpoint_request.v1"
+    )
+    run_id: RunId
+    idempotency_key_hash: ContentHash
+    requested_at: UtcDatetime = Field(default_factory=utc_now)
+    actor: NonEmptyStr
+    reason: NonEmptyStr
+
+
 class ProviderCallUsage(ControlRecord):
     """Whitelisted token counts returned by one provider call attempt."""
 

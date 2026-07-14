@@ -81,6 +81,27 @@ def execute(store: ExperimentStore, run_id: str) -> int:
     actor = _worker_actor(run)
     try:
         _validate_execution_context(run)
+        checkpoints = store.checkpoints(run_id)
+        if len(checkpoints) == 1 and run.state in {
+            RunState.running,
+            RunState.checkpointed,
+        }:
+            store.transition_run(
+                run_id,
+                RunState.resumable,
+                reason="worker recovered an already committed safe-boundary checkpoint",
+                actor=actor,
+                checkpoint=checkpoints[0],
+                exit_code=0,
+            )
+            return 0
+        if checkpoints:
+            raise ControlError(
+                "CHECKPOINT_RESTART_AMBIGUOUS",
+                "worker restart found checkpoint lineage outside the supported slice",
+                exit_code=ExitCode.integrity,
+                details={"run_id": run_id, "count": len(checkpoints)},
+            )
         if store.cancel_requested(run_id):
             _finalize_cancel(store, run_id)
             store.reconcile_experiment(run.experiment_id)
@@ -102,9 +123,7 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                     reason="lifecycle smoke workload initialized",
                     actor=actor,
                 )
-            duration = float(
-                condition.parameters.get(SMOKE_SECONDS_PARAMETER, 0.05)
-            )
+            duration = float(condition.parameters.get(SMOKE_SECONDS_PARAMETER, 0.05))
             deadline = time.monotonic() + duration
             while time.monotonic() < deadline:
                 if store.cancel_requested(run_id):
@@ -144,6 +163,34 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                 _finalize_cancel(store, run_id)
                 store.reconcile_experiment(run.experiment_id)
                 return int(ExitCode.cancelled)
+            if result.end_reason == "checkpointed":
+                checkpoints = store.checkpoints(run_id)
+                if len(checkpoints) != 1:
+                    raise ControlError(
+                        "CHECKPOINT_OUTCOME_INVALID",
+                        "checkpointed worker outcome requires exactly one checkpoint",
+                        exit_code=ExitCode.integrity,
+                        details={"run_id": run_id, "count": len(checkpoints)},
+                    )
+                current = store.run(run_id)
+                if current.state != RunState.checkpointed:
+                    raise ControlError(
+                        "CHECKPOINT_OUTCOME_INVALID",
+                        "checkpointed worker outcome lacks a checkpointed run state",
+                        exit_code=ExitCode.integrity,
+                        details={"run_id": run_id, "state": current.state.value},
+                    )
+                store.transition_run(
+                    run_id,
+                    RunState.resumable,
+                    reason="worker stopped at a complete agent turn checkpoint",
+                    actor=actor,
+                    checkpoint=checkpoints[0],
+                    exit_code=0,
+                )
+                # A resumable leaf keeps its logical experiment active until an
+                # explicit child attempt is created or the claim is abandoned.
+                return 0
             if not result.succeeded:
                 store.transition_run(
                     run_id,
@@ -173,6 +220,32 @@ def execute(store: ExperimentStore, run_id: str) -> int:
             _finalize_cancel(store, run_id)
             store.reconcile_experiment(run.experiment_id)
             return int(ExitCode.cancelled)
+        try:
+            checkpoints = store.checkpoints(run_id)
+        except Exception:
+            checkpoints = ()
+        if len(checkpoints) == 1 and current.state in {
+            RunState.running,
+            RunState.checkpointed,
+        }:
+            # The complete envelope/event is the commit point. If a later
+            # ordinary write fails, roll forward to resumable instead of
+            # discarding an already validated safe boundary.
+            try:
+                store.transition_run(
+                    run_id,
+                    RunState.resumable,
+                    reason=(
+                        "worker recovered a complete checkpoint after "
+                        f"post-commit failure: {failure_code}"
+                    ),
+                    actor=actor,
+                    checkpoint=checkpoints[0],
+                    exit_code=0,
+                )
+                return 0
+            except Exception:
+                pass
         if current.state not in TERMINAL_RUN_STATES:
             try:
                 store.transition_run(
@@ -196,8 +269,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="CARIBOU durable experiment worker")
     parser.add_argument("--store-root", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--launch-nonce")
     arguments = parser.parse_args()
-    return execute(ExperimentStore(arguments.store_root), arguments.run_id)
+    store = ExperimentStore(arguments.store_root)
+    run = store.run(arguments.run_id)
+    if run.executor == ExecutorKind.local:
+        if not arguments.launch_nonce:
+            print(
+                "worker rejected: local execution requires a launch nonce",
+                file=sys.stderr,
+            )
+            return int(ExitCode.integrity)
+        from .executor import LocalProcessExecutor
+
+        if not LocalProcessExecutor.claim_worker(
+            store,
+            arguments.run_id,
+            launch_nonce=arguments.launch_nonce,
+        ):
+            print(
+                "worker stopped: another local process owns the durable handle",
+                file=sys.stderr,
+            )
+            return 0
+    elif arguments.launch_nonce is not None:
+        print(
+            "worker rejected: scheduler execution cannot use a local launch nonce",
+            file=sys.stderr,
+        )
+        return int(ExitCode.integrity)
+    return execute(store, arguments.run_id)
 
 
 if __name__ == "__main__":

@@ -128,6 +128,29 @@ def test_cancel_after_submit_is_durable_and_idempotent(tmp_path: Path) -> None:
     assert payload["data"]["applied"] is False
 
 
+def test_checkpoint_rejects_non_agent_workload(tmp_path: Path) -> None:
+    specification = write_spec(tmp_path, repetitions=1, smoke_seconds=3.0)
+    run_id = submit(tmp_path, specification, "checkpoint-non-agent")["data"]["run_ids"][
+        0
+    ]
+
+    rejected = run_cli(
+        tmp_path,
+        "run",
+        "checkpoint",
+        run_id,
+        "--idempotency-key",
+        "invalid-lifecycle-checkpoint",
+        "--json",
+    )
+
+    assert rejected.returncode == 12
+    assert response(rejected)["error"]["code"] == "CHECKPOINT_ADAPTER_UNSUPPORTED"
+    cancelled = run_cli(tmp_path, "run", "cancel", run_id, "--json")
+    assert cancelled.returncode == 0, cancelled.stderr
+    assert wait_for_terminal(tmp_path, run_id)["object"]["state"] == "cancelled"
+
+
 def test_idempotency_conflict_and_plan_guard_are_typed(tmp_path: Path) -> None:
     first = write_spec(tmp_path, repetitions=1)
     submit(tmp_path, first, "same-key")
