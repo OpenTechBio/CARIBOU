@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Dict, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from caribou.domain.models import (
     Artifact,
@@ -130,7 +137,9 @@ class SlurmCancellationAttempt(ControlRecord):
     @model_validator(mode="after")
     def validate_outcome(self) -> "SlurmCancellationAttempt":
         if self.succeeded == (self.error_code is not None):
-            raise ValueError("successful cancellation has no error; failure requires one")
+            raise ValueError(
+                "successful cancellation has no error; failure requires one"
+            )
         return self
 
 
@@ -157,6 +166,83 @@ class CancelRequest(ControlRecord):
     requested_at: UtcDatetime = Field(default_factory=utc_now)
     actor: NonEmptyStr
     reason: NonEmptyStr
+
+
+class ProviderCallUsage(ControlRecord):
+    """Whitelisted token counts returned by one provider call attempt."""
+
+    prompt_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+    completion_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+    total_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+    cached_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+    cache_miss_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+    reasoning_tokens: Optional[StrictInt] = Field(default=None, ge=0)
+
+
+class ProviderCallReceipt(ControlRecord):
+    """Redacted, immutable observation of one actual provider SDK attempt."""
+
+    schema_version: Literal["caribou.provider_call_receipt.v1"] = (
+        "caribou.provider_call_receipt.v1"
+    )
+    call_id: NonEmptyStr
+    run_id: RunId
+    turn: StrictInt = Field(ge=1)
+    agent_name: NonEmptyStr
+    attempt: StrictInt = Field(ge=1)
+    maximum_attempts: StrictInt = Field(ge=1)
+    provider: NonEmptyStr
+    requested_model: NonEmptyStr
+    outcome: Literal["succeeded", "failed"]
+    started_at: UtcDatetime
+    ended_at: UtcDatetime
+    duration_ms: StrictInt = Field(ge=0)
+    response_id: Optional[NonEmptyStr] = None
+    request_id: Optional[NonEmptyStr] = None
+    response_model: Optional[NonEmptyStr] = None
+    system_fingerprint: Optional[NonEmptyStr] = None
+    finish_reason: Optional[NonEmptyStr] = None
+    usage: ProviderCallUsage = Field(default_factory=ProviderCallUsage)
+    failure_type: Optional[NonEmptyStr] = None
+    http_status_code: Optional[StrictInt] = Field(default=None, gt=0)
+    cost_usd: None = None
+    cost_basis: Literal["unavailable"] = "unavailable"
+    sdk_retries: Literal[0] = 0
+
+    @model_validator(mode="after")
+    def validate_attempt(self) -> "ProviderCallReceipt":
+        expected_call_id = f"{self.run_id}:turn:{self.turn}:attempt:{self.attempt}"
+        if self.call_id != expected_call_id:
+            raise ValueError("provider call_id does not match its run and attempt")
+        if self.attempt > self.maximum_attempts:
+            raise ValueError("provider attempt exceeds maximum_attempts")
+        if self.ended_at < self.started_at:
+            raise ValueError("provider attempt ended before it started")
+        usage_values = tuple(
+            getattr(self.usage, name) for name in type(self.usage).model_fields
+        )
+        if self.outcome == "succeeded":
+            if self.failure_type is not None or self.http_status_code is not None:
+                raise ValueError(
+                    "successful provider call cannot contain failure fields"
+                )
+        else:
+            if self.failure_type is None:
+                raise ValueError("failed provider call requires failure_type")
+            if any(
+                value is not None
+                for value in (
+                    self.response_id,
+                    self.response_model,
+                    self.system_fingerprint,
+                    self.finish_reason,
+                    *usage_values,
+                )
+            ):
+                raise ValueError(
+                    "failed provider call cannot contain response or usage fields"
+                )
+        return self
 
 
 class ArtifactManifest(ControlRecord):

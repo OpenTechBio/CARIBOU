@@ -15,6 +15,7 @@ from caribou.control.api import (
     fail_json,
     machine_response,
 )
+from caribou.control.records import ProviderCallReceipt
 from caribou.control.service import ExperimentService
 from caribou.control.specs import (
     build_local_plan,
@@ -66,6 +67,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "checkpoint": Checkpoint,
     "budget": BudgetRecord,
     "aggregate": Aggregate,
+    "provider-call-receipt": ProviderCallReceipt,
 }
 
 
@@ -382,9 +384,7 @@ def scheduler_inspect_command(
         handle = service.store.scheduler_handle(run_id)
         submission = service.store.scheduler_submission(run_id)
         cancellation = service.store.scheduler_cancellation(run_id)
-        observation = (
-            service.inspect_scheduler(run_id) if handle is not None else None
-        )
+        observation = service.inspect_scheduler(run_id) if handle is not None else None
         return machine_response(
             "scheduler.inspect",
             object_type=(

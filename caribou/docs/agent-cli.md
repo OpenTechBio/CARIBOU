@@ -61,9 +61,27 @@ container-runtime versions, retry policies, and implicit CellTypist caches are
 rejected rather than ignored. Provider requests receive the remaining frozen
 session deadline. The experiment metric definitions remain preregistered
 metadata; this adapter does not execute their evaluator artifacts or enforce
-the declared local CPU, memory, and storage maxima. Do not infer resource
-enforcement, cost telemetry, evaluator execution, or biological validity from
-a successful run.
+the declared local CPU, memory, and storage maxima.
+
+When the worker remains alive through receipt persistence, every completed or
+failed OpenAI-compatible SDK attempt made by this adapter produces a
+hash-verifiable `provider_call_receipt` artifact before response content is
+used. Query its strict consumer contract with:
+
+```bash
+caribou schema provider-call-receipt --json
+```
+
+Receipts contain only whitelisted provider and request identifiers, the
+requested and provider-returned model names, timing, finish status, and token
+counts when supplied by the provider. They never contain prompts, response
+content, raw error text or bodies, headers, URLs, clients, or credentials.
+Missing usage remains `null`, never zero. Provider cost is explicitly
+unavailable, and the run's budget counters are not yet reconciled from these
+receipts. Do not infer resource enforcement, billed cost, evaluator execution,
+or biological validity from a successful run. A hard process or node loss
+during a provider request can leave a billed request without a receipt; this
+slice does not yet implement pre-call intent logging or crash reconciliation.
 
 Query `capabilities` rather than assuming later execution surfaces are
 validated.

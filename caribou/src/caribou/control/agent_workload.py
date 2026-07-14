@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -31,6 +32,7 @@ from caribou.domain.models import (
 from caribou.domain.serialization import file_hash, sha256_bytes
 from caribou.execution.runner import AgentSessionResult, RunnerEvent, run_agent_session
 
+from .records import ProviderCallReceipt, ProviderCallUsage
 from .specs import (
     AGENT_PATH_SMOKE_ADAPTER,
     AGENT_SMOKE_DELAY_PARAMETER,
@@ -135,7 +137,10 @@ def _local_file(
                 "actual": actual_hash,
             },
         )
-    if reference.size_bytes is not None and resolved.stat().st_size != reference.size_bytes:
+    if (
+        reference.size_bytes is not None
+        and resolved.stat().st_size != reference.size_bytes
+    ):
         raise ControlError(
             "CONTENT_SIZE_MISMATCH",
             f"{role} does not match its frozen size",
@@ -174,9 +179,7 @@ class _ScriptedCompletions:
 
 class _ScriptedClient:
     def __init__(self, delay_seconds: float) -> None:
-        self.chat = SimpleNamespace(
-            completions=_ScriptedCompletions(delay_seconds)
-        )
+        self.chat = SimpleNamespace(completions=_ScriptedCompletions(delay_seconds))
 
 
 class _RecordingSandbox:
@@ -322,6 +325,107 @@ def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
     raise RuntimeError(f"unsupported provider: {provider}")
 
 
+def _receipt_text(observation: dict[str, object], key: str) -> str | None:
+    value = observation.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _required_receipt_text(observation: dict[str, object], key: str) -> str:
+    value = _receipt_text(observation, key)
+    if value is None:
+        raise RuntimeError(f"provider observation field {key!r} is not text")
+    return value
+
+
+def _receipt_int(observation: dict[str, object], key: str) -> int | None:
+    value = observation.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _required_receipt_int(observation: dict[str, object], key: str) -> int:
+    value = _receipt_int(observation, key)
+    if value is None:
+        raise RuntimeError(f"provider observation field {key!r} is not an integer")
+    return value
+
+
+def _receipt_datetime(observation: dict[str, object], key: str) -> datetime:
+    value = _required_receipt_text(observation, key)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError(
+            f"provider observation field {key!r} is not a timestamp"
+        ) from exc
+    return parsed
+
+
+def _provider_receipt_recorder(
+    store: ExperimentStore,
+    run_id: str,
+) -> Callable[[dict[str, object]], None]:
+    run = store.run(run_id)
+
+    def record(observation: dict[str, object]) -> None:
+        turn = _required_receipt_int(observation, "turn")
+        attempt = _required_receipt_int(observation, "attempt")
+        maximum_attempts = _required_receipt_int(observation, "maximum_attempts")
+        requested_model = _required_receipt_text(observation, "requested_model")
+        if requested_model != run.resolved_model.model:
+            raise RuntimeError(
+                "provider observation requested model differs from frozen run"
+            )
+        if maximum_attempts != run.resolved_stop_rules.retry.maximum_attempts:
+            raise RuntimeError(
+                "provider observation retry policy differs from frozen run"
+            )
+        receipt = ProviderCallReceipt(
+            call_id=(f"{run_id}:turn:{turn}:attempt:{attempt}"),
+            run_id=run_id,
+            turn=turn,
+            agent_name=_required_receipt_text(observation, "agent_name"),
+            attempt=attempt,
+            maximum_attempts=maximum_attempts,
+            provider=run.resolved_model.provider,
+            requested_model=requested_model,
+            outcome=_required_receipt_text(observation, "outcome"),  # type: ignore[arg-type]
+            started_at=_receipt_datetime(observation, "started_at"),
+            ended_at=_receipt_datetime(observation, "ended_at"),
+            duration_ms=_required_receipt_int(observation, "duration_ms"),
+            response_id=_receipt_text(observation, "response_id"),
+            request_id=_receipt_text(observation, "request_id"),
+            response_model=_receipt_text(observation, "response_model"),
+            system_fingerprint=_receipt_text(observation, "system_fingerprint"),
+            finish_reason=_receipt_text(observation, "finish_reason"),
+            usage=ProviderCallUsage(
+                prompt_tokens=_receipt_int(observation, "prompt_tokens"),
+                completion_tokens=_receipt_int(observation, "completion_tokens"),
+                total_tokens=_receipt_int(observation, "total_tokens"),
+                cached_tokens=_receipt_int(observation, "cached_tokens"),
+                cache_miss_tokens=_receipt_int(observation, "cache_miss_tokens"),
+                reasoning_tokens=_receipt_int(observation, "reasoning_tokens"),
+            ),
+            failure_type=_receipt_text(observation, "failure_type"),
+            http_status_code=_receipt_int(observation, "http_status_code"),
+        )
+        store.record_idempotent_json_artifact(
+            run_id,
+            filename=(f"provider-call-turn-{turn}-attempt-{attempt}.json"),
+            role="provider_call_receipt",
+            value=receipt.model_dump(mode="json"),
+            producer="provider-client",
+            artifact_type=ArtifactType.manifest,
+            schema_type="caribou.provider_call_receipt",
+            schema_version_name="v1",
+            turn=turn,
+            current_agent=receipt.agent_name,
+        )
+
+    return record
+
+
 def _real_sandbox(
     container_path: Path,
     container_hash: str,
@@ -367,7 +471,9 @@ def _payload_int(payload: dict[str, object], key: str) -> int:
     return value
 
 
-def _event_recorder(store: ExperimentStore, run_id: str) -> Callable[[RunnerEvent], None]:
+def _event_recorder(
+    store: ExperimentStore, run_id: str
+) -> Callable[[RunnerEvent], None]:
     def record(event: RunnerEvent) -> None:
         event_type = event["event_type"]
         turn = event["turn"]
@@ -425,7 +531,9 @@ def _event_recorder(store: ExperimentStore, run_id: str) -> Callable[[RunnerEven
             )
             return
         if event_type == "rag_result":
-            result_text = str(payload.get("content", "")) or str(payload.get("error", ""))
+            result_text = str(payload.get("content", "")) or str(
+                payload.get("error", "")
+            )
             result_artifact_id = None
             if result_text:
                 artifact = store.record_text_artifact(
@@ -584,6 +692,7 @@ def execute_agent_workload(
         delay = float(delay_value)
         llm_client: object = _ScriptedClient(delay)
         sandbox: object = _RecordingSandbox()
+        llm_attempt_callback: Callable[[dict[str, object]], None] | None = None
     else:
         # The backend verifies this large image immediately before launch; avoid
         # reading a multi-gigabyte SIF twice in the same worker.
@@ -594,6 +703,7 @@ def execute_agent_workload(
             run.resolved_model.provider,
             dict(run.resolved_model.parameters),
         )
+        llm_attempt_callback = _provider_receipt_recorder(store, run_id)
         sandbox = _CancellationAwareSandbox(
             _real_sandbox(
                 container_path,
@@ -658,6 +768,7 @@ def execute_agent_workload(
             durable_run_id=run_id,
             should_cancel=lambda: store.cancel_requested(run_id),
             event_callback=_event_recorder(store, run_id),
+            llm_attempt_callback=llm_attempt_callback,
             timeout_seconds=run.resolved_stop_rules.timeout_seconds,
             max_consecutive_no_action=(
                 run.resolved_stop_rules.maximum_consecutive_no_action
@@ -666,12 +777,8 @@ def execute_agent_workload(
                 run.resolved_stop_rules.maximum_consecutive_execution_failures
             ),
             llm_retry_attempts=run.resolved_stop_rules.retry.maximum_attempts,
-            llm_retry_base_delay=(
-                run.resolved_stop_rules.retry.base_delay_seconds
-            ),
-            llm_retry_max_delay=(
-                run.resolved_stop_rules.retry.maximum_delay_seconds
-            ),
+            llm_retry_base_delay=(run.resolved_stop_rules.retry.base_delay_seconds),
+            llm_retry_max_delay=(run.resolved_stop_rules.retry.maximum_delay_seconds),
         )
         store.record_json_artifact(
             run_id,
