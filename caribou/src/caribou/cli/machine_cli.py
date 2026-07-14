@@ -129,7 +129,12 @@ def capabilities_command(
                 "schema_names": sorted(SCHEMA_MODELS),
                 "execution_boundaries": {
                     "local_lifecycle_smoke": "validated_control_plane_probe",
-                    "local_agent_analysis": "not_validated",
+                    "scripted_agent_path": (
+                        "validated_actual_runner_with_test_boundaries"
+                    ),
+                    "local_agent_analysis": (
+                        "implemented_not_validated_real_provider_container"
+                    ),
                     "slurm": "planned",
                 },
                 "store_root": str(default_store_root()),

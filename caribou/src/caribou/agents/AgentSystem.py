@@ -7,7 +7,6 @@ from caribou.config import CARIBOU_HOME
 
 # 1. The user-specific directory (for custom samples)
 USER_CODE_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
-USER_CODE_SAMPLES_DIR.mkdir(exist_ok=True) # Ensure it exists
 
 # 2. The package-internal directory (for default samples), found relative to this file
 PACKAGE_CODE_SAMPLES_DIR = Path(__file__).resolve().parent.parent / "code_samples"
@@ -59,9 +58,9 @@ class Agent:
         
         if self.is_rag_enabled:
             full_prompt += "\n\nIf an error occurs, admit the error and query your specialized knowledge base for more context with the following command:"
-            full_prompt += f"\n- Command: `query_rag_<function>`"
-            full_prompt += f"\n  - Description: Retrieves relevant information about a specific <function> from your knowledge base. Replace <function> with a concise, descriptive search query (e.g., function names, task you are trying to complete)."
-            full_prompt += f"\n  - Example: `query_rag_<scvi model setup>`"
+            full_prompt += "\n- Command: `query_rag_<function>`"
+            full_prompt += "\n  - Description: Retrieves relevant information about a specific <function> from your knowledge base. Replace <function> with a concise, descriptive search query (e.g., function names, task you are trying to complete)."
+            full_prompt += "\n  - Example: `query_rag_<scvi model setup>`"
             full_prompt += (
                 "\n\n**You can only delegate to one agent at a time. "
                 "Never wrap delegation or RAG calls in backticks as if they are code.**"
@@ -124,6 +123,15 @@ class AgentSystem:
             if sample_filenames:
                 print(f"  Loading code samples for '{agent_name}'...")
                 for filename in sample_filenames:
+                    if (
+                        not isinstance(filename, str)
+                        or filename in {"", ".", ".."}
+                        or "/" in filename
+                        or "\\" in filename
+                    ):
+                        raise ValueError(
+                            "code sample names must be path-safe filenames"
+                        )
                     user_path = USER_CODE_SAMPLES_DIR / filename
                     package_path = PACKAGE_CODE_SAMPLES_DIR / filename
                     

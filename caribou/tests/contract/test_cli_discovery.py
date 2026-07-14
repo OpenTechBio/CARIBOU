@@ -94,6 +94,13 @@ def test_capabilities_are_one_object_and_side_effect_free(tmp_path: Path) -> Non
         payload["data"]["execution_boundaries"]["local_lifecycle_smoke"]
         == "validated_control_plane_probe"
     )
+    assert (
+        payload["data"]["execution_boundaries"]["scripted_agent_path"]
+        == "validated_actual_runner_with_test_boundaries"
+    )
+    assert payload["data"]["execution_boundaries"]["local_agent_analysis"] == (
+        "implemented_not_validated_real_provider_container"
+    )
     assert not (tmp_path / "home").exists()
 
 
@@ -156,3 +163,28 @@ def test_machine_command_without_json_never_prompts(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "requires --json" in result.stderr
+
+
+def test_unhashable_adapter_value_fails_as_typed_validation(tmp_path: Path) -> None:
+    specification = write_spec(tmp_path, repetitions=1)
+    payload = yaml.safe_load(specification.read_text(encoding="utf-8"))
+    payload["conditions"][0]["parameters"]["caribou.execution_adapter"] = [
+        "lifecycle_smoke"
+    ]
+    specification.write_text(
+        yaml.safe_dump(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        tmp_path,
+        "experiment",
+        "submit",
+        str(specification),
+        "--idempotency-key",
+        "invalid-adapter-shape",
+        "--json",
+    )
+
+    assert result.returncode == 10
+    assert response(result)["error"]["code"] == "ADAPTER_UNSUPPORTED"

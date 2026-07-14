@@ -43,5 +43,27 @@ to reject configuration drift.
 
 The lifecycle smoke adapter validates only local submission, persistence,
 events, cancellation, and artifact handling. It does not invoke a model,
-container, biological analysis, or Slurm. Query `capabilities` rather than
-assuming those later execution surfaces are validated.
+container, biological analysis, or Slurm.
+
+The separately tested `agent_path_smoke` adapter crosses the real control
+service, detached worker, existing agent runner, blueprint delegation, command
+parser, event journal, and artifact store. Its model client and sandbox are
+deterministic test boundaries: it does not validate an external model,
+Apptainer/Singularity, biological correctness, or scheduler execution.
+
+The initial `caribou_agent` adapter is implemented for a deliberately narrow
+real pilot. It requires a clean exact Git commit, one hash-pinned local input,
+a hash-pinned Apptainer/Singularity image, network-disabled generated code,
+full-history memory, no RAG or external blueprint tools, no ambient cache or
+custom mounts, and an external OpenAI or DeepSeek model identified
+by exact model ID. Finite budget limits, model tuning fields, declared
+container-runtime versions, retry policies, and implicit CellTypist caches are
+rejected rather than ignored. Provider requests receive the remaining frozen
+session deadline. The experiment metric definitions remain preregistered
+metadata; this adapter does not execute their evaluator artifacts or enforce
+the declared local CPU, memory, and storage maxima. Do not infer resource
+enforcement, cost telemetry, evaluator execution, or biological validity from
+a successful run.
+
+Query `capabilities` rather than assuming later execution surfaces are
+validated.

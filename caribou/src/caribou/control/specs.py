@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,7 +11,7 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from caribou.domain.enums import ExecutorKind
+from caribou.domain.enums import ExecutorKind, MemoryStrategy, SandboxKind, TopologyKind
 from caribou.domain.models import ExperimentSpec
 from caribou.domain.serialization import model_hash
 
@@ -19,8 +19,14 @@ from .api import ControlError, ExitCode
 
 
 LOCAL_LIFECYCLE_ADAPTER = "lifecycle_smoke"
+AGENT_PATH_SMOKE_ADAPTER = "agent_path_smoke"
+CARIBOU_AGENT_ADAPTER = "caribou_agent"
+LOCAL_ADAPTERS = frozenset(
+    {LOCAL_LIFECYCLE_ADAPTER, AGENT_PATH_SMOKE_ADAPTER, CARIBOU_AGENT_ADAPTER}
+)
 ADAPTER_PARAMETER = "caribou.execution_adapter"
 SMOKE_SECONDS_PARAMETER = "caribou.lifecycle_smoke_seconds"
+AGENT_SMOKE_DELAY_PARAMETER = "caribou.agent_smoke_delay_seconds"
 
 
 def load_experiment_spec(path: Path) -> ExperimentSpec:
@@ -85,6 +91,174 @@ def _smoke_seconds(parameters: dict[str, Any]) -> float:
     return seconds
 
 
+def _validate_agent_adapter(
+    spec: ExperimentSpec, condition_index: int, adapter: str
+) -> None:
+    condition = spec.conditions[condition_index]
+    if len(spec.inputs) != 1:
+        raise ControlError(
+            "AGENT_INPUTS_UNSUPPORTED",
+            "the initial agent workload requires exactly one frozen input",
+            exit_code=ExitCode.validation,
+            details={"input_count": len(spec.inputs)},
+        )
+    if spec.code.dirty:
+        raise ControlError(
+            "AGENT_CODE_DIRTY",
+            "agent workloads require a frozen clean code commit",
+            exit_code=ExitCode.validation,
+        )
+    if adapter == AGENT_PATH_SMOKE_ADAPTER:
+        if condition.model.provider != "scripted" or (
+            spec.execution.container.sandbox != SandboxKind.offline
+        ):
+            raise ControlError(
+                "AGENT_SMOKE_BOUNDARY_INVALID",
+                "agent_path_smoke requires provider=scripted and sandbox=offline",
+                exit_code=ExitCode.validation,
+                details={"condition_id": condition.condition_id},
+            )
+        if condition.blueprint.topology != TopologyKind.multi_agent:
+            raise ControlError(
+                "AGENT_SMOKE_TOPOLOGY_INVALID",
+                "agent_path_smoke requires a multi-agent blueprint to exercise delegation",
+                exit_code=ExitCode.validation,
+                details={"condition_id": condition.condition_id},
+            )
+        if spec.stop_rules.maximum_turns < 3:
+            raise ControlError(
+                "AGENT_SMOKE_TURNS_INVALID",
+                "agent_path_smoke requires at least three turns",
+                exit_code=ExitCode.validation,
+                details={"maximum_turns": spec.stop_rules.maximum_turns},
+            )
+        _agent_smoke_delay(dict(condition.parameters))
+        return
+    if spec.execution.container.sandbox not in {
+        SandboxKind.apptainer,
+        SandboxKind.singularity,
+    }:
+        raise ControlError(
+            "AGENT_SANDBOX_UNSUPPORTED",
+            "the initial real agent workload requires Apptainer or Singularity",
+            exit_code=ExitCode.validation,
+            details={"sandbox": spec.execution.container.sandbox.value},
+        )
+    if condition.model.provider not in {"openai", "deepseek"}:
+        raise ControlError(
+            "AGENT_PROVIDER_UNSUPPORTED",
+            "the initial real agent workload requires an explicitly supported provider",
+            exit_code=ExitCode.validation,
+            details={
+                "provider": condition.model.provider,
+                "supported": ["deepseek", "openai"],
+            },
+        )
+    if (
+        condition.model.artifact is not None
+        or condition.model.quantization is not None
+        or condition.model.context_length is not None
+        or condition.model.parameters
+    ):
+        raise ControlError(
+            "AGENT_MODEL_FIELDS_UNSUPPORTED",
+            "the initial external-model workload accepts only provider and exact model ID",
+            exit_code=ExitCode.validation,
+        )
+    if condition.memory.strategy != MemoryStrategy.full:
+        raise ControlError(
+            "AGENT_MEMORY_UNSUPPORTED",
+            "the initial real agent workload supports only full-history memory",
+            exit_code=ExitCode.validation,
+            details={"strategy": condition.memory.strategy.value},
+        )
+    if condition.blueprint.tools:
+        raise ControlError(
+            "AGENT_TOOLS_UNSUPPORTED",
+            "the initial real agent workload does not bind declared external tools",
+            exit_code=ExitCode.validation,
+            details={"tool_count": len(condition.blueprint.tools)},
+        )
+    if spec.execution.container.runtime_version is not None:
+        raise ControlError(
+            "AGENT_RUNTIME_VERSION_UNSUPPORTED",
+            "the initial real agent workload does not validate a declared runtime version",
+            exit_code=ExitCode.validation,
+            details={"runtime_version": spec.execution.container.runtime_version},
+        )
+    if spec.execution.container.force_refresh:
+        raise ControlError(
+            "AGENT_CONTAINER_REFRESH_UNSUPPORTED",
+            "frozen agent workloads cannot refresh their container at runtime",
+            exit_code=ExitCode.validation,
+        )
+    if spec.execution.container.network_enabled:
+        raise ControlError(
+            "AGENT_CONTAINER_NETWORK_UNSUPPORTED",
+            "the initial agent workload requires network-disabled generated code",
+            exit_code=ExitCode.validation,
+        )
+    if spec.execution.container.bind_mounts:
+        raise ControlError(
+            "AGENT_BIND_MOUNTS_UNSUPPORTED",
+            "the initial agent workload accepts only its frozen input and output mounts",
+            exit_code=ExitCode.validation,
+        )
+    gpu_requested = spec.execution.resources.gpu_count > 0
+    if spec.execution.container.gpu_enabled != gpu_requested:
+        raise ControlError(
+            "AGENT_GPU_CONTRACT_INVALID",
+            "container.gpu_enabled must match whether execution requests a GPU",
+            exit_code=ExitCode.validation,
+            details={
+                "gpu_enabled": spec.execution.container.gpu_enabled,
+                "gpu_count": spec.execution.resources.gpu_count,
+            },
+        )
+    limited_budgets = sorted(
+        field_name
+        for field_name in type(spec.budget).model_fields
+        if getattr(spec.budget, field_name).limit is not None
+    )
+    if limited_budgets:
+        raise ControlError(
+            "AGENT_BUDGET_ENFORCEMENT_UNAVAILABLE",
+            "the initial real agent workload accepts only explicitly unlimited budgets",
+            exit_code=ExitCode.validation,
+            details={"limited_counters": limited_budgets},
+        )
+    retry = spec.stop_rules.retry
+    if (
+        retry.maximum_attempts != 1
+        or retry.retryable_categories
+        or retry.base_delay_seconds != 0
+        or retry.maximum_delay_seconds != 0
+    ):
+        raise ControlError(
+            "AGENT_RETRY_POLICY_UNSUPPORTED",
+            "the initial real agent workload requires a no-retry policy",
+            exit_code=ExitCode.validation,
+        )
+
+
+def _agent_smoke_delay(parameters: dict[str, Any]) -> float:
+    raw = parameters.get(AGENT_SMOKE_DELAY_PARAMETER, 0.0)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ControlError(
+            "ADAPTER_PARAMETER_INVALID",
+            f"{AGENT_SMOKE_DELAY_PARAMETER} must be a finite number",
+            exit_code=ExitCode.validation,
+        )
+    delay = float(raw)
+    if delay < 0 or delay > 1:
+        raise ControlError(
+            "ADAPTER_PARAMETER_INVALID",
+            f"{AGENT_SMOKE_DELAY_PARAMETER} must be between 0 and 1",
+            exit_code=ExitCode.validation,
+        )
+    return delay
+
+
 def validate_control_spec(
     spec: ExperimentSpec, *, require_local_adapter: bool = False
 ) -> list[dict[str, Any]]:
@@ -103,22 +277,27 @@ def validate_control_spec(
             details={"executor": spec.execution.executor.value},
         )
     adapter_checks = []
-    for condition in spec.conditions:
+    for condition_index, condition in enumerate(spec.conditions):
         adapter = condition.parameters.get(ADAPTER_PARAMETER)
-        supported = adapter == LOCAL_LIFECYCLE_ADAPTER
+        supported = isinstance(adapter, str) and adapter in LOCAL_ADAPTERS
         if require_local_adapter and not supported:
             raise ControlError(
                 "ADAPTER_UNSUPPORTED",
-                "M2 local execution supports only the explicit lifecycle_smoke adapter",
+                "M2 local execution requires an explicit supported adapter",
                 exit_code=ExitCode.validation,
                 details={
                     "condition_id": condition.condition_id,
                     "adapter": adapter,
-                    "supported": [LOCAL_LIFECYCLE_ADAPTER],
+                    "supported": sorted(LOCAL_ADAPTERS),
                 },
             )
-        if supported:
+        if adapter == LOCAL_LIFECYCLE_ADAPTER:
             _smoke_seconds(dict(condition.parameters))
+        elif isinstance(adapter, str) and adapter in {
+            AGENT_PATH_SMOKE_ADAPTER,
+            CARIBOU_AGENT_ADAPTER,
+        }:
+            _validate_agent_adapter(spec, condition_index, str(adapter))
         adapter_checks.append(
             {
                 "condition_id": condition.condition_id,

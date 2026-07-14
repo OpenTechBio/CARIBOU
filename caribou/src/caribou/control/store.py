@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from caribou.domain.models import (
     Artifact,
     ArtifactCreatedPayload,
     Event,
+    EventPayload,
     Experiment,
     ExperimentSpec,
     Run,
@@ -409,6 +411,79 @@ class ExperimentStore:
             :limit
         ]
 
+    def append_run_event(
+        self,
+        run_id: str,
+        *,
+        event_type: EventType,
+        payload: EventPayload,
+        actor: str,
+        turn: int,
+        current_agent: Optional[str] = None,
+        stage: Optional[str] = None,
+    ) -> Event:
+        """Append one typed durable runner event to the authoritative journal."""
+
+        if event_type in {EventType.state_transition, EventType.token}:
+            raise ControlError(
+                "EVENT_TYPE_UNSUPPORTED",
+                "runner events cannot append transitions or ephemeral tokens",
+                exit_code=ExitCode.validation,
+                details={"event_type": event_type.value},
+            )
+        with self.mutation_lock():
+            path = self.run_journal_path(run_id)
+            journal = read_run_journal(path)
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
+                raise ControlError(
+                    "RUN_NOT_EVENT_WRITABLE",
+                    "runner events require an active attempt",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            if turn < journal.run.current_turn:
+                raise ControlError(
+                    "EVENT_TURN_REGRESSION",
+                    "runner event turn cannot move backward",
+                    exit_code=ExitCode.integrity,
+                    details={
+                        "run_id": run_id,
+                        "current_turn": journal.run.current_turn,
+                        "event_turn": turn,
+                    },
+                )
+            timestamp = utc_now()
+            event = Event(
+                experiment_id=journal.run.experiment_id,
+                run_id=run_id,
+                sequence=journal.run.event_sequence + 1,
+                occurred_at=timestamp,
+                event_type=event_type,
+                turn=turn,
+                stage=stage,
+                actor=actor,
+                payload=payload,
+            )
+            updates: dict = {
+                "event_sequence": event.sequence,
+                "current_turn": turn,
+                "updated_at": timestamp,
+            }
+            if current_agent is not None:
+                updates["current_agent"] = current_agent
+            updated_run = self._validated_run(journal.run, updates)
+            commit_run_event(
+                path,
+                updated_run,
+                event,
+                expected_hash=file_hash(path),
+            )
+            return event
+
     def _transition_run_unlocked(
         self,
         run_id: str,
@@ -510,6 +585,12 @@ class ExperimentStore:
         role: str,
         value: dict,
         producer: str,
+        artifact_type: ArtifactType = ArtifactType.manifest,
+        media_type: str = "application/json",
+        schema_type: Optional[str] = "caribou.lifecycle_smoke_result",
+        schema_version_name: Optional[str] = "v1",
+        turn: Optional[int] = None,
+        current_agent: Optional[str] = None,
     ) -> Artifact:
         if filename in {".", ".."} or "/" in filename or "\\" in filename:
             raise ControlError(
@@ -521,7 +602,11 @@ class ExperimentStore:
         with self.mutation_lock():
             journal_path = self.run_journal_path(run_id)
             journal = read_run_journal(journal_path)
-            if journal.run.state not in {RunState.running, RunState.checkpointed}:
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
                 raise ControlError(
                     "RUN_NOT_WRITABLE",
                     "artifacts can be registered only while an attempt is running",
@@ -537,70 +622,287 @@ class ExperimentStore:
                 )
                 + "\n"
             ).encode("utf-8")
-            artifact_id = new_id("art")
-            event_id = new_id("evt")
-            storage_name = f"{artifact_id}-{filename}"
-            storage_uri = f"artifacts/{storage_name}"
-            artifact_path = self.run_dir(run_id) / storage_uri
-            self._atomic_bytes(artifact_path, data)
-            timestamp = utc_now()
-            event = Event(
-                event_id=event_id,
-                experiment_id=journal.run.experiment_id,
-                run_id=run_id,
-                sequence=journal.run.event_sequence + 1,
-                occurred_at=timestamp,
-                event_type=EventType.artifact_created,
-                turn=journal.run.current_turn,
-                actor=producer,
-                payload=ArtifactCreatedPayload(artifact_id=artifact_id),
-            )
-            artifact = Artifact(
-                artifact_id=artifact_id,
-                experiment_id=journal.run.experiment_id,
-                run_id=run_id,
-                producer_event_id=event_id,
-                producer=producer,
-                artifact_type=ArtifactType.manifest,
+            return self._record_artifact_bytes_unlocked(
+                journal_path=journal_path,
+                journal_run=journal.run,
+                filename=filename,
                 role=role,
+                data=data,
+                producer=producer,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                schema_type=schema_type,
+                schema_version_name=schema_version_name,
+                turn=turn,
+                current_agent=current_agent,
+            )
+
+    def record_text_artifact(
+        self,
+        run_id: str,
+        *,
+        filename: str,
+        role: str,
+        text: str,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str = "text/plain",
+        turn: Optional[int] = None,
+        current_agent: Optional[str] = None,
+    ) -> Artifact:
+        if filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise ControlError(
+                "ARTIFACT_FILENAME_INVALID",
+                "artifact filename must be one path-safe component",
+                exit_code=ExitCode.validation,
+                details={"filename": filename},
+            )
+        with self.mutation_lock():
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
+                raise ControlError(
+                    "RUN_NOT_WRITABLE",
+                    "artifacts can be registered only while an attempt is running",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            return self._record_artifact_bytes_unlocked(
+                journal_path=journal_path,
+                journal_run=journal.run,
+                filename=filename,
+                role=role,
+                data=text.encode("utf-8"),
+                producer=producer,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                schema_type=None,
+                schema_version_name=None,
+                turn=turn,
+                current_agent=current_agent,
+            )
+
+    def record_file_artifact(
+        self,
+        run_id: str,
+        *,
+        source: Path,
+        filename: str,
+        role: str,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str,
+        turn: Optional[int] = None,
+        current_agent: Optional[str] = None,
+    ) -> Artifact:
+        """Copy one regular generated file into immutable run artifact storage."""
+
+        if filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise ControlError(
+                "ARTIFACT_FILENAME_INVALID",
+                "artifact filename must be one path-safe component",
+                exit_code=ExitCode.validation,
+                details={"filename": filename},
+            )
+        candidate = source.expanduser()
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ControlError(
+                "ARTIFACT_SOURCE_INVALID",
+                "artifact source must be a regular non-symlink file",
+                exit_code=ExitCode.integrity,
+                details={"source": str(candidate)},
+            )
+        with self.mutation_lock():
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
+                raise ControlError(
+                    "RUN_NOT_WRITABLE",
+                    "artifacts can be registered only while an attempt is running",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            artifact_id = new_id("art")
+            storage_uri = f"artifacts/{artifact_id}-{filename}"
+            destination = self.run_dir(run_id) / storage_uri
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+            )
+            temporary = Path(temporary_name)
+            try:
+                with (
+                    os.fdopen(descriptor, "wb") as output,
+                    candidate.open("rb") as input_file,
+                ):
+                    shutil.copyfileobj(input_file, output, length=1024 * 1024)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, destination)
+                directory_fd = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+            return self._commit_artifact_unlocked(
+                journal_path=journal_path,
+                journal_run=journal.run,
+                artifact_id=artifact_id,
                 filename=filename,
                 storage_uri=storage_uri,
-                content_hash=sha256_bytes(data),
-                media_type="application/json",
-                schema_type="caribou.lifecycle_smoke_result",
-                schema_version_name="v1",
-                size_bytes=len(data),
-                created_at=timestamp,
-                retention=RetentionPolicy.experiment,
-                owner=journal.run.owner,
+                role=role,
+                producer=producer,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                schema_type=None,
+                schema_version_name=None,
+                content_hash=file_hash(destination),
+                size_bytes=destination.stat().st_size,
+                turn=turn,
+                current_agent=current_agent,
             )
-            manifest_path = self.artifact_manifest_path(run_id)
-            manifest = self.artifact_manifest(run_id)
-            updated_manifest = ArtifactManifest(
-                run_id=run_id,
-                artifacts=(*manifest.artifacts, artifact),
-                updated_at=timestamp,
-            )
-            write_model(
-                manifest_path,
-                updated_manifest,
-                expected_hash=file_hash(manifest_path),
-            )
-            updated_run = self._validated_run(
-                journal.run,
-                {
-                    "artifact_ids": [*journal.run.artifact_ids, artifact_id],
-                    "event_sequence": event.sequence,
-                    "updated_at": timestamp,
+
+    def _record_artifact_bytes_unlocked(
+        self,
+        *,
+        journal_path: Path,
+        journal_run: Run,
+        filename: str,
+        role: str,
+        data: bytes,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str,
+        schema_type: Optional[str],
+        schema_version_name: Optional[str],
+        turn: Optional[int],
+        current_agent: Optional[str],
+    ) -> Artifact:
+        artifact_id = new_id("art")
+        storage_uri = f"artifacts/{artifact_id}-{filename}"
+        self._atomic_bytes(self.run_dir(journal_run.run_id) / storage_uri, data)
+        return self._commit_artifact_unlocked(
+            journal_path=journal_path,
+            journal_run=journal_run,
+            artifact_id=artifact_id,
+            filename=filename,
+            storage_uri=storage_uri,
+            role=role,
+            producer=producer,
+            artifact_type=artifact_type,
+            media_type=media_type,
+            schema_type=schema_type,
+            schema_version_name=schema_version_name,
+            content_hash=sha256_bytes(data),
+            size_bytes=len(data),
+            turn=turn,
+            current_agent=current_agent,
+        )
+
+    def _commit_artifact_unlocked(
+        self,
+        *,
+        journal_path: Path,
+        journal_run: Run,
+        artifact_id: str,
+        filename: str,
+        storage_uri: str,
+        role: str,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str,
+        schema_type: Optional[str],
+        schema_version_name: Optional[str],
+        content_hash: str,
+        size_bytes: int,
+        turn: Optional[int],
+        current_agent: Optional[str],
+    ) -> Artifact:
+        timestamp = utc_now()
+        event_id = new_id("evt")
+        event_turn = journal_run.current_turn if turn is None else turn
+        if event_turn < journal_run.current_turn:
+            raise ControlError(
+                "EVENT_TURN_REGRESSION",
+                "artifact event turn cannot move backward",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": journal_run.run_id,
+                    "current_turn": journal_run.current_turn,
+                    "event_turn": event_turn,
                 },
             )
-            commit_run_event(
-                journal_path,
-                updated_run,
-                event,
-                expected_hash=file_hash(journal_path),
-            )
-            return artifact
+        event = Event(
+            event_id=event_id,
+            experiment_id=journal_run.experiment_id,
+            run_id=journal_run.run_id,
+            sequence=journal_run.event_sequence + 1,
+            occurred_at=timestamp,
+            event_type=EventType.artifact_created,
+            turn=event_turn,
+            actor=producer,
+            payload=ArtifactCreatedPayload(artifact_id=artifact_id),
+        )
+        artifact = Artifact(
+            artifact_id=artifact_id,
+            experiment_id=journal_run.experiment_id,
+            run_id=journal_run.run_id,
+            producer_event_id=event_id,
+            producer=producer,
+            artifact_type=artifact_type,
+            role=role,
+            filename=filename,
+            storage_uri=storage_uri,
+            content_hash=content_hash,
+            media_type=media_type,
+            schema_type=schema_type,
+            schema_version_name=schema_version_name,
+            size_bytes=size_bytes,
+            created_at=timestamp,
+            retention=RetentionPolicy.experiment,
+            owner=journal_run.owner,
+        )
+        manifest_path = self.artifact_manifest_path(journal_run.run_id)
+        manifest = self.artifact_manifest(journal_run.run_id)
+        updated_manifest = ArtifactManifest(
+            run_id=journal_run.run_id,
+            artifacts=(*manifest.artifacts, artifact),
+            updated_at=timestamp,
+        )
+        write_model(
+            manifest_path,
+            updated_manifest,
+            expected_hash=file_hash(manifest_path),
+        )
+        updates: dict = {
+            "artifact_ids": [*journal_run.artifact_ids, artifact_id],
+            "event_sequence": event.sequence,
+            "current_turn": event_turn,
+            "updated_at": timestamp,
+        }
+        if current_agent is not None:
+            updates["current_agent"] = current_agent
+        updated_run = self._validated_run(journal_run, updates)
+        commit_run_event(
+            journal_path,
+            updated_run,
+            event,
+            expected_hash=file_hash(journal_path),
+        )
+        return artifact
 
     def artifact_path(self, artifact: Artifact) -> Path:
         path = self.run_dir(artifact.run_id) / artifact.storage_uri
