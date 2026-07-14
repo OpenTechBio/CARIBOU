@@ -59,29 +59,39 @@ def utc_timestamp() -> str:
 
 def caribou_version() -> str:
     try:
-        return metadata.version("caribou")
+        return metadata.version("caribou-cli")
     except metadata.PackageNotFoundError:
-        return "0.1.0"
+        return "unresolved"
 
 
 def code_commit() -> str:
     """Resolve the executing code identity without requiring caller knowledge."""
 
     configured = os.environ.get("CARIBOU_CODE_COMMIT")
-    if configured:
-        return configured
+    if configured is not None:
+        candidate = configured.strip().casefold()
+        if len(candidate) == 40 and all(
+            character in "0123456789abcdef" for character in candidate
+        ):
+            return candidate
+        return "unresolved"
     for parent in Path(__file__).resolve().parents:
         if not (parent / ".git").exists():
             continue
-        result = subprocess.run(
-            ["git", "-C", str(parent), "rev-parse", "HEAD"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(parent), "rev-parse", "HEAD"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
         candidate = result.stdout.strip()
-        if result.returncode == 0 and len(candidate) == 40:
+        if result.returncode == 0 and len(candidate) == 40 and all(
+            character in "0123456789abcdef" for character in candidate
+        ):
             return candidate
     return "unresolved"
 

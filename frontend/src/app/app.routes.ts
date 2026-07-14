@@ -17,6 +17,11 @@ export const routes: Routes = [
       import('./pages/settings/settings').then(m => m.SettingsComponent),
   },
   {
+    path: 'experiments',
+    loadComponent: () =>
+      import('./pages/experiments/experiments').then(m => m.ExperimentsComponent),
+  },
+  {
     path: 'blueprints',
     loadComponent: () =>
       import('./pages/blueprint-editor/blueprint-editor').then(m => m.BlueprintEditorComponent),

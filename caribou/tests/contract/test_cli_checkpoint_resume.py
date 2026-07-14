@@ -452,6 +452,30 @@ def test_external_agent_checkpoint_resume_is_durable_and_idempotent(
         == source_snapshot
     )
 
+    comparison_result = run_cli(
+        tmp_path,
+        "experiment",
+        "compare",
+        source_run["experiment_id"],
+        "--json",
+    )
+    assert comparison_result.returncode == 0, comparison_result.stderr
+    comparison = response(comparison_result)["data"]
+    assert comparison["status"] == "complete"
+    assert comparison["attempt_count"] == 2
+    assert comparison["leaf_run_count"] == 1
+    assert comparison["leaf_run_ids"] == [child_id]
+    assert comparison["superseded_run_ids"] == [source_id]
+    assert comparison["awaiting_resume_run_ids"] == []
+    assert comparison["conditions"][0]["outcome_counts"] == {"succeeded": 1}
+    source_attempt, child_attempt = comparison["attempts"]
+    assert source_attempt["run_id"] == source_id
+    assert source_attempt["terminal_outcome"] == "interrupted_resumable"
+    assert source_attempt["superseded_by_run_id"] == child_id
+    assert child_attempt["run_id"] == child_id
+    assert child_attempt["resumed_from_run_id"] == source_id
+    assert child_attempt["superseded_by_run_id"] is None
+
     control_directory = tmp_path / "uninterrupted-control"
     control_directory.mkdir()
     control_specification = write_agent_spec(control_directory)
