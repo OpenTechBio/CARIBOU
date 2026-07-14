@@ -175,7 +175,9 @@ def test_real_adapter_rejects_unbound_runtime_and_tool_fields(
     assert exc_info.value.code == expected_code
 
 
-def test_real_adapter_rejects_unclassified_retry_policy() -> None:
+def _real_adapter_spec_with_retry(
+    *, maximum_attempts: int, retryable_categories: list[str]
+) -> ExperimentSpec:
     spec = make_spec()
     condition = spec.conditions[0]
     condition = condition.model_copy(
@@ -200,11 +202,39 @@ def test_real_adapter_rejects_unclassified_retry_policy() -> None:
             "stop_rules": spec.stop_rules.model_copy(
                 update={
                     "retry": spec.stop_rules.retry.model_copy(
-                        update={"maximum_attempts": 2}
+                        update={
+                            "maximum_attempts": maximum_attempts,
+                            "retryable_categories": retryable_categories,
+                            "base_delay_seconds": 2.0,
+                            "maximum_delay_seconds": 10.0,
+                        }
                     )
                 }
             ),
         }
+    )
+    return ExperimentSpec.model_validate_json(spec.model_dump_json())
+
+
+def test_real_adapter_accepts_bounded_provider_retry_policy() -> None:
+    spec = _real_adapter_spec_with_retry(
+        maximum_attempts=3,
+        retryable_categories=["provider", "timeout"],
+    )
+
+    _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
+
+
+@pytest.mark.parametrize(
+    "retryable_categories",
+    [[], ["timeout"], ["provider", "scheduler"]],
+)
+def test_real_adapter_rejects_unenforceable_retry_policy(
+    retryable_categories: list[str],
+) -> None:
+    spec = _real_adapter_spec_with_retry(
+        maximum_attempts=2,
+        retryable_categories=retryable_categories,
     )
 
     with pytest.raises(ControlError) as exc_info:
