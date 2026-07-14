@@ -102,6 +102,72 @@ def test_real_blueprint_dependencies_are_exactly_bound() -> None:
     assert exc_info.value.code == "CODE_SAMPLE_HASH_MISMATCH"
 
 
+def test_real_blueprint_binds_rag_enabled_agents_to_frozen_corpus(
+    tmp_path: Path,
+) -> None:
+    corpus_path = tmp_path / "corpus.json"
+    corpus_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "caribou.rag_corpus.v1",
+                "entries": [
+                    {
+                        "title": "annotation markers",
+                        "keywords": ["cell typing"],
+                        "content": "Use frozen marker evidence.",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    agent = Agent(
+        name="analyst",
+        prompt="Analyze",
+        commands={},
+        code_samples={},
+        is_rag_enabled=True,
+    )
+    system = AgentSystem(global_policy="policy", agents={"analyst": agent})
+    run = SimpleNamespace(
+        resolved_blueprint=SimpleNamespace(
+            code_sample_hashes={},
+            rag_corpus=_local_reference(corpus_path, "application/json"),
+        )
+    )
+
+    assert _verify_blueprint_dependencies(system, run) == corpus_path.resolve()
+
+    run.resolved_blueprint.rag_corpus = None
+    with pytest.raises(ControlError) as exc_info:
+        _verify_blueprint_dependencies(system, run)
+    assert exc_info.value.code == "RAG_NOT_BOUND"
+
+
+def test_real_blueprint_rejects_unused_rag_corpus(tmp_path: Path) -> None:
+    corpus_path = tmp_path / "unused-corpus.json"
+    corpus_path.write_text("{}\n", encoding="utf-8")
+    agent = Agent(
+        name="analyst",
+        prompt="Analyze",
+        commands={},
+        code_samples={},
+        is_rag_enabled=False,
+    )
+    system = AgentSystem(global_policy="policy", agents={"analyst": agent})
+    run = SimpleNamespace(
+        resolved_blueprint=SimpleNamespace(
+            code_sample_hashes={},
+            rag_corpus=_local_reference(corpus_path, "application/json"),
+        )
+    )
+
+    with pytest.raises(ControlError) as exc_info:
+        _verify_blueprint_dependencies(system, run)
+    assert exc_info.value.code == "RAG_CORPUS_UNUSED"
+
+
 def test_real_code_identity_does_not_trust_environment_override(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
