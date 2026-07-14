@@ -10,11 +10,19 @@ The shortest validated journey uses the deterministic control-plane probe:
 ```bash
 caribou capabilities --json
 caribou schema experiment --json
-caribou experiment validate examples/experiments/lifecycle-smoke.yaml --json
-caribou experiment plan examples/experiments/lifecycle-smoke.yaml --json
-caribou experiment submit examples/experiments/lifecycle-smoke.yaml \
+caribou experiment init --output experiment.yaml --json
+caribou experiment validate experiment.yaml --json
+caribou experiment plan experiment.yaml --json
+caribou experiment submit experiment.yaml \
   --idempotency-key lifecycle-smoke-001 --json
 ```
+
+`experiment init` writes a valid lifecycle-smoke spec with a fresh spec ID and
+the executing CARIBOU repository, branch, commit, and worktree state. It refuses
+to guess unresolved provenance or replace an existing file unless
+`--overwrite` is explicit. Use it to prove the automation journey, then replace
+the smoke inputs, condition, evaluator, resources, and scientific question with
+frozen real values for an analysis.
 
 Submission returns after durably queuing the run and launching a detached
 worker. Preserve the returned `run_ids[0]`, then reconnect from any later CLI
@@ -26,9 +34,16 @@ caribou run events RUN_ID --after 0 --format jsonl
 caribou artifact list RUN_ID --json
 caribou artifact verify RUN_ID --json
 caribou artifact fetch RUN_ID ARTIFACT_ID --output ./result.json --json
+caribou experiment compare EXPERIMENT_ID --json
 ```
 
 Use the last event cursor as the next `--after` value to avoid duplicates.
+`experiment compare` is a deterministic, read-only summary of condition
+interventions, logical leaf attempts, outcomes, resume lineage, event cursors,
+and record inventories. Superseded checkpoint source attempts remain visible but
+are not counted twice. The current comparison does not execute metric evaluators
+or claim a scientific aggregate; `metric_values_aggregated` remains false until
+that separate evaluation path is implemented.
 Cancellation is durable and idempotent:
 
 ```bash

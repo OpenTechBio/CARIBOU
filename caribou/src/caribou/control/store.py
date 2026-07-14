@@ -257,7 +257,13 @@ class ExperimentStore:
         candidate = run.model_copy(update=updates)
         return Run.model_validate_json(candidate.model_dump_json())
 
-    def submit(self, spec: ExperimentSpec, idempotency_key: str) -> Submission:
+    def submit(
+        self,
+        spec: ExperimentSpec,
+        idempotency_key: str,
+        *,
+        interface: InterfaceOrigin = InterfaceOrigin.cli,
+    ) -> Submission:
         """Atomically claim an idempotency key and create the complete run matrix."""
 
         if not idempotency_key.strip():
@@ -309,7 +315,7 @@ class ExperimentStore:
                             f"{idempotency_key}:{condition.condition_id}:"
                             f"{replicate_index}:1"
                         ),
-                        interface=InterfaceOrigin.cli,
+                        interface=interface,
                         owner=spec.owner,
                         initial_state=RunState.planned,
                         state=RunState.planned,
@@ -1134,7 +1140,10 @@ class ExperimentStore:
                 checkpoint,
                 child,
                 idempotency_key=idempotency_key,
-                interface=interface,
+                # An idempotent replay reports the immutable first request.  A
+                # later client may reach it through another adapter, but that
+                # must not rewrite or invalidate the persisted origin.
+                interface=child.interface if replay else interface,
             )
 
             experiment_journal = read_experiment_journal(experiment_path)

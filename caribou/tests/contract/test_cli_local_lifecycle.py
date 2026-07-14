@@ -57,6 +57,7 @@ def event_lines(tmp_path: Path, run_id: str, after: int = 0) -> list[dict]:
 def test_submit_detach_reconnect_events_and_artifact(tmp_path: Path) -> None:
     specification = write_spec(tmp_path, repetitions=1, smoke_seconds=0.15)
     submitted = submit(tmp_path, specification, "contract-success")
+    experiment_id = submitted["object"]["id"]
     run_id = submitted["data"]["run_ids"][0]
     assert submitted["data"]["idempotent_replay"] is False
     assert submitted["data"]["workers_launched"] == 1
@@ -97,6 +98,40 @@ def test_submit_detach_reconnect_events_and_artifact(tmp_path: Path) -> None:
     fetched = response(fetched_result)
     assert fetched["data"]["content_hash"] == artifact["content_hash"]
     assert json.loads(output.read_text())["run_id"] == run_id
+
+    compared_result = run_cli(
+        tmp_path, "experiment", "compare", experiment_id, "--json"
+    )
+    assert compared_result.returncode == 0, compared_result.stderr
+    compared = response(compared_result)
+    assert compared["command"] == "experiment.compare"
+    assert compared["object"] == {
+        "type": "experiment_comparison",
+        "id": experiment_id,
+        "state": "complete",
+    }
+    comparison = compared["data"]
+    assert comparison["schema_version"] == "caribou.experiment_comparison.v1"
+    assert comparison["scope"] == "run_lifecycle_lineage_and_record_inventory"
+    assert comparison["comparison_hash"].startswith("sha256:")
+    assert comparison["expected_logical_runs"] == 1
+    assert comparison["attempt_count"] == comparison["leaf_run_count"] == 1
+    assert comparison["leaf_run_ids"] == [run_id]
+    assert comparison["superseded_run_ids"] == []
+    assert comparison["awaiting_resume_run_ids"] == []
+    assert comparison["all_logical_runs_terminal"] is True
+    assert comparison["metric_values_aggregated"] is False
+    assert comparison["conditions"][0]["state_counts"] == {"succeeded": 1}
+    assert comparison["conditions"][0]["outcome_counts"] == {"succeeded": 1}
+    assert comparison["attempts"][0]["run_id"] == run_id
+    assert comparison["attempts"][0]["artifact_count"] == 1
+
+    repeated_comparison = response(
+        run_cli(tmp_path, "experiment", "compare", experiment_id, "--json")
+    )
+    assert repeated_comparison["data"]["comparison_hash"] == (
+        comparison["comparison_hash"]
+    )
 
     replay = submit(tmp_path, specification, "contract-success")
     assert replay["data"]["run_ids"] == [run_id]
@@ -207,6 +242,21 @@ def test_unknown_run_and_artifact_tampering_fail_closed(tmp_path: Path) -> None:
     result = run_cli(tmp_path, "artifact", "verify", run_id, "--json")
     assert result.returncode == 19
     assert response(result)["error"]["code"] == "ARTIFACT_INTEGRITY_ERROR"
+
+
+def test_unknown_experiment_comparison_fails_without_initializing_store(
+    tmp_path: Path,
+) -> None:
+    missing = run_cli(
+        tmp_path,
+        "experiment",
+        "compare",
+        "exp_" + "0" * 32,
+        "--json",
+    )
+    assert missing.returncode == 11
+    assert response(missing)["error"]["code"] == "EXPERIMENT_NOT_FOUND"
+    assert not (tmp_path / "home").exists()
 
 
 def test_run_id_traversal_and_fetch_symlink_fail_closed(tmp_path: Path) -> None:

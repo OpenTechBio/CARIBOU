@@ -1,0 +1,192 @@
+<main class="experiments-page">
+  <header class="page-header">
+    <div>
+      <a routerLink="/" class="back-link">← Sessions</a>
+      <h1>Durable experiments</h1>
+      <p>Operate the same experiment service and store used by the CARIBOU CLI.</p>
+    </div>
+    <span class="contract-badge">caribou.machine_response.v1</span>
+  </header>
+
+  <section class="panel access-panel">
+    <div>
+      <h2>Control API access</h2>
+      <p>The bearer token is kept only in this browser tab's session storage and is sent only in request headers.</p>
+    </div>
+    <div class="access-form">
+      <input type="password" [ngModel]="tokenInput()"
+        (ngModelChange)="tokenInput.set($event)"
+        (keyup.enter)="saveAccessToken()"
+        autocomplete="off" spellcheck="false" placeholder="Bearer token"
+        aria-label="Experiment control bearer token" />
+      <button class="btn btn-primary btn-sm" type="button" (click)="saveAccessToken()">Save for tab</button>
+      <button class="btn btn-ghost btn-sm" type="button" (click)="clearAccessToken()"
+        [disabled]="!tokenConfigured()">Clear</button>
+      <span class="access-state" [class.ready]="tokenConfigured()">
+        {{ tokenConfigured() ? 'Token configured' : 'Token required' }}
+      </span>
+    </div>
+  </section>
+
+  @if (error(); as message) {
+    <div class="alert error" role="alert">{{ message }}</div>
+  }
+
+  <section class="two-column">
+    <article class="panel specification-panel">
+      <div class="panel-title">
+        <div>
+          <h2>Submit a frozen specification</h2>
+          <p>JSON is validated by the canonical ExperimentSpec model.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" type="button" (click)="showSchema()"
+          [disabled]="!tokenConfigured() || action() !== null">View schema</button>
+      </div>
+
+      <label class="file-picker">
+        <span>Load ExperimentSpec JSON</span>
+        <input type="file" accept=".json,application/json" (change)="onSpecFile($event)" />
+      </label>
+      <textarea class="spec-editor" [ngModel]="specificationText()"
+        (ngModelChange)="specificationText.set($event)"
+        placeholder='{"schema_version":"caribou.experiment_spec.v1", ...}'
+        aria-label="Experiment specification JSON"></textarea>
+
+      <div class="field-grid">
+        <label>
+          <span>Idempotency key</span>
+          <input type="text" [ngModel]="idempotencyKey()"
+            (ngModelChange)="idempotencyKey.set($event)" placeholder="study-condition-v1" />
+        </label>
+        <label>
+          <span>Expected plan hash <small>optional</small></span>
+          <input type="text" [ngModel]="expectedPlanHash()"
+            (ngModelChange)="expectedPlanHash.set($event)" placeholder="sha256:…" />
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button class="btn btn-ghost" type="button" (click)="validateSpec()"
+          [disabled]="!tokenConfigured() || action() !== null">Validate</button>
+        <button class="btn btn-ghost" type="button" (click)="planSpec()"
+          [disabled]="!tokenConfigured() || action() !== null">Plan</button>
+        <button class="btn btn-primary" type="button" (click)="submitSpec()"
+          [disabled]="!tokenConfigured() || action() !== null">{{ action() === 'submit' ? 'Submitting…' : 'Submit & detach' }}</button>
+      </div>
+    </article>
+
+    <article class="panel monitor-panel">
+      <div class="panel-title">
+        <div>
+          <h2>Reconnect by run ID</h2>
+          <p>Status reads are durable and side-effect free.</p>
+        </div>
+      </div>
+      <div class="monitor-form">
+        <input type="text" [ngModel]="monitorRunId()"
+          (ngModelChange)="monitorRunId.set($event)" placeholder="run_…"
+          aria-label="Run ID" />
+        <button class="btn btn-primary" type="button" (click)="monitorRequested()"
+          [disabled]="!tokenConfigured()">Monitor</button>
+      </div>
+
+      @if (run(); as current) {
+        <div class="run-summary">
+          <div class="run-heading">
+            <span class="state" [class.terminal]="isTerminal()">{{ current.state }}</span>
+            <code>{{ current.run_id }}</code>
+          </div>
+          <dl class="facts">
+            <div><dt>Origin</dt><dd>{{ current.interface }}</dd></div>
+            <div><dt>Executor</dt><dd>{{ current.executor }}{{ current.scheduler_job_id ? ' · ' + current.scheduler_job_id : '' }}</dd></div>
+            <div><dt>Turn</dt><dd>{{ current.current_turn }}</dd></div>
+            <div><dt>Events</dt><dd>{{ current.event_sequence }}</dd></div>
+          </dl>
+          <div class="button-row compact">
+            <button class="btn btn-ghost btn-sm" type="button" (click)="checkpoint()"
+              [disabled]="!canCheckpoint() || action() !== null">Checkpoint</button>
+            <button class="btn btn-danger btn-sm" type="button" (click)="cancel()"
+              [disabled]="!canCancel() || action() !== null">Cancel</button>
+            <button class="btn btn-primary btn-sm" type="button" (click)="resume()"
+              [disabled]="!canResume() || action() !== null">Resume latest</button>
+          </div>
+          @if (current.end_reason) {
+            <p class="end-reason"><strong>Outcome:</strong> {{ current.end_reason }}</p>
+          }
+        </div>
+      } @else {
+        <p class="empty">Submit an experiment or enter an existing run ID. You can close the browser and reconnect later.</p>
+      }
+    </article>
+  </section>
+
+  @if (run(); as current) {
+    <section class="details-grid">
+      <article class="panel provenance-panel">
+        <div class="panel-title">
+          <div><h2>Resolved provenance</h2><p>Recorded from the executed run, not display defaults.</p></div>
+        </div>
+        <dl class="provenance">
+          <div><dt>Spec</dt><dd><code>{{ current.spec_hash }}</code></dd></div>
+          <div><dt>Code</dt><dd><code>{{ current.code.commit }}</code><br>{{ current.code.branch }} · dirty={{ current.code.dirty }}</dd></div>
+          <div><dt>Model</dt><dd>{{ current.resolved_model.provider }} / {{ current.resolved_model.model }}</dd></div>
+          <div><dt>Blueprint</dt><dd>{{ current.resolved_blueprint.topology }} · {{ current.resolved_blueprint.driver_agent }}<br><code>{{ current.resolved_blueprint.source.content_hash }}</code></dd></div>
+          <div><dt>Container</dt><dd>{{ current.container.sandbox }} · network={{ current.container.network_enabled }}<br><code>{{ current.container.image.content_hash }}</code></dd></div>
+          @if (current.resumed_from_run_id) {
+            <div><dt>Recovery</dt><dd>from <code>{{ current.resumed_from_run_id }}</code><br>checkpoint <code>{{ current.resume_checkpoint_id }}</code></dd></div>
+          }
+        </dl>
+      </article>
+
+      <article class="panel events-panel">
+        <div class="panel-title">
+          <div><h2>Durable events</h2><p>Cursor {{ cursor() }} · polling every 2 seconds</p></div>
+        </div>
+        <ol class="event-list">
+          @for (event of events(); track event.event_id) {
+            <li>
+              <span class="sequence">{{ event.sequence }}</span>
+              <div><strong>{{ event.event_type }}</strong> · turn {{ event.turn }} · {{ event.actor }}
+                <p>{{ eventSummary(event) }}</p>
+              </div>
+            </li>
+          } @empty {
+            <li class="empty">No durable events after cursor 0 yet.</li>
+          }
+        </ol>
+      </article>
+
+      <article class="panel artifacts-panel">
+        <div class="panel-title">
+          <div><h2>Verified artifacts</h2><p>{{ artifacts().length }} linked artifact(s)</p></div>
+          <button class="btn btn-ghost btn-sm" type="button" (click)="verifyArtifacts()"
+            [disabled]="action() !== null">Verify all</button>
+        </div>
+        @if (verifiedCount() !== null) {
+          <p class="verified">Verified {{ verifiedCount() }} artifact(s) against size, hash, symlink, and store boundaries.</p>
+        }
+        <ul class="artifact-list">
+          @for (artifact of artifacts(); track artifact.artifact_id) {
+            <li>
+              <div><strong>{{ artifact.filename }}</strong><br><span>{{ artifact.role }} · {{ formatBytes(artifact.size_bytes) }}</span></div>
+              <button class="btn btn-ghost btn-sm" type="button"
+                (click)="downloadArtifact(artifact)"
+                [disabled]="!tokenConfigured() || action() !== null">
+                {{ action() === 'download:' + artifact.artifact_id ? 'Downloading…' : 'Download' }}
+              </button>
+            </li>
+          } @empty {
+            <li class="empty">No artifacts are linked yet.</li>
+          }
+        </ul>
+      </article>
+    </section>
+  }
+
+  @if (result(); as output) {
+    <section class="panel response-panel">
+      <div class="panel-title"><div><h2>Machine response</h2><p>Exact API response for inspection or reuse.</p></div></div>
+      <pre>{{ output }}</pre>
+    </section>
+  }
+</main>

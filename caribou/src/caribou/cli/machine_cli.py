@@ -112,9 +112,11 @@ def capabilities_command(
         commands = {
             "capabilities": {"status": "implemented", "streaming": False},
             "schema": {"status": "implemented", "streaming": False},
+            "experiment.init": {"status": "implemented", "mutates": True},
             "experiment.validate": {"status": "implemented", "mutates": False},
             "experiment.plan": {"status": "implemented", "mutates": False},
             "experiment.submit": {"status": "implemented", "mutates": True},
+            "experiment.compare": {"status": "implemented", "mutates": False},
             "run.status": {"status": "implemented", "mutates": False},
             "run.events": {"status": "implemented", "streaming": True},
             "run.cancel": {"status": "implemented", "mutates": True},
@@ -148,12 +150,16 @@ def capabilities_command(
                     "local_agent_analysis": (
                         "implemented_not_validated_real_provider_container"
                     ),
+                    "experiment_comparison": (
+                        "lifecycle_lineage_only_no_metric_aggregation"
+                    ),
                     "slurm": "implemented_pending_cluster_validation",
                 },
                 "store_root": str(default_store_root()),
             },
             links={
                 "experiment_schema": "caribou schema experiment --json",
+                "init": "caribou experiment init --output experiment.yaml --json",
                 "validate": "caribou experiment validate SPEC --json",
                 "plan": "caribou experiment plan SPEC --json",
             },
@@ -188,6 +194,41 @@ def schema_command(
         )
 
     _machine_call("schema", json_output, operation)
+
+
+@experiment_app.command("init")
+def init_experiment_command(
+    output: Path = typer.Option(..., "--output", resolve_path=False),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Initialize a valid, runnable lifecycle-smoke experiment specification."""
+
+    def operation() -> Mapping[str, Any]:
+        service = ExperimentService()
+        spec, destination = service.initialize_spec(output, overwrite=overwrite)
+        return machine_response(
+            "experiment.init",
+            object_type="experiment_spec",
+            object_id=spec.spec_id,
+            state="initialized",
+            data={
+                "spec_hash": model_hash(spec),
+                "specification": str(destination),
+                "template": "lifecycle_smoke",
+                "submission_ready": not spec.code.dirty,
+            },
+            links={
+                "validate": f"caribou experiment validate {destination} --json",
+                "plan": f"caribou experiment plan {destination} --json",
+                "submit": (
+                    f"caribou experiment submit {destination} "
+                    "--idempotency-key KEY --json"
+                ),
+            },
+        )
+
+    _machine_call("experiment.init", json_output, operation)
 
 
 @experiment_app.command("validate")
@@ -290,6 +331,38 @@ def submit_experiment_command(
         )
 
     _machine_call("experiment.submit", json_output, operation)
+
+
+@experiment_app.command("compare")
+def compare_experiment_command(
+    experiment_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Compare logical run leaves without mutating or rerunning an experiment."""
+
+    def operation() -> Mapping[str, Any]:
+        comparison = ExperimentService().compare(experiment_id)
+        leaf_run_ids = comparison["leaf_run_ids"]
+        links = {"capabilities": "caribou capabilities --json"}
+        if leaf_run_ids:
+            links.update(
+                {
+                    "first_run": f"caribou run status {leaf_run_ids[0]} --json",
+                    "first_run_artifacts": (
+                        f"caribou artifact list {leaf_run_ids[0]} --json"
+                    ),
+                }
+            )
+        return machine_response(
+            "experiment.compare",
+            object_type="experiment_comparison",
+            object_id=experiment_id,
+            state=str(comparison["status"]),
+            data=comparison,
+            links=links,
+        )
+
+    _machine_call("experiment.compare", json_output, operation)
 
 
 def run_status_command(

@@ -8,6 +8,7 @@ import pytest
 import caribou.control.store as store_module
 from caribou.control.api import ControlError
 from caribou.control.records import ArtifactManifest
+from caribou.control.service import ExperimentService
 from caribou.control.specs import (
     ADAPTER_PARAMETER,
     AGENT_PATH_SMOKE_ADAPTER,
@@ -539,6 +540,14 @@ def test_resume_is_single_child_idempotent_and_preserves_source(tmp_path: Path) 
         exit_code=0,
     )
     assert store.reconcile_experiment(experiment_id).state == ExperimentState.completed
+    comparison = ExperimentService(store=store).compare(experiment_id)
+    assert comparison["status"] == "complete"
+    assert comparison["leaf_run_ids"] == [child.run_id]
+    assert comparison["superseded_run_ids"] == [source.run_id]
+    assert comparison["attempt_count"] == 2
+    assert comparison["conditions"][0]["outcome_counts"] == {"succeeded": 1}
+    assert comparison["attempts"][0]["superseded_by_run_id"] == child.run_id
+    assert comparison["attempts"][1]["resumed_from_run_id"] == source.run_id
     assert store.run_journal_path(source.run_id).read_bytes() == source_journal
     assert store.artifact_manifest_path(source.run_id).read_bytes() == source_manifest
 
