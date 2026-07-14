@@ -665,6 +665,114 @@ class ExperimentStore:
                 current_agent=current_agent,
             )
 
+    def record_idempotent_json_artifact(
+        self,
+        run_id: str,
+        *,
+        filename: str,
+        role: str,
+        value: dict,
+        producer: str,
+        artifact_type: ArtifactType = ArtifactType.manifest,
+        media_type: str = "application/json",
+        schema_type: Optional[str] = None,
+        schema_version_name: Optional[str] = None,
+        turn: Optional[int] = None,
+        current_agent: Optional[str] = None,
+    ) -> Artifact:
+        """Record one named JSON artifact exactly once within a live worker.
+
+        The ``(role, filename)`` pair is the idempotency identity. A replay must
+        provide byte-identical content and descriptor metadata. If the manifest
+        write succeeded but the journal update raised an ordinary exception,
+        this method repairs that boundary before returning. A hard process death
+        still requires a later recovery facility.
+        """
+
+        if filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise ControlError(
+                "ARTIFACT_FILENAME_INVALID",
+                "artifact filename must be one path-safe component",
+                exit_code=ExitCode.validation,
+                details={"filename": filename},
+            )
+        data = (
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        with self.mutation_lock():
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            if journal.run.state not in {
+                RunState.running,
+                RunState.checkpointed,
+                RunState.cancelling,
+            }:
+                raise ControlError(
+                    "RUN_NOT_WRITABLE",
+                    "artifacts can be registered only while an attempt is running",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": run_id, "state": journal.run.state.value},
+                )
+            existing = self._repair_named_artifact_unlocked(
+                journal_path=journal_path,
+                journal_run=journal.run,
+                filename=filename,
+                role=role,
+                data=data,
+                producer=producer,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                schema_type=schema_type,
+                schema_version_name=schema_version_name,
+                turn=turn,
+                current_agent=current_agent,
+            )
+            if existing is not None:
+                return existing
+            try:
+                return self._record_artifact_bytes_unlocked(
+                    journal_path=journal_path,
+                    journal_run=journal.run,
+                    filename=filename,
+                    role=role,
+                    data=data,
+                    producer=producer,
+                    artifact_type=artifact_type,
+                    media_type=media_type,
+                    schema_type=schema_type,
+                    schema_version_name=schema_version_name,
+                    turn=turn,
+                    current_agent=current_agent,
+                )
+            except Exception:
+                # The shared artifact path commits the manifest before the run
+                # journal. Repair that one recoverable boundary immediately so
+                # the paid call is neither duplicated nor left half-linked.
+                current = read_run_journal(journal_path)
+                recovered = self._repair_named_artifact_unlocked(
+                    journal_path=journal_path,
+                    journal_run=current.run,
+                    filename=filename,
+                    role=role,
+                    data=data,
+                    producer=producer,
+                    artifact_type=artifact_type,
+                    media_type=media_type,
+                    schema_type=schema_type,
+                    schema_version_name=schema_version_name,
+                    turn=turn,
+                    current_agent=current_agent,
+                )
+                if recovered is None:
+                    raise
+                return recovered
+
     def record_text_artifact(
         self,
         run_id: str,
@@ -839,6 +947,122 @@ class ExperimentStore:
             turn=turn,
             current_agent=current_agent,
         )
+
+    def _repair_named_artifact_unlocked(
+        self,
+        *,
+        journal_path: Path,
+        journal_run: Run,
+        filename: str,
+        role: str,
+        data: bytes,
+        producer: str,
+        artifact_type: ArtifactType,
+        media_type: str,
+        schema_type: Optional[str],
+        schema_version_name: Optional[str],
+        turn: Optional[int],
+        current_agent: Optional[str],
+    ) -> Optional[Artifact]:
+        matches = tuple(
+            artifact
+            for artifact in self.artifact_manifest(journal_run.run_id).artifacts
+            if artifact.role == role and artifact.filename == filename
+        )
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ControlError(
+                "IDEMPOTENT_ARTIFACT_DUPLICATED",
+                "an idempotent artifact identity has multiple manifest entries",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": journal_run.run_id,
+                    "role": role,
+                    "filename": filename,
+                },
+            )
+        existing = matches[0]
+        content_hash = sha256_bytes(data)
+        if (
+            existing.producer != producer
+            or existing.artifact_type != artifact_type
+            or existing.media_type != media_type
+            or existing.schema_type != schema_type
+            or existing.schema_version_name != schema_version_name
+            or existing.content_hash != content_hash
+            or existing.size_bytes != len(data)
+        ):
+            raise ControlError(
+                "IDEMPOTENT_ARTIFACT_CONFLICT",
+                "an idempotent artifact replay differs from its immutable record",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": journal_run.run_id,
+                    "role": role,
+                    "filename": filename,
+                },
+            )
+        try:
+            verify_artifact(
+                self.artifact_path(existing),
+                existing.content_hash,
+                existing.size_bytes,
+                root=self.run_dir(journal_run.run_id),
+            )
+        except IntegrityError as exc:
+            raise ControlError(
+                "IDEMPOTENT_ARTIFACT_TAMPERED",
+                "an idempotent artifact failed content verification",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": journal_run.run_id,
+                    "role": role,
+                    "filename": filename,
+                },
+            ) from exc
+        if existing.artifact_id in journal_run.artifact_ids:
+            return existing
+
+        event_turn = journal_run.current_turn if turn is None else turn
+        if event_turn < journal_run.current_turn:
+            raise ControlError(
+                "IDEMPOTENT_ARTIFACT_REPAIR_AMBIGUOUS",
+                "artifact repair cannot insert an event before the durable cursor",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": journal_run.run_id,
+                    "current_turn": journal_run.current_turn,
+                    "artifact_turn": event_turn,
+                },
+            )
+        event = Event(
+            event_id=existing.producer_event_id,
+            experiment_id=journal_run.experiment_id,
+            run_id=journal_run.run_id,
+            sequence=journal_run.event_sequence + 1,
+            occurred_at=existing.created_at,
+            event_type=EventType.artifact_created,
+            turn=event_turn,
+            actor=producer,
+            payload=ArtifactCreatedPayload(artifact_id=existing.artifact_id),
+        )
+        updates: dict = {
+            "artifact_ids": [*journal_run.artifact_ids, existing.artifact_id],
+            "event_sequence": event.sequence,
+            "current_turn": event_turn,
+            "updated_at": event.occurred_at,
+        }
+        if current_agent is not None:
+            updates["current_agent"] = current_agent
+        updated_run = self._validated_run(journal_run, updates)
+        commit_run_event(
+            journal_path,
+            updated_run,
+            event,
+            expected_hash=file_hash(journal_path),
+        )
+        return existing
 
     def _commit_artifact_unlocked(
         self,
@@ -1156,9 +1380,7 @@ class ExperimentStore:
         )
         return updated, True
 
-    def bind_scheduler_job(
-        self, handle: SlurmExecutionHandle
-    ) -> tuple[Run, bool]:
+    def bind_scheduler_job(self, handle: SlurmExecutionHandle) -> tuple[Run, bool]:
         with self.mutation_lock():
             return self._bind_scheduler_job_unlocked(handle)
 
@@ -1188,9 +1410,7 @@ class ExperimentStore:
                 path.chmod(0o700)
         return path, content_hash
 
-    def _mark_scheduler_released_unlocked(
-        self, run_id: str
-    ) -> SlurmExecutionHandle:
+    def _mark_scheduler_released_unlocked(self, run_id: str) -> SlurmExecutionHandle:
         path = self.scheduler_handle_path(run_id)
         handle = self._read(path, SlurmExecutionHandle)
         if handle.released_at is not None:
@@ -1285,9 +1505,7 @@ class ExperimentStore:
                     event_type=EventType.artifact_created,
                     turn=journal.run.current_turn,
                     actor=existing.producer,
-                    payload=ArtifactCreatedPayload(
-                        artifact_id=existing.artifact_id
-                    ),
+                    payload=ArtifactCreatedPayload(artifact_id=existing.artifact_id),
                 )
                 updated = self._validated_run(
                     journal.run,

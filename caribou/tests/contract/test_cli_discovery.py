@@ -120,6 +120,31 @@ def test_schema_discovery_returns_strict_experiment_spec(tmp_path: Path) -> None
     assert schema["additionalProperties"] is False
 
 
+def test_schema_discovery_exposes_strict_provider_call_receipt(tmp_path: Path) -> None:
+    capabilities = run_cli(tmp_path, "capabilities", "--json")
+    assert capabilities.returncode == 0, capabilities.stderr
+    assert "provider-call-receipt" in response(capabilities)["data"]["schema_names"]
+
+    result = run_cli(tmp_path, "schema", "provider-call-receipt", "--json")
+    assert result.returncode == 0, result.stderr
+    payload = response(result)
+    assert payload["object"] == {
+        "type": "schema",
+        "id": "provider-call-receipt",
+        "state": "available",
+    }
+    schema = payload["data"]["schema"]
+    assert schema["properties"]["schema_version"]["const"] == (
+        "caribou.provider_call_receipt.v1"
+    )
+    assert schema["properties"]["cost_basis"]["const"] == "unavailable"
+    assert schema["properties"]["sdk_retries"]["const"] == 0
+    assert schema["additionalProperties"] is False
+    usage_reference = schema["properties"]["usage"]["$ref"]
+    usage_name = usage_reference.rsplit("/", 1)[-1]
+    assert schema["$defs"][usage_name]["additionalProperties"] is False
+
+
 def test_validate_and_plan_never_prompt_or_mutate(tmp_path: Path) -> None:
     specification = write_spec(tmp_path)
     validated = run_cli(
