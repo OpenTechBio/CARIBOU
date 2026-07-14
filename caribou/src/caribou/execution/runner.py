@@ -1,12 +1,14 @@
 # caribou/execution/runner.py
 from __future__ import annotations
 
+import math
 import re
 import sys
 import time
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypedDict, cast
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -29,7 +31,6 @@ try:
         _code_preview,
     )
     from caribou.execution.path_utils import _init_paths, get_default_runs_dir
-    from caribou.execution.rag_client import get_rag_client
     from caribou.execution.report_generation import (
         AgentReportMemory,
         _write_session_report,
@@ -41,12 +42,122 @@ except ImportError as e:
     sys.exit(1)
 
 
+def get_rag_client(console: Console):
+    """Load the optional RAG stack only when a runner action requires it."""
+    from caribou.execution.rag_client import get_rag_client as create_rag_client
+
+    return create_rag_client(console)
+
+
 # Consecutive no-action / code-exec failures we tolerate before ending an auto run.
 MAX_CONSECUTIVE_NO_ACTION = 3
 MAX_CONSECUTIVE_EXEC_FAILURES = 5
 # Retry policy for transient LLM errors.
 _LLM_RETRY_ATTEMPTS = 3
 _LLM_RETRY_BASE_DELAY = 2.0
+_LLM_RETRY_MAX_DELAY = 4.0
+
+
+class RunnerEvent(TypedDict):
+    """Transport-neutral event emitted synchronously by the legacy runner."""
+
+    schema_version: str
+    event_type: str
+    occurred_at: str
+    run_id: str
+    turn: int
+    agent_name: str
+    payload: Dict[str, object]
+
+
+RunnerEventCallback = Callable[[RunnerEvent], None]
+CancellationCheck = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class AgentSessionResult:
+    """Immutable terminal summary returned by :func:`run_agent_session`."""
+
+    schema_version: str
+    run_id: str
+    succeeded: bool
+    cancelled: bool
+    end_reason: str
+    turns_completed: int
+    code_blocks_produced: int
+    code_exec_attempts: int
+    code_exec_failures: int
+    correction_count: int
+    current_agent_name: str
+    final_turn: int
+    started_at: str
+    ended_at: str
+    duration_seconds: float
+
+
+class _LlmCallCancelled(Exception):
+    """Internal control-flow signal for cooperative cancellation during an LLM call."""
+
+
+_UNSUCCESSFUL_END_REASONS = frozenset(
+    {
+        "cancelled",
+        "llm_error",
+        "max_turns_reached",
+        "stuck_no_action",
+        "stuck_code_failures",
+        "timeout",
+    }
+)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _emit_runner_event(
+    callback: Optional[RunnerEventCallback],
+    *,
+    event_type: str,
+    run_id: str,
+    turn: int,
+    agent_name: str,
+    payload: Optional[Dict[str, object]] = None,
+) -> None:
+    if callback is None:
+        return
+    callback(
+        {
+            "schema_version": "caribou.runner_event.v1",
+            "event_type": event_type,
+            "occurred_at": _utc_now(),
+            "run_id": run_id,
+            "turn": turn,
+            "agent_name": agent_name,
+            "payload": dict(payload or {}),
+        }
+    )
+
+
+def _cancellation_requested(should_cancel: Optional[CancellationCheck]) -> bool:
+    return should_cancel is not None and should_cancel()
+
+
+def _retry_backoff_cancelled(
+    delay: float, should_cancel: Optional[CancellationCheck]
+) -> bool:
+    """Wait for a retry without making cooperative cancellation unresponsive."""
+    if should_cancel is None:
+        time.sleep(delay)
+        return False
+    deadline = time.monotonic() + delay
+    while True:
+        if should_cancel():
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.1, remaining))
 
 
 def _call_llm_with_retry(
@@ -55,31 +166,53 @@ def _call_llm_with_retry(
     llm_client: object,
     model_name: str,
     messages: List[Dict[str, str]],
+    should_cancel: Optional[CancellationCheck] = None,
+    retry_attempts: int = _LLM_RETRY_ATTEMPTS,
+    retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
+    retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
+    request_timeout_seconds: float | None = None,
 ) -> Optional[str]:
     """
     Call the LLM with exponential backoff on transient errors. Returns the
     assistant message string, or None if all retries are exhausted.
+
+    When the optional cancellation hook is used, cancellation raises the private
+    ``_LlmCallCancelled`` control-flow signal for ``run_agent_session`` to handle.
     """
+    if retry_attempts < 1 or retry_base_delay < 0 or retry_max_delay < retry_base_delay:
+        raise ValueError("invalid LLM retry policy")
+    if request_timeout_seconds is not None and request_timeout_seconds <= 0:
+        raise ValueError("request timeout must be greater than zero")
     last_exc: Optional[Exception] = None
-    for attempt in range(1, _LLM_RETRY_ATTEMPTS + 1):
+    for attempt in range(1, retry_attempts + 1):
+        if _cancellation_requested(should_cancel):
+            raise _LlmCallCancelled
         try:
-            resp = llm_client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=0.0,
-            )
+            request_options: Dict[str, object] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.0,
+            }
+            if request_timeout_seconds is not None:
+                request_options["timeout"] = request_timeout_seconds
+            resp = cast(Any, llm_client).chat.completions.create(**request_options)
+            if _cancellation_requested(should_cancel):
+                raise _LlmCallCancelled
             return resp.choices[0].message.content
+        except _LlmCallCancelled:
+            raise
         except Exception as e:  # noqa: BLE001 — SDKs raise varied exception types
             last_exc = e
-            if attempt >= _LLM_RETRY_ATTEMPTS:
+            if attempt >= retry_attempts:
                 break
-            delay = _LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            delay = min(retry_base_delay * (2 ** (attempt - 1)), retry_max_delay)
             console.print(
-                f"[yellow]LLM API error (attempt {attempt}/{_LLM_RETRY_ATTEMPTS}): {e}. "
+                f"[yellow]LLM API error (attempt {attempt}/{retry_attempts}): {e}. "
                 f"Retrying in {delay:.1f}s…[/yellow]"
             )
-            time.sleep(delay)
-    console.print(f"[red]LLM API error after {_LLM_RETRY_ATTEMPTS} attempts: {last_exc}[/red]")
+            if _retry_backoff_cancelled(delay, should_cancel):
+                raise _LlmCallCancelled
+    console.print(f"[red]LLM API error after {retry_attempts} attempts: {last_exc}[/red]")
     return None
 
 
@@ -114,13 +247,28 @@ def run_agent_session(
     output_dir: Optional[Path] = None,
     make_report: bool = False,
     agent_report_memory: bool = False,
-):
+    durable_run_id: Optional[str] = None,
+    should_cancel: Optional[CancellationCheck] = None,
+    event_callback: Optional[RunnerEventCallback] = None,
+    timeout_seconds: Optional[float] = None,
+    max_consecutive_no_action: int = MAX_CONSECUTIVE_NO_ACTION,
+    max_consecutive_exec_failures: int = MAX_CONSECUTIVE_EXEC_FAILURES,
+    llm_retry_attempts: int = _LLM_RETRY_ATTEMPTS,
+    llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
+    llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
+) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
     """
     _init_paths(output_dir)
 
-    run_id = f"run_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    if durable_run_id is not None and not durable_run_id.strip():
+        raise ValueError("durable_run_id must be non-empty when provided")
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be greater than zero")
+    if max_consecutive_no_action < 1 or max_consecutive_exec_failures < 1:
+        raise ValueError("consecutive failure limits must be positive")
+    run_id = durable_run_id or f"run_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     default_runs_dir = get_default_runs_dir()
     artifacts_dir = output_dir if output_dir else (default_runs_dir / "session_notes" / run_id)
     artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
@@ -160,24 +308,51 @@ def run_agent_session(
 
     current_agent = driver_agent
     turns_completed = 0
+    final_turn = 0
     code_block_count = 0
     code_exec_attempts = 0
     code_exec_failures = 0
     consecutive_failures = 0
     consecutive_no_action = 0
     correction_count = 0
-    session_start_ts = datetime.utcnow()
-    session_start_time = time.time()
+    session_start_ts = _utc_now()
+    session_start_time = time.monotonic()
+    session_deadline = (
+        session_start_time + timeout_seconds
+        if timeout_seconds is not None
+        else None
+    )
+
+    def session_stop_reason() -> str | None:
+        if _cancellation_requested(should_cancel):
+            return "cancelled"
+        if session_deadline is not None and time.monotonic() >= session_deadline:
+            return "timeout"
+        return None
+
     session_end_reason = "completed"
     last_code_snippet: str | None = None
 
     while True:
+        stop_reason = session_stop_reason()
+        if stop_reason is not None:
+            session_end_reason = stop_reason
+            break
         if is_auto and turns_completed >= max_turns:
             console.print("[bold green]Auto run finished: Max turns reached.[/bold green]")
             session_end_reason = "max_turns_reached"
             break
         turn = turns_completed + 1
+        final_turn = turn
         console.print(f"\n[bold]LLM call (turn {turn})…[/bold]")
+        _emit_runner_event(
+            event_callback,
+            event_type="turn_started",
+            run_id=run_id,
+            turn=turn,
+            agent_name=current_agent.name,
+            payload={"model_name": model_name},
+        )
 
         if report_memory:
             working_history = history[current_agent_history_start:]
@@ -188,18 +363,32 @@ def run_agent_session(
             context_to_send = history
         # Claude requires that assistant messages don't end with trailing whitespace
         cleaned_context = []
-        for msg in context_to_send:
-            cleaned_msg = msg.copy()
+        for context_message in context_to_send:
+            cleaned_msg = context_message.copy()
             if "content" in cleaned_msg and isinstance(cleaned_msg["content"], str):
                 cleaned_msg["content"] = cleaned_msg["content"].rstrip()
             cleaned_context.append(cleaned_msg)
 
-        msg = _call_llm_with_retry(
-            console=console,
-            llm_client=llm_client,
-            model_name=model_name,
-            messages=cleaned_context,
-        )
+        try:
+            request_timeout_seconds = (
+                max(0.001, session_deadline - time.monotonic())
+                if session_deadline is not None
+                else None
+            )
+            msg = _call_llm_with_retry(
+                console=console,
+                llm_client=llm_client,
+                model_name=model_name,
+                messages=cleaned_context,
+                should_cancel=lambda: session_stop_reason() is not None,
+                retry_attempts=llm_retry_attempts,
+                retry_base_delay=llm_retry_base_delay,
+                retry_max_delay=llm_retry_max_delay,
+                request_timeout_seconds=request_timeout_seconds,
+            )
+        except _LlmCallCancelled:
+            session_end_reason = session_stop_reason() or "cancelled"
+            break
         if msg is None:
             session_end_reason = "llm_error"
             break
@@ -209,6 +398,19 @@ def run_agent_session(
             memory_manager.add_message("assistant", msg)
         display(console, f"assistant ({current_agent.name})", msg)
         turns_completed += 1
+        _emit_runner_event(
+            event_callback,
+            event_type="assistant_message",
+            run_id=run_id,
+            turn=turn,
+            agent_name=current_agent.name,
+            payload={"role": "assistant", "content": msg},
+        )
+
+        stop_reason = session_stop_reason()
+        if stop_reason is not None:
+            session_end_reason = stop_reason
+            break
 
         blocks_found = _count_code_blocks(msg)
         if blocks_found:
@@ -262,10 +464,20 @@ def run_agent_session(
         if query_from_re and current_agent.is_rag_enabled:
             _action_fired = True
             console.print(f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]")
+            _emit_runner_event(
+                event_callback,
+                event_type="rag_attempt",
+                run_id=run_id,
+                turn=turn,
+                agent_name=current_agent.name,
+                payload={"query": query_from_re, "kind": "knowledge_query"},
+            )
+            rag_error: Optional[Exception] = None
             try:
                 rag_client = get_rag_client(console)
                 retrieved_docs = rag_client.query(query_from_re)
             except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
+                rag_error = rag_exc
                 console.print(f"[red] RAG query failed: {rag_exc} [/red]")
                 rag_err = (
                     f"[SYSTEM] RAG query for '{query_from_re}' failed: {rag_exc}. "
@@ -275,15 +487,34 @@ def run_agent_session(
                 if memory_manager:
                     memory_manager.add_message("system", rag_err)
                 retrieved_docs = None
+            _emit_runner_event(
+                event_callback,
+                event_type="rag_result",
+                run_id=run_id,
+                turn=turn,
+                agent_name=current_agent.name,
+                payload={
+                    "query": query_from_re,
+                    "kind": "knowledge_query",
+                    "success": bool(retrieved_docs),
+                    "content": retrieved_docs or "",
+                    "error": str(rag_error) if rag_error else "",
+                },
+            )
             if retrieved_docs:
-                console.print(f"[green] RAG query successful. [/green]")
+                console.print("[green] RAG query successful. [/green]")
                 feedback = retrieved_docs
                 console.print(feedback)
                 if memory_manager:
                     memory_manager.add_message("system", feedback)
                 history.append({"role": "system", "content": feedback})
             else:
-                console.print(f"[red] RAG query unsuccessful. [/red]")
+                console.print("[red] RAG query unsuccessful. [/red]")
+
+            stop_reason = session_stop_reason()
+            if stop_reason is not None:
+                session_end_reason = stop_reason
+                break
 
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
@@ -291,6 +522,7 @@ def run_agent_session(
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
+                previous_agent_name = current_agent.name
                 if report_memory:
                     agent_history_slice = history[current_agent_history_start:]
                     agent_report = _generate_agent_report(
@@ -324,17 +556,60 @@ def run_agent_session(
                 if report_memory:
                     report_memory.update_agent_prompt(prompt_with_context)
                     current_agent_history_start = len(history)
+                _emit_runner_event(
+                    event_callback,
+                    event_type="agent_switch",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "from_agent": previous_agent_name,
+                        "to_agent": target_agent_name,
+                        "command": cmd,
+                    },
+                )
                 _delegated = True
+
+        stop_reason = session_stop_reason()
+        if stop_reason is not None:
+            session_end_reason = stop_reason
+            break
 
         code_blocks = extract_python_code_blocks(msg)
         if code_blocks:
             _action_fired = True
             total_blocks = len(code_blocks)
             rag_short_circuit = False
+            cancelled_during_actions = False
             for idx, code in enumerate(code_blocks, start=1):
+                if session_stop_reason() is not None:
+                    cancelled_during_actions = True
+                    break
                 last_code_snippet = code
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
-                exec_result = sandbox_manager.exec_code(code, timeout=600)
+                action_id = f"{run_id}:turn:{turn}:block:{idx}"
+                _emit_runner_event(
+                    event_callback,
+                    event_type="code_submitted",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "action_id": action_id,
+                        "source": code,
+                        "block_index": idx,
+                        "total_blocks": total_blocks,
+                    },
+                )
+                code_started = time.monotonic()
+                code_timeout = 600
+                if session_deadline is not None:
+                    code_timeout = max(
+                        1,
+                        min(600, math.ceil(session_deadline - time.monotonic())),
+                    )
+                exec_result = sandbox_manager.exec_code(code, timeout=code_timeout)
+                code_duration_ms = max(0, int((time.monotonic() - code_started) * 1000))
                 code_exec_attempts += 1
                 if exec_result.get("status") != "ok":
                     code_exec_failures += 1
@@ -368,6 +643,23 @@ def run_agent_session(
                     memory_manager.add_message("system", summary_msg)
                 history.append({"role": "assistant", "content": feedback})
                 display(console, "code execution result", feedback)
+                _emit_runner_event(
+                    event_callback,
+                    event_type="code_result",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "action_id": action_id,
+                        "success": exec_result.get("status") == "ok",
+                        "status": str(exec_result.get("status", "unknown")),
+                        "duration_ms": code_duration_ms,
+                        "stdout": str(exec_result.get("stdout", "")),
+                        "stderr": str(exec_result.get("stderr", "")),
+                        "block_index": idx,
+                        "total_blocks": total_blocks,
+                    },
+                )
 
                 stderr = exec_result.get("stderr", "")
                 if stderr and current_agent.is_rag_enabled:
@@ -375,7 +667,7 @@ def run_agent_session(
                         r"(\w+)\(.*\) missing \d+ required positional argument",  # TypeError missing arguments
                         r"NameError: name '(\w+)' is not defined",  # NameError
                         r"AttributeError: .* has no attribute '(\w+)'",  # AttributeError
-                        r"'(\w+)\(.*\) got an unexpected keyword argument"  # Unexpected keyword argument
+                        r"'(\w+)\(.*\) got an unexpected keyword argument",  # Unexpected keyword argument
                     ]
 
                     function_name = ""
@@ -384,11 +676,12 @@ def run_agent_session(
                     for pat in func_error_patterns:
                         match = re.search(pat, stderr)
                         if match:
-                            function_name = [g for g in match.groups() if g]
+                            function_name = next(
+                                (group for group in match.groups() if group), ""
+                            )
                             break
 
                     if function_name:
-                        function_name = function_name[0]
                         console.print(
                             f"[yellow]🔍 Incorrect function signature detected: {function_name}, function database search...[/yellow]"
                         )
@@ -405,10 +698,16 @@ def run_agent_session(
                             break
                         else:
                             print("Error Query unsuccessful - Function signature does not exist in the current database.")
+                if session_stop_reason() is not None:
+                    cancelled_during_actions = True
+                    break
+            if cancelled_during_actions:
+                session_end_reason = session_stop_reason() or "cancelled"
+                break
             if rag_short_circuit:
                 continue
             # Escalate if the same code path keeps failing — don't loop forever.
-            if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
+            if is_auto and consecutive_failures >= max_consecutive_exec_failures:
                 console.print(
                     f"[bold red]Auto run halted: {consecutive_failures} consecutive "
                     f"code execution failures — likely stuck on the same error.[/bold red]"
@@ -433,7 +732,7 @@ def run_agent_session(
             # No action was taken this turn — give the LLM explicit feedback so it
             # doesn't silently repeat the same output indefinitely.
             consecutive_no_action += 1
-            if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
+            if consecutive_no_action >= max_consecutive_no_action:
                 # The agent is stuck emitting non-actionable text. End the run
                 # rather than burn tokens looping on the same feedback message.
                 console.print(
@@ -454,8 +753,8 @@ def run_agent_session(
                 f"Please either write executable Python code in a ```python ... ``` block, "
                 f"issue a delegation command, or use a RAG query. "
                 f"Do not output plain text descriptions of what you intend to do. "
-                f"(Attempt {consecutive_no_action}/{MAX_CONSECUTIVE_NO_ACTION} — the run "
-                f"will halt after {MAX_CONSECUTIVE_NO_ACTION} consecutive no-action turns.)"
+                f"(Attempt {consecutive_no_action}/{max_consecutive_no_action} — the run "
+                f"will halt after {max_consecutive_no_action} consecutive no-action turns.)"
             )
             console.print(f"[red]{no_action_msg}[/red]")
             history.append({"role": "system", "content": no_action_msg})
@@ -466,6 +765,10 @@ def run_agent_session(
 
         if is_auto:
             if benchmark_modules:
+                stop_reason = session_stop_reason()
+                if stop_reason is not None:
+                    session_end_reason = stop_reason
+                    break
                 # Determine output_dir for benchmark
                 bench_output_dir = output_dir if output_dir else get_default_runs_dir()
                 result_str = run_benchmark(
@@ -477,6 +780,10 @@ def run_agent_session(
                     memory_manager.add_message("system", result_str)
                 history.append({"role": "system", "content": result_str})
                 display(console, "user", result_str)
+                stop_reason = session_stop_reason()
+                if stop_reason is not None:
+                    session_end_reason = stop_reason
+                    break
 
             # Add a user message to continue the conversation in auto mode
             auto_continue_msg = "Please continue with the next step."
@@ -489,6 +796,10 @@ def run_agent_session(
 
         # Interactive mode: prompt user for next action
         while True:
+            stop_reason = session_stop_reason()
+            if stop_reason is not None:
+                session_end_reason = stop_reason
+                break
             prompt_text = "\n[bold]Next message ('benchmark' to run selected benchmark, 'exit' to quit)[/bold]"
             try:
                 user_input = Prompt.ask(prompt_text, default="").strip()
@@ -504,12 +815,16 @@ def run_agent_session(
             if user_input.lower().startswith("/todo"):
                 todo_text = user_input[len("/todo"):].strip()
                 if todo_text:
-                    item = artifacts.add_todo(todo_text, "user", turn)
-                    msg = f"TODO added (#{item.id}) by user: {item.text}"
-                    history.append({"role": "system", "content": msg})
+                    todo_item = artifacts.add_todo(todo_text, "user", turn)
+                    todo_message = (
+                        f"TODO added (#{todo_item.id}) by user: {todo_item.text}"
+                    )
+                    history.append({"role": "system", "content": todo_message})
                     if memory_manager:
-                        memory_manager.add_message("system", msg)
-                    console.print(f"[green]Added TODO #[/green]{item.id}: {item.text}")
+                        memory_manager.add_message("system", todo_message)
+                    console.print(
+                        f"[green]Added TODO #[/green]{todo_item.id}: {todo_item.text}"
+                    )
                 else:
                     console.print("[yellow]Usage: /todo <task>[/yellow]")
                 continue
@@ -518,12 +833,14 @@ def run_agent_session(
                 parts = user_input.split()
                 if len(parts) >= 2 and parts[1].isdigit():
                     todo_id = int(parts[1])
-                    item = artifacts.complete_todo(todo_id)
-                    if item:
-                        msg = f"TODO completed (#{item.id}) by user"
-                        history.append({"role": "system", "content": msg})
+                    completed_item = artifacts.complete_todo(todo_id)
+                    if completed_item:
+                        todo_message = (
+                            f"TODO completed (#{completed_item.id}) by user"
+                        )
+                        history.append({"role": "system", "content": todo_message})
                         if memory_manager:
-                            memory_manager.add_message("system", msg)
+                            memory_manager.add_message("system", todo_message)
                         console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
                     else:
                         console.print(f"[yellow]No TODO found with id {todo_id}[/yellow]")
@@ -566,11 +883,11 @@ def run_agent_session(
         if session_end_reason == "user_exit":
             break
 
-    session_end_ts = datetime.utcnow()
-    duration_seconds = round(time.time() - session_start_time, 2)
+    session_end_ts = _utc_now()
+    duration_seconds = round(time.monotonic() - session_start_time, 2)
 
     if make_report:
-        session_stats = {
+        session_stats: dict[str, object] = {
             "mode": "auto" if is_auto else "interactive",
             "driver_agent": driver_agent.name,
             "model": model_name,
@@ -579,11 +896,50 @@ def run_agent_session(
             "code_exec_attempts": code_exec_attempts,
             "code_exec_failures": code_exec_failures,
             "correction_count": correction_count,
-            "session_start": session_start_ts.isoformat(),
-            "session_end": session_end_ts.isoformat(),
+            "session_start": session_start_ts,
+            "session_end": session_end_ts,
             "duration_seconds": duration_seconds,
             "max_turns_requested": max_turns if is_auto else None,
             "end_reason": session_end_reason,
         }
         report_output_dir = output_dir if output_dir else get_default_runs_dir()
         _write_session_report(console, output_dir=report_output_dir, stats=session_stats)
+
+    result = AgentSessionResult(
+        schema_version="caribou.agent_session_result.v1",
+        run_id=run_id,
+        succeeded=session_end_reason not in _UNSUCCESSFUL_END_REASONS,
+        cancelled=session_end_reason == "cancelled",
+        end_reason=session_end_reason,
+        turns_completed=turns_completed,
+        code_blocks_produced=code_block_count,
+        code_exec_attempts=code_exec_attempts,
+        code_exec_failures=code_exec_failures,
+        correction_count=correction_count,
+        current_agent_name=current_agent.name,
+        final_turn=final_turn,
+        started_at=session_start_ts,
+        ended_at=session_end_ts,
+        duration_seconds=duration_seconds,
+    )
+    _emit_runner_event(
+        event_callback,
+        event_type="session_end",
+        run_id=run_id,
+        turn=final_turn,
+        agent_name=current_agent.name,
+        payload={
+            "succeeded": result.succeeded,
+            "cancelled": result.cancelled,
+            "end_reason": result.end_reason,
+            "turns_completed": result.turns_completed,
+            "code_blocks_produced": result.code_blocks_produced,
+            "code_exec_attempts": result.code_exec_attempts,
+            "code_exec_failures": result.code_exec_failures,
+            "correction_count": result.correction_count,
+            "started_at": result.started_at,
+            "ended_at": result.ended_at,
+            "duration_seconds": result.duration_seconds,
+        },
+    )
+    return result
