@@ -19,6 +19,7 @@ from caribou.config import CARIBOU_HOME
 from caribou.domain.enums import (
     ArtifactType,
     EventType,
+    ExecutorKind,
     ExperimentState,
     InterfaceOrigin,
     RetentionPolicy,
@@ -33,13 +34,16 @@ from caribou.domain.models import (
     EventPayload,
     Experiment,
     ExperimentSpec,
+    HeartbeatPayload,
     Run,
     utc_now,
 )
 from caribou.domain.serialization import (
     IntegrityError,
+    canonical_json_bytes,
     commit_experiment_transition,
     commit_run_event,
+    commit_run_scheduler_binding,
     commit_run_transition,
     file_hash,
     initialize_experiment_journal,
@@ -59,6 +63,11 @@ from .records import (
     CancelRequest,
     ExecutionHandle,
     IdempotencyClaim,
+    SlurmAccounting,
+    SlurmCancellationAttempt,
+    SlurmCancellationLedger,
+    SlurmExecutionHandle,
+    SlurmSubmissionLedger,
     StoreIndex,
 )
 from .specs import build_local_plan, validate_control_spec
@@ -139,6 +148,24 @@ class ExperimentStore:
     def cancel_request_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "control.json"
 
+    def scheduler_handle_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler.json"
+
+    def scheduler_accounting_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler-accounting.json"
+
+    def scheduler_accounting_raw_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler-accounting.raw"
+
+    def scheduler_script_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "slurm-job.sh"
+
+    def scheduler_cancellation_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler-cancellation.json"
+
+    def scheduler_submission_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler-submission.json"
+
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -208,7 +235,7 @@ class ExperimentStore:
                 "idempotency key must be trimmed and at most 256 characters",
                 exit_code=ExitCode.validation,
             )
-        validate_control_spec(spec, require_local_adapter=True)
+        validate_control_spec(spec, require_submit_adapter=True)
         plan = build_local_plan(spec)
         spec_hash = model_hash(spec)
         key_hash = self._idempotency_hash(idempotency_key)
@@ -282,10 +309,11 @@ class ExperimentStore:
             experiment_hash = initialize_experiment_journal(
                 self.experiment_journal_path(experiment_id), experiment
             )
+            executor_label = spec.execution.executor.value
             for target, reason in (
                 (ExperimentState.validated, "specification validated"),
                 (ExperimentState.planned, "run matrix planned"),
-                (ExperimentState.active, "local workers authorized"),
+                (ExperimentState.active, f"{executor_label} workers authorized"),
             ):
                 experiment_transition = transition_experiment(
                     experiment, target, reason=reason, actor="control-plane"
@@ -311,7 +339,7 @@ class ExperimentStore:
                 run_transition = transition_run(
                     run,
                     RunState.queued,
-                    reason="accepted by local executor",
+                    reason=f"accepted by {executor_label} executor",
                     actor="control-plane",
                 )
                 commit_run_transition(
@@ -956,6 +984,475 @@ class ExperimentStore:
                 details={"run_id": handle.run_id},
             )
         write_model(path, handle)
+
+    def scheduler_handle(self, run_id: str) -> Optional[SlurmExecutionHandle]:
+        path = self.scheduler_handle_path(run_id)
+        return self._read(path, SlurmExecutionHandle) if path.exists() else None
+
+    def scheduler_cancellation(self, run_id: str) -> Optional[SlurmCancellationLedger]:
+        path = self.scheduler_cancellation_path(run_id)
+        return self._read(path, SlurmCancellationLedger) if path.exists() else None
+
+    def scheduler_submission(self, run_id: str) -> Optional[SlurmSubmissionLedger]:
+        path = self.scheduler_submission_path(run_id)
+        return self._read(path, SlurmSubmissionLedger) if path.exists() else None
+
+    def _record_scheduler_submission_attempt_unlocked(
+        self,
+        *,
+        run_id: str,
+        job_name: str,
+        script_hash: str,
+    ) -> SlurmSubmissionLedger:
+        path = self.scheduler_submission_path(run_id)
+        existing = (
+            self._read(path, SlurmSubmissionLedger)
+            if path.exists()
+            else SlurmSubmissionLedger(
+                run_id=run_id,
+                job_name=job_name,
+                script_hash=script_hash,
+            )
+        )
+        if existing.job_name != job_name or existing.script_hash != script_hash:
+            raise ControlError(
+                "SCHEDULER_SUBMISSION_CONFLICT",
+                "submission ledger differs from the frozen Slurm job identity",
+                exit_code=ExitCode.integrity,
+                details={"run_id": run_id},
+            )
+        updated = SlurmSubmissionLedger.model_validate_json(
+            existing.model_copy(
+                update={"attempts": (*existing.attempts, utc_now())}
+            ).model_dump_json()
+        )
+        write_model(
+            path,
+            updated,
+            expected_hash=file_hash(path) if path.exists() else None,
+        )
+        return updated
+
+    def _record_scheduler_cancellation_unlocked(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        succeeded: bool,
+        error_code: Optional[str] = None,
+    ) -> SlurmCancellationLedger:
+        path = self.scheduler_cancellation_path(run_id)
+        existing = (
+            self._read(path, SlurmCancellationLedger)
+            if path.exists()
+            else SlurmCancellationLedger(run_id=run_id, job_id=job_id)
+        )
+        if existing.job_id != job_id:
+            raise ControlError(
+                "SCHEDULER_JOB_MISMATCH",
+                "cancellation ledger job ID differs from the bound run",
+                exit_code=ExitCode.integrity,
+                details={"run_id": run_id},
+            )
+        if any(attempt.succeeded for attempt in existing.attempts):
+            return existing
+        updated = SlurmCancellationLedger.model_validate_json(
+            existing.model_copy(
+                update={
+                    "attempts": (
+                        *existing.attempts,
+                        SlurmCancellationAttempt(
+                            succeeded=succeeded,
+                            error_code=error_code,
+                        ),
+                    )
+                }
+            ).model_dump_json()
+        )
+        write_model(
+            path,
+            updated,
+            expected_hash=file_hash(path) if path.exists() else None,
+        )
+        return updated
+
+    def _bind_scheduler_job_unlocked(
+        self, handle: SlurmExecutionHandle
+    ) -> tuple[Run, bool]:
+        path = self.run_journal_path(handle.run_id)
+        journal = read_run_journal(path)
+        run = journal.run
+        if run.executor != ExecutorKind.slurm or run.partition != "peerd":
+            raise ControlError(
+                "RUN_NOT_SLURM",
+                "scheduler identity can be bound only to a peerd Slurm run",
+                exit_code=ExitCode.conflict,
+                details={"run_id": handle.run_id, "executor": run.executor.value},
+            )
+        if run.state not in {RunState.queued, RunState.cancelling}:
+            raise ControlError(
+                "RUN_NOT_QUEUED",
+                "a Slurm job can be bound only while the run is queued or cancelling",
+                exit_code=ExitCode.conflict,
+                details={"run_id": handle.run_id, "state": run.state.value},
+            )
+        handle_path = self.scheduler_handle_path(run.run_id)
+        if handle_path.exists():
+            existing = self._read(handle_path, SlurmExecutionHandle)
+            if existing != handle:
+                raise ControlError(
+                    "SCHEDULER_HANDLE_CONFLICT",
+                    "a different scheduler handle already exists for the run",
+                    exit_code=ExitCode.integrity,
+                    details={"run_id": run.run_id},
+                )
+        else:
+            # Persist scheduler identity before modifying the run journal. If the
+            # process stops between these writes, launch can finish the binding
+            # from this held-job handle without submitting a duplicate job.
+            write_model(handle_path, handle)
+        if run.scheduler_job_id is not None:
+            if run.scheduler_job_id == handle.job_id:
+                return run, False
+            raise ControlError(
+                "SCHEDULER_JOB_CONFLICT",
+                "the run is already bound to a different Slurm job",
+                exit_code=ExitCode.conflict,
+                details={
+                    "run_id": handle.run_id,
+                    "existing_job_id": run.scheduler_job_id,
+                    "submitted_job_id": handle.job_id,
+                },
+            )
+        timestamp = utc_now()
+        event = Event(
+            experiment_id=run.experiment_id,
+            run_id=run.run_id,
+            sequence=run.event_sequence + 1,
+            occurred_at=timestamp,
+            event_type=EventType.heartbeat,
+            turn=run.current_turn,
+            stage="scheduler_submission",
+            actor="slurm-executor",
+            payload=HeartbeatPayload(
+                message=(
+                    f"Slurm job {handle.job_id} bound on partition peerd while held"
+                )
+            ),
+        )
+        updated = self._validated_run(
+            run,
+            {
+                "scheduler_job_id": handle.job_id,
+                "event_sequence": event.sequence,
+                "updated_at": timestamp,
+            },
+        )
+        commit_run_scheduler_binding(
+            path,
+            updated,
+            event,
+            expected_hash=file_hash(path),
+        )
+        return updated, True
+
+    def bind_scheduler_job(
+        self, handle: SlurmExecutionHandle
+    ) -> tuple[Run, bool]:
+        with self.mutation_lock():
+            return self._bind_scheduler_job_unlocked(handle)
+
+    def write_scheduler_script(self, run_id: str, script: str) -> tuple[Path, str]:
+        run = self.run(run_id)
+        if run.executor != ExecutorKind.slurm:
+            raise ControlError(
+                "RUN_NOT_SLURM",
+                "scheduler scripts belong only to Slurm runs",
+                exit_code=ExitCode.conflict,
+                details={"run_id": run_id},
+            )
+        data = script.encode("utf-8")
+        content_hash = sha256_bytes(data)
+        path = self.scheduler_script_path(run_id)
+        with self.mutation_lock():
+            if path.exists():
+                if file_hash(path) != content_hash:
+                    raise ControlError(
+                        "SCHEDULER_SCRIPT_CONFLICT",
+                        "the frozen Slurm script changed after it was written",
+                        exit_code=ExitCode.integrity,
+                        details={"run_id": run_id},
+                    )
+            else:
+                self._atomic_bytes(path, data)
+                path.chmod(0o700)
+        return path, content_hash
+
+    def _mark_scheduler_released_unlocked(
+        self, run_id: str
+    ) -> SlurmExecutionHandle:
+        path = self.scheduler_handle_path(run_id)
+        handle = self._read(path, SlurmExecutionHandle)
+        if handle.released_at is not None:
+            return handle
+        updated = SlurmExecutionHandle.model_validate_json(
+            handle.model_copy(update={"released_at": utc_now()}).model_dump_json()
+        )
+        write_model(path, updated, expected_hash=file_hash(path))
+        return updated
+
+    def mark_scheduler_released(self, run_id: str) -> SlurmExecutionHandle:
+        with self.mutation_lock():
+            return self._mark_scheduler_released_unlocked(run_id)
+
+    def scheduler_accounting(self, run_id: str) -> Optional[SlurmAccounting]:
+        path = self.scheduler_accounting_path(run_id)
+        if not path.exists():
+            return None
+        accounting = self._read(path, SlurmAccounting)
+        raw_path = self.scheduler_accounting_raw_path(run_id)
+        if (
+            accounting.raw_output_path != raw_path.name
+            or not raw_path.is_file()
+            or raw_path.is_symlink()
+            or file_hash(raw_path) != accounting.raw_output_hash
+        ):
+            raise ControlError(
+                "SCHEDULER_ACCOUNTING_TAMPERED",
+                "durable Slurm accounting raw output is missing or does not match its hash",
+                exit_code=ExitCode.integrity,
+                details={"run_id": run_id},
+            )
+        return accounting
+
+    def _record_system_artifact_unlocked(
+        self,
+        *,
+        run_id: str,
+        filename: str,
+        role: str,
+        data: bytes,
+        artifact_type: ArtifactType,
+        media_type: str,
+        schema_type: Optional[str] = None,
+        schema_version_name: Optional[str] = None,
+    ) -> tuple[Artifact, bool]:
+        manifest = self.artifact_manifest(run_id)
+        existing = next(
+            (artifact for artifact in manifest.artifacts if artifact.role == role),
+            None,
+        )
+        content_hash = sha256_bytes(data)
+        if existing is not None:
+            if (
+                existing.filename != filename
+                or existing.content_hash != content_hash
+                or existing.size_bytes != len(data)
+            ):
+                raise ControlError(
+                    "SYSTEM_ARTIFACT_CONFLICT",
+                    "a scheduler artifact role already refers to different content",
+                    exit_code=ExitCode.integrity,
+                    details={"run_id": run_id, "role": role},
+                )
+            try:
+                verify_artifact(
+                    self.artifact_path(existing),
+                    existing.content_hash,
+                    existing.size_bytes,
+                    root=self.run_dir(run_id),
+                )
+            except IntegrityError as exc:
+                raise ControlError(
+                    "SYSTEM_ARTIFACT_TAMPERED",
+                    "a durable scheduler artifact failed content verification",
+                    exit_code=ExitCode.integrity,
+                    details={"run_id": run_id, "role": role},
+                ) from exc
+            journal_path = self.run_journal_path(run_id)
+            journal = read_run_journal(journal_path)
+            if existing.artifact_id not in journal.run.artifact_ids:
+                # The manifest is written before the journal event by the shared
+                # artifact path. Recover a stop at that boundary deterministically
+                # from the immutable artifact descriptor rather than duplicating it.
+                timestamp = utc_now()
+                event = Event(
+                    event_id=existing.producer_event_id,
+                    experiment_id=journal.run.experiment_id,
+                    run_id=run_id,
+                    sequence=journal.run.event_sequence + 1,
+                    occurred_at=timestamp,
+                    event_type=EventType.artifact_created,
+                    turn=journal.run.current_turn,
+                    actor=existing.producer,
+                    payload=ArtifactCreatedPayload(
+                        artifact_id=existing.artifact_id
+                    ),
+                )
+                updated = self._validated_run(
+                    journal.run,
+                    {
+                        "artifact_ids": [
+                            *journal.run.artifact_ids,
+                            existing.artifact_id,
+                        ],
+                        "event_sequence": event.sequence,
+                        "updated_at": timestamp,
+                    },
+                )
+                commit_run_event(
+                    journal_path,
+                    updated,
+                    event,
+                    expected_hash=file_hash(journal_path),
+                )
+            return existing, False
+        journal_path = self.run_journal_path(run_id)
+        journal = read_run_journal(journal_path)
+        artifact = self._record_artifact_bytes_unlocked(
+            journal_path=journal_path,
+            journal_run=journal.run,
+            filename=filename,
+            role=role,
+            data=data,
+            producer="slurm-reconciler",
+            artifact_type=artifact_type,
+            media_type=media_type,
+            schema_type=schema_type,
+            schema_version_name=schema_version_name,
+            turn=None,
+            current_agent=None,
+        )
+        return artifact, True
+
+    def ensure_scheduler_artifacts(self, run_id: str) -> tuple[Artifact, ...]:
+        """Expose immutable terminal Slurm evidence through the shared artifact API."""
+
+        with self.mutation_lock():
+            accounting = self.scheduler_accounting(run_id)
+            if accounting is None:
+                raise ControlError(
+                    "SCHEDULER_ACCOUNTING_UNAVAILABLE",
+                    "terminal Slurm accounting has not been persisted",
+                    exit_code=ExitCode.not_found,
+                    details={"run_id": run_id},
+                )
+            raw_path = self.scheduler_accounting_raw_path(run_id)
+            artifacts = [
+                self._record_system_artifact_unlocked(
+                    run_id=run_id,
+                    filename="scheduler-accounting.json",
+                    role="slurm_accounting",
+                    data=canonical_json_bytes(accounting),
+                    artifact_type=ArtifactType.manifest,
+                    media_type="application/json",
+                    schema_type="caribou.slurm_accounting",
+                    schema_version_name="v1",
+                )[0],
+                self._record_system_artifact_unlocked(
+                    run_id=run_id,
+                    filename="scheduler-accounting.raw",
+                    role="slurm_accounting_raw",
+                    data=raw_path.read_bytes(),
+                    artifact_type=ArtifactType.log,
+                    media_type="text/plain",
+                )[0],
+            ]
+            handle = self.scheduler_handle(run_id)
+            if handle is not None:
+                script_path = self.run_dir(run_id) / handle.script_path
+                if (
+                    Path(handle.script_path).name != handle.script_path
+                    or not script_path.is_file()
+                    or script_path.is_symlink()
+                    or file_hash(script_path) != handle.script_hash
+                ):
+                    raise ControlError(
+                        "SCHEDULER_SCRIPT_TAMPERED",
+                        "the submitted Slurm script is missing or differs from its durable hash",
+                        exit_code=ExitCode.integrity,
+                        details={"run_id": run_id},
+                    )
+                artifacts.append(
+                    self._record_system_artifact_unlocked(
+                        run_id=run_id,
+                        filename="slurm-job.sh",
+                        role="slurm_job_script",
+                        data=script_path.read_bytes(),
+                        artifact_type=ArtifactType.code,
+                        media_type="text/x-shellscript",
+                    )[0]
+                )
+                stdout_name = handle.stdout_path.replace("%j", handle.job_id)
+                if Path(stdout_name).name != stdout_name:
+                    raise ControlError(
+                        "SCHEDULER_STDOUT_PATH_INVALID",
+                        "the durable Slurm stdout path is not a safe run-local filename",
+                        exit_code=ExitCode.integrity,
+                        details={"run_id": run_id},
+                    )
+                stdout_path = self.run_dir(run_id) / stdout_name
+                if stdout_path.is_file() and not stdout_path.is_symlink():
+                    artifacts.append(
+                        self._record_system_artifact_unlocked(
+                            run_id=run_id,
+                            filename="slurm-stdout.log",
+                            role="slurm_stdout",
+                            data=stdout_path.read_bytes(),
+                            artifact_type=ArtifactType.log,
+                            media_type="text/plain",
+                        )[0]
+                    )
+            return tuple(artifacts)
+
+    def write_scheduler_accounting(
+        self,
+        accounting: SlurmAccounting,
+        *,
+        raw_output: str,
+    ) -> tuple[SlurmAccounting, bool]:
+        with self.mutation_lock():
+            run = self.run(accounting.run_id)
+            if run.executor != ExecutorKind.slurm:
+                raise ControlError(
+                    "RUN_NOT_SLURM",
+                    "scheduler accounting belongs only to Slurm runs",
+                    exit_code=ExitCode.conflict,
+                    details={"run_id": accounting.run_id},
+                )
+            if run.scheduler_job_id != accounting.job_id:
+                raise ControlError(
+                    "SCHEDULER_JOB_MISMATCH",
+                    "scheduler accounting job ID differs from the durable run",
+                    exit_code=ExitCode.integrity,
+                    details={
+                        "run_id": accounting.run_id,
+                        "run_job_id": run.scheduler_job_id,
+                        "accounting_job_id": accounting.job_id,
+                    },
+                )
+            raw = raw_output.encode("utf-8")
+            if sha256_bytes(raw) != accounting.raw_output_hash:
+                raise ControlError(
+                    "SCHEDULER_ACCOUNTING_HASH_MISMATCH",
+                    "raw scheduler accounting does not match its declared hash",
+                    exit_code=ExitCode.integrity,
+                )
+            path = self.scheduler_accounting_path(accounting.run_id)
+            if path.exists():
+                existing = self._read(path, SlurmAccounting)
+                if existing.raw_output_hash == accounting.raw_output_hash:
+                    return existing, False
+                raise ControlError(
+                    "SCHEDULER_ACCOUNTING_CONFLICT",
+                    "terminal scheduler accounting changed after collection",
+                    exit_code=ExitCode.integrity,
+                    details={"run_id": accounting.run_id},
+                )
+            raw_path = self.scheduler_accounting_raw_path(accounting.run_id)
+            self._atomic_bytes(raw_path, raw)
+            write_model(path, accounting)
+            return accounting, True
 
     def reconcile_experiment(self, experiment_id: str) -> Experiment:
         with self.mutation_lock():

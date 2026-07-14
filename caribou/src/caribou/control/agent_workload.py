@@ -546,6 +546,7 @@ def execute_agent_workload(
     run_id: str,
     *,
     adapter: str,
+    actor: str = "local-worker",
 ) -> AgentSessionResult | None:
     """Execute one frozen agent condition; ``None`` means pre-run cancellation."""
 
@@ -633,7 +634,7 @@ def execute_agent_workload(
             run_id,
             RunState.running,
             reason="CARIBOU agent workload initialized",
-            actor="local-worker",
+            actor=actor,
         )
         result = run_agent_session(
             console=Console(stderr=True),

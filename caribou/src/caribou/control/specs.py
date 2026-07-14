@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -260,7 +261,7 @@ def _agent_smoke_delay(parameters: dict[str, Any]) -> float:
 
 
 def validate_control_spec(
-    spec: ExperimentSpec, *, require_local_adapter: bool = False
+    spec: ExperimentSpec, *, require_submit_adapter: bool = False
 ) -> list[dict[str, Any]]:
     """Apply control-plane constraints not encoded as scientific fields."""
 
@@ -269,21 +270,36 @@ def validate_control_spec(
         {"check": "domain_schema", "status": "passed"},
         {"check": "output_path_policy", "status": "passed"},
     ]
-    if require_local_adapter and spec.execution.executor != ExecutorKind.local:
-        raise ControlError(
-            "EXECUTOR_UNSUPPORTED",
-            "M2 local submission requires execution.executor=local",
-            exit_code=ExitCode.validation,
-            details={"executor": spec.execution.executor.value},
-        )
+    if spec.execution.executor == ExecutorKind.slurm:
+        for field_name, value in (
+            ("account", spec.execution.account),
+            ("qos", spec.execution.qos),
+        ):
+            if value is not None and re.fullmatch(r"[A-Za-z0-9_.-]+", value) is None:
+                raise ControlError(
+                    "SLURM_DIRECTIVE_INVALID",
+                    f"execution.{field_name} contains unsafe Slurm directive characters",
+                    exit_code=ExitCode.validation,
+                    details={"field": field_name},
+                )
+        if require_submit_adapter and len(spec.conditions) * spec.repetitions != 1:
+            raise ControlError(
+                "SLURM_MATRIX_UNSUPPORTED",
+                "the initial Slurm lifecycle supports exactly one planned run",
+                exit_code=ExitCode.validation,
+                details={
+                    "conditions": len(spec.conditions),
+                    "repetitions": spec.repetitions,
+                },
+            )
     adapter_checks = []
     for condition_index, condition in enumerate(spec.conditions):
         adapter = condition.parameters.get(ADAPTER_PARAMETER)
         supported = isinstance(adapter, str) and adapter in LOCAL_ADAPTERS
-        if require_local_adapter and not supported:
+        if require_submit_adapter and not supported:
             raise ControlError(
                 "ADAPTER_UNSUPPORTED",
-                "M2 local execution requires an explicit supported adapter",
+                "submission requires an explicit supported worker adapter",
                 exit_code=ExitCode.validation,
                 details={
                     "condition_id": condition.condition_id,
@@ -320,7 +336,7 @@ def validate_control_spec(
 def build_local_plan(spec: ExperimentSpec) -> dict[str, Any]:
     """Return a deterministic, non-mutating resource and attempt plan."""
 
-    checks = validate_control_spec(spec, require_local_adapter=False)
+    checks = validate_control_spec(spec, require_submit_adapter=False)
     run_count = len(spec.conditions) * spec.repetitions
     resources = spec.execution.resources
     wall_seconds = Decimal(resources.wall_seconds) * run_count

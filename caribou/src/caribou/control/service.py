@@ -7,10 +7,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from caribou.domain.enums import ExecutorKind, RunState
 from caribou.domain.models import Artifact, Event, ExperimentSpec, Run
 
 from .api import ControlError, ExitCode
 from .executor import LaunchResult, LocalProcessExecutor
+from .slurm import ReconciliationResult, SchedulerObservation, SlurmExecutor
 from .specs import build_local_plan, load_experiment_spec
 from .store import ExperimentStore, Submission
 
@@ -21,6 +23,13 @@ class SubmittedExperiment:
     launches: tuple[LaunchResult, ...]
 
 
+@dataclass(frozen=True)
+class CancellationResult:
+    run: Run
+    applied: bool
+    scheduler_signalled: bool
+
+
 class ExperimentService:
     """Authoritative local lifecycle operations with transport-free semantics."""
 
@@ -28,9 +37,11 @@ class ExperimentService:
         self,
         store: ExperimentStore | None = None,
         executor: LocalProcessExecutor | None = None,
+        slurm_executor: SlurmExecutor | None = None,
     ) -> None:
         self.store = store or ExperimentStore()
         self.executor = executor or LocalProcessExecutor()
+        self.slurm_executor = slurm_executor or SlurmExecutor()
 
     def validate(self, path: Path) -> ExperimentSpec:
         return load_experiment_spec(path)
@@ -57,12 +68,34 @@ class ExperimentService:
                 },
             )
         submission = self.store.submit(spec, idempotency_key)
+        selected_executor = (
+            self.slurm_executor
+            if spec.execution.executor == ExecutorKind.slurm
+            else self.executor
+        )
         launches = tuple(
-            self.executor.launch(self.store, run.run_id)
+            selected_executor.launch(self.store, run.run_id)
             for run in submission.runs
             if run.state.value == "queued"
         )
-        return SubmittedExperiment(submission=submission, launches=launches)
+        if spec.execution.executor == ExecutorKind.slurm:
+            # A failed held-job cleanup deliberately leaves the run cancelling.
+            # Retrying the same idempotent submit must advance that cleanup rather
+            # than returning a misleading no-op success.
+            for submitted_run in submission.runs:
+                current = self.store.run(submitted_run.run_id)
+                if current.state == RunState.cancelling:
+                    self.slurm_executor.cancel(self.store, current.run_id)
+                    current = self.store.run(current.run_id)
+                    if current.state == RunState.cancelled:
+                        self.store.reconcile_experiment(current.experiment_id)
+        refreshed = Submission(
+            experiment=self.store.experiment(submission.experiment.experiment_id),
+            runs=tuple(self.store.run(run.run_id) for run in submission.runs),
+            plan=submission.plan,
+            idempotent_replay=submission.idempotent_replay,
+        )
+        return SubmittedExperiment(submission=refreshed, launches=launches)
 
     def status(self, run_id: str) -> Run:
         return self.store.run(run_id)
@@ -70,8 +103,28 @@ class ExperimentService:
     def events(self, run_id: str, *, after: int, limit: int) -> tuple[Event, ...]:
         return self.store.events(run_id, after=after, limit=limit)
 
-    def cancel(self, run_id: str, *, reason: str) -> tuple[Run, bool]:
-        return self.store.request_cancel(run_id, actor="cli", reason=reason)
+    def cancel(self, run_id: str, *, reason: str) -> CancellationResult:
+        run, applied = self.store.request_cancel(run_id, actor="cli", reason=reason)
+        scheduler_signalled = False
+        if (
+            run.executor == ExecutorKind.slurm
+            and run.state == RunState.cancelling
+        ):
+            scheduler_signalled = self.slurm_executor.cancel(self.store, run_id)
+            run = self.store.run(run_id)
+            if run.state == RunState.cancelled:
+                self.store.reconcile_experiment(run.experiment_id)
+        return CancellationResult(
+            run=run,
+            applied=applied,
+            scheduler_signalled=scheduler_signalled,
+        )
+
+    def inspect_scheduler(self, run_id: str) -> SchedulerObservation:
+        return self.slurm_executor.inspect(self.store, run_id)
+
+    def reconcile_scheduler(self, run_id: str) -> ReconciliationResult:
+        return self.slurm_executor.reconcile(self.store, run_id)
 
     def artifacts(self, run_id: str) -> tuple[Artifact, ...]:
         self.store.run(run_id)

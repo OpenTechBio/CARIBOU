@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
-from caribou.domain.enums import RunState
+from caribou.domain.enums import ExecutorKind, RunState
+from caribou.domain.models import Run
 
 from .api import ControlError, ExitCode
 from .specs import (
@@ -28,13 +30,38 @@ def _condition(store: ExperimentStore, run_id: str):
     )
 
 
+def _worker_actor(run: Run) -> str:
+    return "slurm-worker" if run.executor == ExecutorKind.slurm else "local-worker"
+
+
+def _validate_execution_context(run: Run) -> None:
+    if run.executor != ExecutorKind.slurm:
+        return
+    job_id = os.environ.get("SLURM_JOB_ID")
+    partition = os.environ.get("SLURM_JOB_PARTITION")
+    if job_id != run.scheduler_job_id or partition != run.partition:
+        raise ControlError(
+            "SLURM_CONTEXT_MISMATCH",
+            "the worker Slurm context differs from the durable run binding",
+            exit_code=ExitCode.integrity,
+            details={
+                "run_id": run.run_id,
+                "expected_job_id": run.scheduler_job_id,
+                "observed_job_id": job_id,
+                "expected_partition": run.partition,
+                "observed_partition": partition,
+            },
+        )
+
+
 def _finalize_cancel(store: ExperimentStore, run_id: str) -> None:
     run = store.run(run_id)
+    actor = _worker_actor(run)
     if run.state in TERMINAL_RUN_STATES:
         return
     if run.state != RunState.cancelling:
         store.request_cancel(
-            run_id, actor="local-worker", reason="cooperative cancellation observed"
+            run_id, actor=actor, reason="cooperative cancellation observed"
         )
         run = store.run(run_id)
     if run.state == RunState.cancelling:
@@ -42,7 +69,7 @@ def _finalize_cancel(store: ExperimentStore, run_id: str) -> None:
             run_id,
             RunState.cancelled,
             reason="worker stopped at a cooperative cancellation point",
-            actor="local-worker",
+            actor=actor,
             exit_code=int(ExitCode.cancelled),
         )
 
@@ -51,17 +78,19 @@ def execute(store: ExperimentStore, run_id: str) -> int:
     run = store.run(run_id)
     if run.state in TERMINAL_RUN_STATES:
         return 0
-    if store.cancel_requested(run_id):
-        _finalize_cancel(store, run_id)
-        store.reconcile_experiment(run.experiment_id)
-        return int(ExitCode.cancelled)
+    actor = _worker_actor(run)
     try:
+        _validate_execution_context(run)
+        if store.cancel_requested(run_id):
+            _finalize_cancel(store, run_id)
+            store.reconcile_experiment(run.experiment_id)
+            return int(ExitCode.cancelled)
         if run.state == RunState.queued:
             run, _ = store.transition_run(
                 run_id,
                 RunState.starting,
                 reason="detached worker started",
-                actor="local-worker",
+                actor=actor,
             )
         condition = _condition(store, run_id)
         adapter = condition.parameters.get(ADAPTER_PARAMETER)
@@ -71,7 +100,7 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                     run_id,
                     RunState.running,
                     reason="lifecycle smoke workload initialized",
-                    actor="local-worker",
+                    actor=actor,
                 )
             duration = float(
                 condition.parameters.get(SMOKE_SECONDS_PARAMETER, 0.05)
@@ -99,13 +128,18 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                     "replicate_index": current.replicate_index,
                     "status": "completed",
                 },
-                producer="local-worker",
+                producer=actor,
             )
             reason = f"lifecycle smoke artifact {artifact.artifact_id} committed"
         elif adapter in {AGENT_PATH_SMOKE_ADAPTER, CARIBOU_AGENT_ADAPTER}:
             from .agent_workload import execute_agent_workload
 
-            result = execute_agent_workload(store, run_id, adapter=str(adapter))
+            result = execute_agent_workload(
+                store,
+                run_id,
+                adapter=str(adapter),
+                actor=actor,
+            )
             if result is None or result.cancelled or store.cancel_requested(run_id):
                 _finalize_cancel(store, run_id)
                 store.reconcile_experiment(run.experiment_id)
@@ -115,7 +149,7 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                     run_id,
                     RunState.failed,
                     reason=f"agent session failed: {result.end_reason}",
-                    actor="local-worker",
+                    actor=actor,
                     exit_code=int(ExitCode.execution),
                 )
                 store.reconcile_experiment(run.experiment_id)
@@ -127,7 +161,7 @@ def execute(store: ExperimentStore, run_id: str) -> int:
             run_id,
             RunState.succeeded,
             reason=reason,
-            actor="local-worker",
+            actor=actor,
             exit_code=0,
         )
         store.reconcile_experiment(run.experiment_id)
@@ -145,7 +179,7 @@ def execute(store: ExperimentStore, run_id: str) -> int:
                     run_id,
                     RunState.failed,
                     reason=f"worker failure: {failure_code}",
-                    actor="local-worker",
+                    actor=actor,
                     exit_code=int(ExitCode.execution),
                 )
             except Exception:

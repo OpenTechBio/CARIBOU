@@ -1,4 +1,5 @@
 # caribou/cli/config_cli.py
+import os
 import re
 import typer
 from rich.console import Console
@@ -32,6 +33,7 @@ def set_api_key(
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE.exists():
         ENV_FILE.touch()
+    os.chmod(ENV_FILE, 0o600)
 
     content = ENV_FILE.read_text()
     key_to_set = f'OPENAI_API_KEY="{api_key}"'
@@ -45,6 +47,7 @@ def set_api_key(
         new_content = content + f"\n{key_to_set}\n"
 
     ENV_FILE.write_text(new_content.strip())
+    os.chmod(ENV_FILE, 0o600)
     console.print(
         f"[bold green]✅ OpenAI API key has been set successfully in:[/bold green] {ENV_FILE}"
     )
@@ -62,7 +65,8 @@ def set_deepseek_key(
     """
     if api_key is None:
         console.print("[bold red]Error:[/bold red] You must provide an API key.\n")
-        typer.echo(ctx.parent.get_help())
+        if ctx.parent is not None:
+            typer.echo(ctx.parent.get_help())
         raise typer.Exit()
 
     if not api_key.startswith("ds_"):
@@ -73,6 +77,7 @@ def set_deepseek_key(
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE.exists():
         ENV_FILE.touch()
+    os.chmod(ENV_FILE, 0o600)
 
     content = ENV_FILE.read_text()
     key_to_set = f'DEEPSEEK_API_KEY="{api_key}"'
@@ -85,6 +90,7 @@ def set_deepseek_key(
         new_content = content.strip() + f"\n{key_to_set}\n"
 
     ENV_FILE.write_text(new_content)
+    os.chmod(ENV_FILE, 0o600)
     console.print(
         f"[bold green]✅ DeepSeek API key has been set successfully in:[/bold green] {ENV_FILE}"
     )
@@ -102,7 +108,8 @@ def set_anthropic_key(
     """
     if api_key is None:
         console.print("[bold red]Error:[/bold red] You must provide an API key.\n")
-        typer.echo(ctx.parent.get_help())
+        if ctx.parent is not None:
+            typer.echo(ctx.parent.get_help())
         raise typer.Exit()
 
     if not api_key.startswith("sk-"):
@@ -113,6 +120,7 @@ def set_anthropic_key(
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE.exists():
         ENV_FILE.touch()
+    os.chmod(ENV_FILE, 0o600)
 
     content = ENV_FILE.read_text()
     key_to_set = f'ANTHROPIC_API_KEY="{api_key}"'
@@ -125,6 +133,7 @@ def set_anthropic_key(
         new_content = content.strip() + f"\n{key_to_set}\n"
 
     ENV_FILE.write_text(new_content.strip())
+    os.chmod(ENV_FILE, 0o600)
     console.print(
         f"[bold green]✅ Anthropic API key has been set successfully in:[/bold green] {ENV_FILE}"
     )

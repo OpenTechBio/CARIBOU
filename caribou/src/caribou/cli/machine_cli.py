@@ -22,6 +22,7 @@ from caribou.control.specs import (
     validate_control_spec,
 )
 from caribou.control.store import default_store_root
+from caribou.domain.enums import ExecutorKind
 from caribou.domain.models import (
     Aggregate,
     Artifact,
@@ -45,6 +46,11 @@ experiment_app = typer.Typer(
 artifact_app = typer.Typer(
     name="artifact",
     help="List, fetch, and verify durable run artifacts.",
+    no_args_is_help=True,
+)
+scheduler_app = typer.Typer(
+    name="scheduler",
+    help="Inspect and reconcile durable Slurm execution records.",
     no_args_is_help=True,
 )
 
@@ -112,7 +118,8 @@ def capabilities_command(
             "artifact.list": {"status": "implemented", "mutates": False},
             "artifact.fetch": {"status": "implemented", "mutates": True},
             "artifact.verify": {"status": "implemented", "mutates": False},
-            "scheduler.inspect": {"status": "planned", "milestone": "M3"},
+            "scheduler.inspect": {"status": "implemented", "mutates": False},
+            "scheduler.reconcile": {"status": "implemented", "mutates": True},
         }
         return machine_response(
             "capabilities",
@@ -135,7 +142,7 @@ def capabilities_command(
                     "local_agent_analysis": (
                         "implemented_not_validated_real_provider_container"
                     ),
-                    "slurm": "planned",
+                    "slurm": "implemented_pending_cluster_validation",
                 },
                 "store_root": str(default_store_root()),
             },
@@ -244,7 +251,7 @@ def submit_experiment_command(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
 ) -> None:
-    """Persist a local experiment and detach one worker per planned attempt."""
+    """Persist an experiment and launch its declared execution transport."""
 
     def operation() -> Mapping[str, Any]:
         service = ExperimentService()
@@ -342,17 +349,113 @@ def run_cancel_command(
     """Request cooperative cancellation and preserve the attempt record."""
 
     def operation() -> Mapping[str, Any]:
-        run, applied = ExperimentService().cancel(run_id, reason=reason)
+        result = ExperimentService().cancel(run_id, reason=reason)
+        run = result.run
         return machine_response(
             "run.cancel",
             object_type="run",
             object_id=run.run_id,
             state=run.state.value,
-            data={"run": run.model_dump(mode="json"), "applied": applied},
+            data={
+                "run": run.model_dump(mode="json"),
+                "applied": result.applied,
+                "scheduler_signalled": result.scheduler_signalled,
+            },
             links={"status": f"caribou run status {run.run_id} --json"},
         )
 
     _machine_call("run.cancel", json_output, operation)
+
+
+@scheduler_app.command("inspect")
+def scheduler_inspect_command(
+    run_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Read live or durable scheduler state without mutating the run."""
+
+    def operation() -> Mapping[str, Any]:
+        service = ExperimentService()
+        run = service.status(run_id)
+        if run.executor != ExecutorKind.slurm:
+            service.inspect_scheduler(run_id)
+        handle = service.store.scheduler_handle(run_id)
+        submission = service.store.scheduler_submission(run_id)
+        cancellation = service.store.scheduler_cancellation(run_id)
+        observation = (
+            service.inspect_scheduler(run_id) if handle is not None else None
+        )
+        return machine_response(
+            "scheduler.inspect",
+            object_type=(
+                "scheduler_job" if handle is not None else "scheduler_submission"
+            ),
+            object_id=(handle.job_id if handle is not None else run_id),
+            state=(
+                observation.state.lower()
+                if observation is not None
+                else run.state.value
+            ),
+            data={
+                "run_id": run_id,
+                "handle": (
+                    handle.model_dump(mode="json") if handle is not None else None
+                ),
+                "submission": (
+                    submission.model_dump(mode="json")
+                    if submission is not None
+                    else None
+                ),
+                "observation": (
+                    observation.as_dict() if observation is not None else None
+                ),
+                "cancellation": (
+                    cancellation.model_dump(mode="json")
+                    if cancellation is not None
+                    else None
+                ),
+            },
+            links={
+                "run": f"caribou run status {run_id} --json",
+                "reconcile": f"caribou scheduler reconcile {run_id} --json",
+            },
+        )
+
+    _machine_call("scheduler.inspect", json_output, operation)
+
+
+@scheduler_app.command("reconcile")
+def scheduler_reconcile_command(
+    run_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Persist terminal Slurm accounting and close pre-worker failures."""
+
+    def operation() -> Mapping[str, Any]:
+        result = ExperimentService().reconcile_scheduler(run_id)
+        return machine_response(
+            "scheduler.reconcile",
+            object_type="run",
+            object_id=run_id,
+            state=result.run.state.value,
+            data={
+                "run": result.run.model_dump(mode="json"),
+                "observation": result.observation.as_dict(),
+                "accounting": (
+                    result.accounting.model_dump(mode="json")
+                    if result.accounting is not None
+                    else None
+                ),
+                "accounting_created": result.accounting_created,
+                "run_transition_applied": result.run_transition_applied,
+            },
+            links={
+                "status": f"caribou run status {run_id} --json",
+                "events": f"caribou run events {run_id} --after 0 --format jsonl",
+            },
+        )
+
+    _machine_call("scheduler.reconcile", json_output, operation)
 
 
 @artifact_app.command("list")
@@ -447,6 +550,7 @@ def register_machine_commands(app: typer.Typer, run_app: typer.Typer) -> None:
     app.command("schema")(schema_command)
     app.add_typer(experiment_app, name="experiment")
     app.add_typer(artifact_app, name="artifact")
+    app.add_typer(scheduler_app, name="scheduler")
     run_app.command("status")(run_status_command)
     run_app.command("events")(run_events_command)
     run_app.command("cancel")(run_cancel_command)

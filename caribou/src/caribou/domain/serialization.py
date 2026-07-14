@@ -378,6 +378,89 @@ def commit_run_event(
     return sha256_bytes(data)
 
 
+def commit_run_scheduler_binding(
+    path: Path,
+    updated_run: Run,
+    event: Event,
+    *,
+    expected_hash: str,
+) -> str:
+    """Atomically bind one scheduler job identity and append its durable event.
+
+    Scheduler identity is assigned only after ``sbatch`` returns, so it cannot be
+    part of the originally frozen run snapshot. This deliberately narrow commit
+    permits exactly one ``scheduler_job_id`` assignment while the attempt remains
+    queued; all scientific and other execution configuration stays immutable.
+    """
+
+    if (
+        not event.durable
+        or event.event_type != EventType.heartbeat
+        or event.stage != "scheduler_submission"
+    ):
+        raise PersistenceError(
+            "scheduler binding requires a durable scheduler_submission heartbeat"
+        )
+    with _exclusive_lock(path):
+        if not path.exists():
+            raise IntegrityError(f"run journal does not exist: {path}")
+        current_hash = file_hash(path)
+        if current_hash != expected_hash:
+            raise ConcurrentUpdateError(
+                f"compare-and-swap conflict for {path}: expected {expected_hash}, "
+                f"found {current_hash}"
+            )
+        try:
+            current = RunJournal.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError) as exc:
+            raise IntegrityError(f"invalid run journal at {path}: {exc}") from exc
+        if current.run.state.value not in {"queued", "cancelling"}:
+            raise IntegrityError(
+                "scheduler identity can be bound only while queued or cancelling"
+            )
+        if current.run.scheduler_job_id is not None:
+            raise IntegrityError("scheduler identity is already bound")
+        if not updated_run.scheduler_job_id:
+            raise IntegrityError("scheduler binding requires a non-empty job ID")
+        if updated_run.run_id != current.run.run_id:
+            raise IntegrityError("scheduler binding belongs to a different run")
+        if (
+            updated_run.event_sequence != current.run.event_sequence + 1
+            or event.sequence != updated_run.event_sequence
+        ):
+            raise IntegrityError("scheduler binding must advance the cursor once")
+        if (
+            event.run_id != updated_run.run_id
+            or event.experiment_id != updated_run.experiment_id
+        ):
+            raise IntegrityError("scheduler binding crosses a run or experiment")
+        if updated_run.updated_at != event.occurred_at:
+            raise IntegrityError("scheduler binding timestamp differs from its event")
+        if updated_run.current_turn != event.turn:
+            raise IntegrityError("scheduler binding turn differs from its event")
+
+        mutable_fields = {
+            "scheduler_job_id",
+            "updated_at",
+            "event_sequence",
+            "current_turn",
+        }
+        previous_values = current.run.model_dump(mode="python")
+        next_values = updated_run.model_dump(mode="python")
+        for field in mutable_fields:
+            previous_values.pop(field, None)
+            next_values.pop(field, None)
+        if previous_values != next_values:
+            raise IntegrityError(
+                "scheduler binding attempted to mutate frozen run configuration"
+            )
+        updated = RunJournal(run=updated_run, events=[*current.events, event])
+        validate_run_event_pair(updated.run, updated.events)
+        data = canonical_json_bytes(updated)
+        _atomic_replace(path, data)
+    return sha256_bytes(data)
+
+
 def commit_experiment_transition(
     path: Path,
     transition: ExperimentTransitionResult,
