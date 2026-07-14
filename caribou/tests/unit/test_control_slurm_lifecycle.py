@@ -871,6 +871,100 @@ def test_terminal_squeue_row_is_followed_by_authoritative_sacct(
     assert [command[0] for command in commands] == ["squeue", "sacct"]
 
 
+def test_squeue_invalid_job_id_falls_back_to_sacct_during_inspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path)
+    _bind_job(store, run_id, job_id="742")
+    raw = _terminal_sacct("742", "COMPLETED", "0:0")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[0] == "squeue":
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="slurm_load_jobs error: Invalid job id specified\n",
+            )
+        if command[0] == "sacct":
+            return _completed(command, stdout=raw)
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(control_slurm_module.subprocess, "run", run)
+
+    observed = SlurmExecutor().inspect(store, run_id)
+
+    assert observed.source == "sacct"
+    assert observed.state == "COMPLETED"
+    assert observed.exit_code == "0:0"
+    assert [command[0] for command in commands] == ["squeue", "sacct"]
+
+
+def test_squeue_invalid_job_id_falls_back_to_sacct_during_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path)
+    _bind_job(store, run_id, job_id="742")
+    raw = _terminal_sacct("742", "FAILED", "1:0")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[0] == "squeue":
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="slurm_load_jobs error: Invalid job id specified\n",
+            )
+        if command[0] == "sacct":
+            return _completed(command, stdout=raw)
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(control_slurm_module.subprocess, "run", run)
+
+    result = SlurmExecutor().reconcile(store, run_id)
+
+    assert result.observation.source == "sacct"
+    assert result.run_transition_applied is True
+    assert result.run.state == RunState.failed
+    assert result.accounting_created is True
+    assert [command[0] for command in commands] == ["squeue", "sacct"]
+
+
+@pytest.mark.parametrize("operation", ["inspect", "reconcile"])
+def test_unrelated_squeue_failure_does_not_fall_back_to_sacct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    store, run_id = _slurm_store(tmp_path)
+    _bind_job(store, run_id, job_id="742")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        assert command[0] == "squeue"
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="slurm_load_jobs error: Unable to contact slurm controller\n",
+        )
+
+    monkeypatch.setattr(control_slurm_module.subprocess, "run", run)
+    executor = SlurmExecutor()
+
+    with pytest.raises(ControlError) as exc_info:
+        getattr(executor, operation)(store, run_id)
+
+    assert exc_info.value.code == "SLURM_COMMAND_FAILED"
+    assert exc_info.value.retryable is True
+    assert [command[0] for command in commands] == ["squeue"]
+
+
 def test_scheduler_artifact_retry_repairs_manifest_journal_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -26,6 +26,7 @@ from .store import ExperimentStore, TERMINAL_RUN_STATES
 
 _JOB_ID = re.compile(r"^[0-9]+$")
 _SUBMISSION_VISIBILITY_GRACE_SECONDS = 30.0
+_SQUEUE_TERMINAL_ABSENCE_MARKERS = ("invalid job id specified",)
 _TERMINAL_STATES = frozenset(
     {
         "BOOT_FAIL",
@@ -745,15 +746,26 @@ class SlurmExecutor:
         return LaunchResult(handle=handle, launched=launched)
 
     def _observe_squeue(self, handle: SlurmExecutionHandle) -> Optional[SchedulerObservation]:
-        result = self._run(
-            [
-                self.squeue,
-                "--noheader",
-                "--jobs",
-                handle.job_id,
-                "--format=%i|%T|%P|%N|%M|%C|%m|%r",
-            ]
-        )
+        try:
+            result = self._run(
+                [
+                    self.squeue,
+                    "--noheader",
+                    "--jobs",
+                    handle.job_id,
+                    "--format=%i|%T|%P|%N|%M|%C|%m|%r",
+                ]
+            )
+        except ControlError as exc:
+            stderr = str(exc.details.get("stderr", "")).casefold()
+            if exc.code == "SLURM_COMMAND_FAILED" and any(
+                marker in stderr for marker in _SQUEUE_TERMINAL_ABSENCE_MARKERS
+            ):
+                # Some Slurm versions return exit 1 once a terminal job has
+                # left squeue instead of returning an empty result. sacct is
+                # authoritative for terminal identity, state, and resources.
+                return None
+            raise
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         if not lines:
             return None
