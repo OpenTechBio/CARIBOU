@@ -15,7 +15,7 @@ from caribou.control.api import (
     fail_json,
     machine_response,
 )
-from caribou.control.records import ProviderCallReceipt
+from caribou.control.records import CheckpointRequest, ProviderCallReceipt
 from caribou.control.service import ExperimentService
 from caribou.control.specs import (
     build_local_plan,
@@ -68,6 +68,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "budget": BudgetRecord,
     "aggregate": Aggregate,
     "provider-call-receipt": ProviderCallReceipt,
+    "checkpoint-request": CheckpointRequest,
 }
 
 
@@ -117,6 +118,9 @@ def capabilities_command(
             "run.status": {"status": "implemented", "mutates": False},
             "run.events": {"status": "implemented", "streaming": True},
             "run.cancel": {"status": "implemented", "mutates": True},
+            "run.checkpoint": {"status": "implemented", "mutates": True},
+            "run.checkpoints": {"status": "implemented", "mutates": False},
+            "run.resume": {"status": "implemented", "mutates": True},
             "artifact.list": {"status": "implemented", "mutates": False},
             "artifact.fetch": {"status": "implemented", "mutates": True},
             "artifact.verify": {"status": "implemented", "mutates": False},
@@ -369,6 +373,138 @@ def run_cancel_command(
     _machine_call("run.cancel", json_output, operation)
 
 
+def run_checkpoint_command(
+    run_id: str = typer.Argument(...),
+    idempotency_key: str = typer.Option(
+        ..., "--idempotency-key", help="Stable duplicate-protection key."
+    ),
+    reason: str = typer.Option("checkpoint requested by CLI", "--reason"),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Stop cooperatively after the next complete agent turn."""
+
+    def operation() -> Mapping[str, Any]:
+        result = ExperimentService().request_checkpoint(
+            run_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+        run = result.run
+        return machine_response(
+            "run.checkpoint",
+            object_type="run",
+            object_id=run.run_id,
+            state=run.state.value,
+            data={
+                "run": run.model_dump(mode="json"),
+                "request": result.request.model_dump(mode="json"),
+                "applied": result.applied,
+                "safe_boundary": "completed_agent_turn",
+            },
+            links={
+                "status": f"caribou run status {run.run_id} --json",
+                "checkpoints": f"caribou run checkpoints {run.run_id} --json",
+            },
+        )
+
+    _machine_call("run.checkpoint", json_output, operation)
+
+
+def run_checkpoints_command(
+    run_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """List the complete checkpoint envelopes attached to one attempt."""
+
+    def operation() -> Mapping[str, Any]:
+        service = ExperimentService()
+        run = service.status(run_id)
+        checkpoints = service.checkpoints(run_id)
+        return machine_response(
+            "run.checkpoints",
+            object_type="run",
+            object_id=run.run_id,
+            state=run.state.value,
+            data={
+                "checkpoints": [
+                    checkpoint.model_dump(mode="json") for checkpoint in checkpoints
+                ],
+                "count": len(checkpoints),
+            },
+            links={"status": f"caribou run status {run.run_id} --json"},
+        )
+
+    _machine_call("run.checkpoints", json_output, operation)
+
+
+def run_resume_command(
+    run_id: str = typer.Argument(..., help="Terminal resumable source attempt."),
+    from_checkpoint: str = typer.Option(
+        "latest", "--from-checkpoint", help="Checkpoint ID or 'latest'."
+    ),
+    idempotency_key: str = typer.Option(
+        ..., "--idempotency-key", help="Stable duplicate-protection key."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Create and launch one linked child attempt from a complete checkpoint."""
+
+    def operation() -> Mapping[str, Any]:
+        service = ExperimentService()
+        checkpoints = service.checkpoints(run_id)
+        if from_checkpoint == "latest":
+            if not checkpoints:
+                raise ControlError(
+                    "CHECKPOINT_NOT_FOUND",
+                    "the source attempt has no complete checkpoint",
+                    exit_code=ExitCode.not_found,
+                )
+            latest_turn = max(checkpoint.turn for checkpoint in checkpoints)
+            latest = [
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.turn == latest_turn
+            ]
+            if len(latest) != 1:
+                raise ControlError(
+                    "CHECKPOINT_LATEST_AMBIGUOUS",
+                    "multiple checkpoints share the latest turn; select an exact ID",
+                    exit_code=ExitCode.conflict,
+                )
+            checkpoint_id = latest[0].checkpoint_id
+        else:
+            checkpoint_id = from_checkpoint
+        result = service.resume(
+            run_id,
+            checkpoint_id=checkpoint_id,
+            idempotency_key=idempotency_key,
+        )
+        submission = result.submission
+        child = submission.child
+        return machine_response(
+            "run.resume",
+            object_type="run",
+            object_id=child.run_id,
+            state=child.state.value,
+            data={
+                "source_run": submission.source.model_dump(mode="json"),
+                "checkpoint": submission.checkpoint.model_dump(mode="json"),
+                "child_run": child.model_dump(mode="json"),
+                "idempotent_replay": submission.idempotent_replay,
+                "workers_launched": sum(item.launched for item in result.launches),
+            },
+            links={
+                "status": f"caribou run status {child.run_id} --json",
+                "events": (
+                    f"caribou run events {child.run_id} --after 0 --format jsonl"
+                ),
+                "source": f"caribou run status {run_id} --json",
+            },
+        )
+
+    _machine_call("run.resume", json_output, operation)
+
+
 @scheduler_app.command("inspect")
 def scheduler_inspect_command(
     run_id: str = typer.Argument(...),
@@ -554,3 +690,6 @@ def register_machine_commands(app: typer.Typer, run_app: typer.Typer) -> None:
     run_app.command("status")(run_status_command)
     run_app.command("events")(run_events_command)
     run_app.command("cancel")(run_cancel_command)
+    run_app.command("checkpoint")(run_checkpoint_command)
+    run_app.command("checkpoints")(run_checkpoints_command)
+    run_app.command("resume")(run_resume_command)

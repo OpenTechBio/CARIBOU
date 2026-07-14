@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
+import shutil
 import subprocess
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,15 +24,22 @@ from caribou.control.api import ControlError, ExitCode
 from caribou.domain.enums import ArtifactType, EventType, MemoryStrategy, RunState
 from caribou.domain.models import (
     AgentSwitchPayload,
+    Artifact,
     CodeResultPayload,
     CodeSubmittedPayload,
     ContentReference,
+    Event,
     HeartbeatPayload,
     MessagePayload,
     RagPayload,
 )
 from caribou.domain.serialization import file_hash, sha256_bytes
-from caribou.execution.runner import AgentSessionResult, RunnerEvent, run_agent_session
+from caribou.execution.runner import (
+    AgentSessionCheckpointState,
+    AgentSessionResult,
+    RunnerEvent,
+    run_agent_session,
+)
 
 from .records import ProviderCallReceipt, ProviderCallUsage
 from .specs import (
@@ -38,11 +47,38 @@ from .specs import (
     AGENT_SMOKE_DELAY_PARAMETER,
     CARIBOU_AGENT_ADAPTER,
 )
-from .store import ExperimentStore
+from .store import ExperimentStore, SUPPORTED_RESUME_REQUIREMENTS
 
 
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 _SMOKE_CODE = 'print("CARIBOU_AGENT_PATH_OK")'
+_CHECKPOINT_DATASET_FILENAME = "checkpoint-dataset.h5ad"
+_CHECKPOINT_DATASET_CONTAINER_PATH = (
+    f"/workspace/outputs/.{_CHECKPOINT_DATASET_FILENAME}"
+)
+_CHECKPOINT_DATASET_CAPTURE_CODE = f"""\
+import os as _caribou_os
+_caribou_candidate = globals().get("adata")
+if _caribou_candidate is None or not hasattr(_caribou_candidate, "write_h5ad"):
+    raise RuntimeError("CARIBOU checkpoint requires an AnnData global named adata")
+_caribou_target = {_CHECKPOINT_DATASET_CONTAINER_PATH!r}
+_caribou_temporary = _caribou_target + ".tmp"
+_caribou_candidate.write_h5ad(_caribou_temporary)
+_caribou_os.replace(_caribou_temporary, _caribou_target)
+"""
+_CHECKPOINT_DATASET_RESTORE_CODE = f"""\
+import anndata as _caribou_anndata
+adata = _caribou_anndata.read_h5ad({SANDBOX_DATA_PATH!r})
+"""
+
+
+@dataclass(frozen=True)
+class _RestoredAgentCheckpoint:
+    source_run_id: str
+    checkpoint_id: str
+    dataset_path: Path
+    history: list[dict[str, str]]
+    runner_state: AgentSessionCheckpointState
 
 
 def _verify_code_identity(expected_commit: str, adapter: str) -> None:
@@ -156,15 +192,14 @@ def _local_file(
 
 
 class _ScriptedCompletions:
-    def __init__(self, delay_seconds: float) -> None:
+    def __init__(self, delay_seconds: float, completed_turns: int = 0) -> None:
         self._delay_seconds = delay_seconds
-        self._responses = iter(
-            (
-                "delegate_to_general",
-                f"```python\n{_SMOKE_CODE}\n```",
-                "end_session",
-            )
+        responses = (
+            "delegate_to_general",
+            f"```python\n{_SMOKE_CODE}\n```",
+            "end_session",
         )
+        self._responses = iter(responses[completed_turns:])
 
     def create(self, **_: Any) -> SimpleNamespace:
         if self._delay_seconds:
@@ -178,8 +213,10 @@ class _ScriptedCompletions:
 
 
 class _ScriptedClient:
-    def __init__(self, delay_seconds: float) -> None:
-        self.chat = SimpleNamespace(completions=_ScriptedCompletions(delay_seconds))
+    def __init__(self, delay_seconds: float, completed_turns: int = 0) -> None:
+        self.chat = SimpleNamespace(
+            completions=_ScriptedCompletions(delay_seconds, completed_turns)
+        )
 
 
 class _RecordingSandbox:
@@ -649,6 +686,606 @@ def _event_recorder(
     return record
 
 
+def _checkpoint_artifact(
+    store: ExperimentStore, run_id: str, artifact_id: str, role: str
+) -> Artifact:
+    artifact = store.artifact_manifest(run_id).artifact(artifact_id)
+    if artifact is None or artifact.role != role:
+        raise ControlError(
+            "CHECKPOINT_COMPONENT_INVALID",
+            "checkpoint component is missing or has the wrong role",
+            exit_code=ExitCode.integrity,
+            details={
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "expected_role": role,
+            },
+        )
+    return artifact
+
+
+def _checkpoint_json(
+    store: ExperimentStore, artifact: Artifact, *, expected_keys: set[str]
+) -> dict[str, object]:
+    try:
+        value = json.loads(store.artifact_path(artifact).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ControlError(
+            "CHECKPOINT_COMPONENT_INVALID",
+            "checkpoint JSON component could not be decoded",
+            exit_code=ExitCode.integrity,
+            details={"artifact_id": artifact.artifact_id},
+        ) from exc
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise ControlError(
+            "CHECKPOINT_COMPONENT_INVALID",
+            "checkpoint JSON component has an unexpected schema shape",
+            exit_code=ExitCode.integrity,
+            details={"artifact_id": artifact.artifact_id},
+        )
+    return value
+
+
+def _durable_event_ledger(store: ExperimentStore, run_id: str) -> list[Event]:
+    """Read the complete authoritative event stream without a hidden page cap."""
+
+    events: list[Event] = []
+    after = 0
+    while True:
+        page = store.events(run_id, after=after, limit=10_000)
+        if not page:
+            break
+        events.extend(page)
+        after = page[-1].sequence
+        if len(page) < 10_000:
+            break
+    return events
+
+
+def _checkpoint_value_hash(value: object) -> str:
+    return sha256_bytes(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def _checkpoint_component_reference(artifact: Artifact) -> dict[str, object]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "role": artifact.role,
+        "content_hash": artifact.content_hash,
+        "size_bytes": artifact.size_bytes,
+        "producer_event_id": artifact.producer_event_id,
+    }
+
+
+def _load_restored_checkpoint(
+    store: ExperimentStore, run: Any
+) -> _RestoredAgentCheckpoint | None:
+    if run.resumed_from_run_id is None:
+        return None
+    if run.resume_checkpoint_id is None:
+        raise ControlError(
+            "CHECKPOINT_LINEAGE_INVALID",
+            "resumed run is missing its checkpoint identity",
+            exit_code=ExitCode.integrity,
+        )
+    source = store.run(run.resumed_from_run_id)
+    checkpoint = store.checkpoint(source.run_id, run.resume_checkpoint_id)
+    if (
+        source.experiment_id != run.experiment_id
+        or source.owner != run.owner
+        or checkpoint.checkpoint_id not in source.checkpoint_ids
+        or frozenset(checkpoint.resume_requirements) != SUPPORTED_RESUME_REQUIREMENTS
+    ):
+        raise ControlError(
+            "CHECKPOINT_LINEAGE_INVALID",
+            "resume lineage or requirements do not match the frozen child",
+            exit_code=ExitCode.integrity,
+        )
+    store.verify_artifacts(source.run_id)
+    durable_events = _durable_event_ledger(store, source.run_id)
+
+    dataset_artifact = _checkpoint_artifact(
+        store,
+        source.run_id,
+        str(checkpoint.dataset_artifact_id),
+        "checkpoint_dataset_state",
+    )
+    message_artifact = _checkpoint_artifact(
+        store,
+        source.run_id,
+        str(checkpoint.message_history_artifact_id),
+        "checkpoint_message_history",
+    )
+    state_artifact = _checkpoint_artifact(
+        store,
+        source.run_id,
+        str(checkpoint.agent_state_artifact_id),
+        "checkpoint_agent_state",
+    )
+    actions_artifact = _checkpoint_artifact(
+        store,
+        source.run_id,
+        str(checkpoint.executed_actions_artifact_id),
+        "checkpoint_executed_actions",
+    )
+    manifest_artifact = _checkpoint_artifact(
+        store,
+        source.run_id,
+        checkpoint.artifact_manifest_id,
+        "checkpoint_artifact_manifest",
+    )
+
+    message_value = _checkpoint_json(
+        store,
+        message_artifact,
+        expected_keys={"schema_version", "run_id", "messages"},
+    )
+    if (
+        message_value["schema_version"] != "caribou.message_history.v1"
+        or message_value["run_id"] != source.run_id
+        or not isinstance(message_value["messages"], list)
+    ):
+        raise ControlError(
+            "CHECKPOINT_MESSAGE_HISTORY_INVALID",
+            "checkpoint message history identity is invalid",
+            exit_code=ExitCode.integrity,
+        )
+    history: list[dict[str, str]] = []
+    for item in message_value["messages"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"role", "content"}
+            or not isinstance(item["role"], str)
+            or not isinstance(item["content"], str)
+        ):
+            raise ControlError(
+                "CHECKPOINT_MESSAGE_HISTORY_INVALID",
+                "checkpoint message history contains an invalid message",
+                exit_code=ExitCode.integrity,
+            )
+        history.append({"role": item["role"], "content": item["content"]})
+
+    state_value = _checkpoint_json(
+        store,
+        state_artifact,
+        expected_keys={"schema_version", "run_id", "state"},
+    )
+    state_payload = state_value["state"]
+    if (
+        state_value["schema_version"] != "caribou.checkpoint_agent_state.v1"
+        or state_value["run_id"] != source.run_id
+        or not isinstance(state_payload, dict)
+        or set(state_payload) != set(AgentSessionCheckpointState.__dataclass_fields__)
+    ):
+        raise ControlError(
+            "CHECKPOINT_AGENT_STATE_INVALID",
+            "checkpoint agent state schema or identity is invalid",
+            exit_code=ExitCode.integrity,
+        )
+    actions = state_payload.get("action_space_past_actions")
+    if not isinstance(actions, list) or any(
+        not isinstance(item, dict) for item in actions
+    ):
+        raise ControlError(
+            "CHECKPOINT_AGENT_STATE_INVALID",
+            "checkpoint action-space state is invalid",
+            exit_code=ExitCode.integrity,
+        )
+    try:
+        runner_state = AgentSessionCheckpointState(
+            **{
+                **state_payload,
+                "action_space_past_actions": tuple(dict(item) for item in actions),
+            }
+        )
+    except (TypeError, ValueError) as exc:
+        raise ControlError(
+            "CHECKPOINT_AGENT_STATE_INVALID",
+            "checkpoint agent state failed validation",
+            exit_code=ExitCode.integrity,
+        ) from exc
+    if (
+        runner_state.turns_completed != checkpoint.turn
+        or runner_state.current_agent_name != source.current_agent
+        or run.current_turn != checkpoint.turn
+        or run.current_agent != runner_state.current_agent_name
+    ):
+        raise ControlError(
+            "CHECKPOINT_CURSOR_MISMATCH",
+            "checkpoint runner state differs from durable attempt lineage",
+            exit_code=ExitCode.integrity,
+        )
+
+    action_value = _checkpoint_json(
+        store,
+        actions_artifact,
+        expected_keys={
+            "schema_version",
+            "run_id",
+            "through_event_sequence",
+            "through_turn",
+            "event_ids",
+            "events_hash",
+        },
+    )
+    through_sequence = action_value["through_event_sequence"]
+    if (
+        action_value["schema_version"] != "caribou.executed_action_ledger.v1"
+        or action_value["run_id"] != source.run_id
+        or action_value["through_turn"] != checkpoint.turn
+        or isinstance(through_sequence, bool)
+        or not isinstance(through_sequence, int)
+        or through_sequence < 0
+        or through_sequence >= checkpoint.event_sequence
+    ):
+        raise ControlError(
+            "CHECKPOINT_ACTION_LEDGER_INVALID",
+            "checkpoint action ledger cursor is invalid",
+            exit_code=ExitCode.integrity,
+        )
+    action_event_types = {
+        EventType.agent_switch,
+        EventType.rag,
+        EventType.code_submitted,
+        EventType.code_result,
+    }
+    expected_action_events = [
+        event.model_dump(mode="json")
+        for event in durable_events
+        if event.sequence <= through_sequence and event.event_type in action_event_types
+    ]
+    if action_value["event_ids"] != [
+        event["event_id"] for event in expected_action_events
+    ] or action_value["events_hash"] != _checkpoint_value_hash(expected_action_events):
+        raise ControlError(
+            "CHECKPOINT_ACTION_LEDGER_INVALID",
+            "checkpoint action ledger differs from the durable event stream",
+            exit_code=ExitCode.integrity,
+        )
+
+    manifest_value = _checkpoint_json(
+        store,
+        manifest_artifact,
+        expected_keys={
+            "schema_version",
+            "run_id",
+            "frontier_event_sequence",
+            "components",
+        },
+    )
+    expected_components = [
+        _checkpoint_component_reference(artifact)
+        for artifact in (
+            dataset_artifact,
+            message_artifact,
+            state_artifact,
+            actions_artifact,
+        )
+    ]
+    frontier = manifest_value["frontier_event_sequence"]
+    if (
+        manifest_value["schema_version"] != "caribou.checkpoint_artifact_manifest.v1"
+        or manifest_value["run_id"] != source.run_id
+        or manifest_value["components"] != expected_components
+        or isinstance(frontier, bool)
+        or not isinstance(frontier, int)
+        or frontier >= checkpoint.event_sequence
+    ):
+        raise ControlError(
+            "CHECKPOINT_MANIFEST_INVALID",
+            "checkpoint artifact frontier differs from its component records",
+            exit_code=ExitCode.integrity,
+        )
+    frontier_event_ids = {
+        event.event_id for event in durable_events if event.sequence <= frontier
+    }
+    if any(
+        artifact.producer_event_id not in frontier_event_ids
+        for artifact in (
+            dataset_artifact,
+            message_artifact,
+            state_artifact,
+            actions_artifact,
+        )
+    ):
+        raise ControlError(
+            "CHECKPOINT_MANIFEST_INVALID",
+            "checkpoint artifact frontier differs from its component records",
+            exit_code=ExitCode.integrity,
+        )
+    return _RestoredAgentCheckpoint(
+        source_run_id=source.run_id,
+        checkpoint_id=checkpoint.checkpoint_id,
+        dataset_path=store.artifact_path(dataset_artifact),
+        history=history,
+        runner_state=runner_state,
+    )
+
+
+def _checkpoint_action_events(
+    store: ExperimentStore, run_id: str
+) -> list[dict[str, object]]:
+    action_event_types = {
+        EventType.agent_switch,
+        EventType.rag,
+        EventType.code_submitted,
+        EventType.code_result,
+    }
+    return [
+        event.model_dump(mode="json")
+        for event in _durable_event_ledger(store, run_id)
+        if event.event_type in action_event_types
+    ]
+
+
+def _capture_checkpoint_dataset(
+    *,
+    store: ExperimentStore,
+    run_id: str,
+    adapter: str,
+    actor: str,
+    sandbox: object,
+    input_path: Path,
+    output_dir: Path,
+    turn: int,
+    current_agent: str,
+) -> Path:
+    destination = output_dir / f".{_CHECKPOINT_DATASET_FILENAME}"
+    if adapter == AGENT_PATH_SMOKE_ADAPTER:
+        shutil.copyfile(input_path, destination)
+        store.append_run_event(
+            run_id,
+            event_type=EventType.heartbeat,
+            payload=HeartbeatPayload(message="scripted checkpoint dataset copied"),
+            actor=actor,
+            turn=turn,
+            current_agent=current_agent,
+            stage="checkpoint_capture",
+        )
+        return destination
+    capture_source = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-capture-code.json",
+        role="checkpoint_capture_code",
+        value={
+            "schema_version": "caribou.checkpoint_capture_code.v1",
+            "source": _CHECKPOINT_DATASET_CAPTURE_CODE,
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        turn=turn,
+        current_agent=current_agent,
+    )
+    result = sandbox.exec_code(_CHECKPOINT_DATASET_CAPTURE_CODE, timeout=600)  # type: ignore[attr-defined]
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise ControlError(
+            "CHECKPOINT_DATASET_CAPTURE_FAILED",
+            "the live AnnData state could not be written at the safe boundary",
+            exit_code=ExitCode.execution,
+            details={"capture_artifact_id": capture_source.artifact_id},
+        )
+    store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-capture-result.json",
+        role="checkpoint_capture_result",
+        value={
+            "schema_version": "caribou.checkpoint_capture_result.v1",
+            "capture_artifact_id": capture_source.artifact_id,
+            "status": "ok",
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        turn=turn,
+        current_agent=current_agent,
+    )
+    if not destination.is_file():
+        raise ControlError(
+            "CHECKPOINT_DATASET_CAPTURE_MISSING",
+            "checkpoint capture reported success without a dataset file",
+            exit_code=ExitCode.integrity,
+        )
+    return destination
+
+
+def _persist_agent_checkpoint(
+    *,
+    store: ExperimentStore,
+    run_id: str,
+    adapter: str,
+    actor: str,
+    sandbox: object,
+    input_path: Path,
+    output_dir: Path,
+    history: list[dict[str, str]],
+    state: AgentSessionCheckpointState,
+) -> str:
+    turn = state.turns_completed
+    dataset_path = _capture_checkpoint_dataset(
+        store=store,
+        run_id=run_id,
+        adapter=adapter,
+        actor=actor,
+        sandbox=sandbox,
+        input_path=input_path,
+        output_dir=output_dir,
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    dataset_artifact = store.record_idempotent_file_artifact(
+        run_id,
+        source=dataset_path,
+        filename=_CHECKPOINT_DATASET_FILENAME,
+        role="checkpoint_dataset_state",
+        producer=actor,
+        artifact_type=ArtifactType.dataset,
+        media_type="application/x-hdf5",
+        schema_type="anndata",
+        schema_version_name="h5ad",
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    message_artifact = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-message-history.json",
+        role="checkpoint_message_history",
+        value={
+            "schema_version": "caribou.message_history.v1",
+            "run_id": run_id,
+            "messages": history,
+        },
+        producer=actor,
+        artifact_type=ArtifactType.message_history,
+        schema_type="caribou.message_history",
+        schema_version_name="v1",
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    state_artifact = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-agent-state.json",
+        role="checkpoint_agent_state",
+        value={
+            "schema_version": "caribou.checkpoint_agent_state.v1",
+            "run_id": run_id,
+            "state": asdict(state),
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        schema_type="caribou.checkpoint_agent_state",
+        schema_version_name="v1",
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    action_frontier = store.run(run_id).event_sequence
+    action_events = _checkpoint_action_events(store, run_id)
+    actions_artifact = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-executed-actions.json",
+        role="checkpoint_executed_actions",
+        value={
+            "schema_version": "caribou.executed_action_ledger.v1",
+            "run_id": run_id,
+            "through_event_sequence": action_frontier,
+            "through_turn": turn,
+            "event_ids": [event["event_id"] for event in action_events],
+            "events_hash": _checkpoint_value_hash(action_events),
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        schema_type="caribou.executed_action_ledger",
+        schema_version_name="v1",
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    manifest_frontier = store.run(run_id).event_sequence
+    manifest_artifact = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-artifact-manifest.json",
+        role="checkpoint_artifact_manifest",
+        value={
+            "schema_version": "caribou.checkpoint_artifact_manifest.v1",
+            "run_id": run_id,
+            "frontier_event_sequence": manifest_frontier,
+            "components": [
+                _checkpoint_component_reference(artifact)
+                for artifact in (
+                    dataset_artifact,
+                    message_artifact,
+                    state_artifact,
+                    actions_artifact,
+                )
+            ],
+        },
+        producer=actor,
+        artifact_type=ArtifactType.manifest,
+        schema_type="caribou.checkpoint_artifact_manifest",
+        schema_version_name="v1",
+        turn=turn,
+        current_agent=state.current_agent_name,
+    )
+    checkpoint = store.record_checkpoint(
+        run_id,
+        stage="agent_turn_boundary",
+        turn=turn,
+        current_agent=state.current_agent_name,
+        dataset_artifact_id=dataset_artifact.artifact_id,
+        message_history_artifact_id=message_artifact.artifact_id,
+        agent_state_artifact_id=state_artifact.artifact_id,
+        executed_actions_artifact_id=actions_artifact.artifact_id,
+        artifact_manifest_id=manifest_artifact.artifact_id,
+        resume_requirements=sorted(SUPPORTED_RESUME_REQUIREMENTS),
+        actor=actor,
+    )
+    return checkpoint.checkpoint_id
+
+
+def _restore_checkpoint_dataset(
+    *,
+    store: ExperimentStore,
+    run_id: str,
+    adapter: str,
+    actor: str,
+    sandbox: object,
+    restored: _RestoredAgentCheckpoint,
+) -> None:
+    run = store.run(run_id)
+    if adapter == AGENT_PATH_SMOKE_ADAPTER:
+        store.append_run_event(
+            run_id,
+            event_type=EventType.heartbeat,
+            payload=HeartbeatPayload(message="scripted checkpoint dataset rebound"),
+            actor=actor,
+            turn=run.current_turn,
+            current_agent=run.current_agent,
+            stage="checkpoint_restore",
+        )
+        return
+    restore_source = store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-restore-code.json",
+        role="checkpoint_restore_code",
+        value={
+            "schema_version": "caribou.checkpoint_restore_code.v1",
+            "source_checkpoint_id": restored.checkpoint_id,
+            "source": _CHECKPOINT_DATASET_RESTORE_CODE,
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        turn=run.current_turn,
+        current_agent=run.current_agent,
+    )
+    result = sandbox.exec_code(_CHECKPOINT_DATASET_RESTORE_CODE, timeout=600)  # type: ignore[attr-defined]
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise ControlError(
+            "CHECKPOINT_DATASET_RESTORE_FAILED",
+            "the checkpoint AnnData state could not be loaded into the fresh REPL",
+            exit_code=ExitCode.execution,
+            details={"restore_artifact_id": restore_source.artifact_id},
+        )
+    store.record_idempotent_json_artifact(
+        run_id,
+        filename="checkpoint-restore-result.json",
+        role="checkpoint_restore_result",
+        value={
+            "schema_version": "caribou.checkpoint_restore_result.v1",
+            "source_checkpoint_id": restored.checkpoint_id,
+            "restore_artifact_id": restore_source.artifact_id,
+            "status": "ok",
+        },
+        producer=actor,
+        artifact_type=ArtifactType.checkpoint,
+        turn=run.current_turn,
+        current_agent=run.current_agent,
+    )
+
+
 def execute_agent_workload(
     store: ExperimentStore,
     run_id: str,
@@ -662,9 +1299,14 @@ def execute_agent_workload(
 
     run = store.run(run_id)
     _verify_code_identity(run.code.commit, adapter)
+    restored = _load_restored_checkpoint(store, run)
     blueprint_path = _local_file(run.resolved_blueprint.source, role="blueprint")
     prompt_path = _local_file(run.resolved_prompt, role="prompt")
-    input_path = _local_file(run.resolved_inputs[0], role="input")
+    input_path = (
+        restored.dataset_path
+        if restored is not None
+        else _local_file(run.resolved_inputs[0], role="input")
+    )
     prompt = prompt_path.read_text(encoding="utf-8").strip()
     if not prompt:
         raise RuntimeError("frozen analysis prompt is empty")
@@ -690,7 +1332,10 @@ def execute_agent_workload(
         if isinstance(delay_value, bool) or not isinstance(delay_value, (int, float)):
             raise RuntimeError("validated agent smoke delay is not numeric")
         delay = float(delay_value)
-        llm_client: object = _ScriptedClient(delay)
+        llm_client: object = _ScriptedClient(
+            delay,
+            restored.runner_state.turns_completed if restored is not None else 0,
+        )
         sandbox: object = _RecordingSandbox()
         llm_attempt_callback: Callable[[dict[str, object]], None] | None = None
     else:
@@ -720,21 +1365,26 @@ def execute_agent_workload(
     if store.cancel_requested(run_id):
         return None
     result: AgentSessionResult | None = None
-    history = [
-        {
-            "role": "system",
-            "content": f"**GLOBAL POLICY**: {agent_system.global_policy}\n",
-        },
-        {
-            "role": "system",
-            "content": (
-                driver.get_full_prompt(None)
-                + f"\n\nPrimary dataset path: **{SANDBOX_DATA_PATH}**\n"
-                + "Save generated files under `/workspace/outputs/`."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
+    history = (
+        [dict(message) for message in restored.history]
+        if restored is not None
+        else [
+            {
+                "role": "system",
+                "content": f"**GLOBAL POLICY**: {agent_system.global_policy}\n",
+            },
+            {
+                "role": "system",
+                "content": (
+                    driver.get_full_prompt(None)
+                    + f"\n\nPrimary dataset path: **{SANDBOX_DATA_PATH}**\n"
+                    + "Save generated files under `/workspace/outputs/`."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+    )
+    checkpoint_states: list[AgentSessionCheckpointState] = []
     try:
         if not sandbox.start_container():  # type: ignore[attr-defined]
             raise RuntimeError("agent sandbox failed to start")
@@ -746,6 +1396,15 @@ def execute_agent_workload(
             reason="CARIBOU agent workload initialized",
             actor=actor,
         )
+        if restored is not None:
+            _restore_checkpoint_dataset(
+                store=store,
+                run_id=run_id,
+                adapter=adapter,
+                actor=actor,
+                sandbox=sandbox,
+                restored=restored,
+            )
         result = run_agent_session(
             console=Console(stderr=True),
             agent_system=agent_system,
@@ -769,6 +1428,9 @@ def execute_agent_workload(
             should_cancel=lambda: store.cancel_requested(run_id),
             event_callback=_event_recorder(store, run_id),
             llm_attempt_callback=llm_attempt_callback,
+            should_checkpoint=lambda: store.checkpoint_requested(run_id),
+            checkpoint_callback=checkpoint_states.append,
+            resume_state=(restored.runner_state if restored is not None else None),
             timeout_seconds=run.resolved_stop_rules.timeout_seconds,
             max_consecutive_no_action=(
                 run.resolved_stop_rules.maximum_consecutive_no_action
@@ -780,22 +1442,31 @@ def execute_agent_workload(
             llm_retry_base_delay=(run.resolved_stop_rules.retry.base_delay_seconds),
             llm_retry_max_delay=(run.resolved_stop_rules.retry.maximum_delay_seconds),
         )
-        store.record_json_artifact(
-            run_id,
-            filename="message-history.json",
-            role="message_history",
-            value={
-                "schema_version": "caribou.message_history.v1",
-                "run_id": run_id,
-                "messages": history,
-            },
-            producer="agent-runner",
-            artifact_type=ArtifactType.message_history,
-            schema_type="caribou.message_history",
-            schema_version_name="v1",
-            turn=result.final_turn,
-            current_agent=result.current_agent_name,
-        )
+        checkpointed = result.end_reason == "checkpointed"
+        if checkpointed != (len(checkpoint_states) == 1):
+            raise ControlError(
+                "CHECKPOINT_STATE_MISSING",
+                "runner checkpoint outcome and captured state disagree",
+                exit_code=ExitCode.integrity,
+                details={"captured_states": len(checkpoint_states)},
+            )
+        if not checkpointed:
+            store.record_json_artifact(
+                run_id,
+                filename="message-history.json",
+                role="message_history",
+                value={
+                    "schema_version": "caribou.message_history.v1",
+                    "run_id": run_id,
+                    "messages": history,
+                },
+                producer="agent-runner",
+                artifact_type=ArtifactType.message_history,
+                schema_type="caribou.message_history",
+                schema_version_name="v1",
+                turn=result.final_turn,
+                current_agent=result.current_agent_name,
+            )
         store.record_json_artifact(
             run_id,
             filename="agent-session-result.json",
@@ -824,6 +1495,18 @@ def execute_agent_workload(
                 or "application/octet-stream",
                 turn=result.final_turn,
                 current_agent=result.current_agent_name,
+            )
+        if checkpointed:
+            _persist_agent_checkpoint(
+                store=store,
+                run_id=run_id,
+                adapter=adapter,
+                actor=actor,
+                sandbox=sandbox,
+                input_path=input_path,
+                output_dir=output_dir,
+                history=history,
+                state=checkpoint_states[0],
             )
         return result
     finally:

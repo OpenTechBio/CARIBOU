@@ -35,6 +35,47 @@ Cancellation is durable and idempotent:
 caribou run cancel RUN_ID --reason "caller stopped the experiment" --json
 ```
 
+Agent runs can also stop cooperatively at the next completed-turn boundary:
+
+```bash
+caribou run checkpoint RUN_ID \
+  --idempotency-key checkpoint-RUN_ID-turn-2 \
+  --reason "preserve this completed analysis turn" --json
+caribou run checkpoints RUN_ID --json
+```
+
+The worker finishes the current model response and its declared actions before
+publishing the checkpoint. It then preserves the source attempt as terminal
+`resumable`; it does not begin another model turn. A complete checkpoint links
+hash-verified dataset, full message history, runner/agent state, executed-action
+ledger, and artifact-frontier components. Resume creates a new immutable attempt
+rather than reopening the source:
+
+```bash
+caribou run resume RUN_ID --from-checkpoint latest \
+  --idempotency-key resume-RUN_ID-turn-2 --json
+```
+
+Retrying the exact resume request returns the same child and does not duplicate
+workload execution. Local workers must claim the one durable process handle before
+changing run state, invoking a model, or executing generated code. Selecting the
+same checkpoint with another key fails because the initial slice does not support
+branching. The child retains the frozen experiment,
+model, code, container, budget, and total turn limit; it binds the checkpointed
+AnnData artifact at `/workspace/dataset.h5ad`, restores the full-history cursor and
+current agent, and starts with the next logical turn. Historical resumable attempts
+remain in the ledger but do not prevent a successful leaf attempt from completing
+the experiment.
+
+This recovery contract currently supports only full-history memory and one
+cooperative checkpoint per attempt. It is not a Python-process snapshot: only the
+declared AnnData global `adata`, messages, runner counters, current agent, action
+ledger, and artifact frontier are restored. A hard loss during a provider call,
+between a provider receipt and durable response content, or midway through code
+execution is ambiguous and is not automatically replayed. Scheduler preemption,
+SIGKILL, episodic/report memory, arbitrary Python globals, and branching require
+separate validation before they can be claimed.
+
 Retry submission with the same idempotency key and unchanged specification to
 recover the original experiment and run IDs without launching another worker.
 Reusing the key with different content fails with a typed conflict. A caller

@@ -251,10 +251,10 @@ def _agent_smoke_delay(parameters: dict[str, Any]) -> float:
             exit_code=ExitCode.validation,
         )
     delay = float(raw)
-    if delay < 0 or delay > 1:
+    if delay < 0 or delay > 5:
         raise ControlError(
             "ADAPTER_PARAMETER_INVALID",
-            f"{AGENT_SMOKE_DELAY_PARAMETER} must be between 0 and 1",
+            f"{AGENT_SMOKE_DELAY_PARAMETER} must be between 0 and 5",
             exit_code=ExitCode.validation,
         )
     return delay
