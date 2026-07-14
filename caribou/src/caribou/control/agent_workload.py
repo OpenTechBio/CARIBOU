@@ -51,6 +51,7 @@ from .store import ExperimentStore, SUPPORTED_RESUME_REQUIREMENTS
 
 
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
+FROZEN_RAG_CORPUS_ENV = "CARIBOU_RAG_CORPUS_FILE"
 _SMOKE_CODE = 'print("CARIBOU_AGENT_PATH_OK")'
 _CHECKPOINT_DATASET_FILENAME = "checkpoint-dataset.h5ad"
 _CHECKPOINT_DATASET_CONTAINER_PATH = (
@@ -294,7 +295,7 @@ class _CancellationAwareSandbox:
             watcher.join(timeout=1)
 
 
-def _verify_blueprint_dependencies(agent_system: Any, run: Any) -> None:
+def _verify_blueprint_dependencies(agent_system: Any, run: Any) -> Path | None:
     actual_samples: dict[str, str] = {}
     rag_enabled_agents: list[str] = []
     for agent_name, agent in agent_system.get_all_agents().items():
@@ -322,13 +323,23 @@ def _verify_blueprint_dependencies(agent_system: Any, run: Any) -> None:
                 "actual": actual_samples,
             },
         )
-    if rag_enabled_agents or run.resolved_blueprint.rag_corpus is not None:
+    rag_reference = run.resolved_blueprint.rag_corpus
+    if rag_enabled_agents and rag_reference is None:
         raise ControlError(
             "RAG_NOT_BOUND",
-            "the initial real agent workload does not yet bind RAG to its frozen corpus",
+            "RAG-enabled agents require a frozen corpus in the resolved blueprint",
             exit_code=ExitCode.validation,
             details={"rag_enabled_agents": sorted(rag_enabled_agents)},
         )
+    if not rag_enabled_agents and rag_reference is not None:
+        raise ControlError(
+            "RAG_CORPUS_UNUSED",
+            "a frozen RAG corpus cannot be declared when no agent enables RAG",
+            exit_code=ExitCode.validation,
+        )
+    if rag_reference is None:
+        return None
+    return _local_file(rag_reference, role="RAG corpus")
 
 
 def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
@@ -1317,8 +1328,9 @@ def execute_agent_workload(
         raise RuntimeError(
             f"driver agent not found: {run.resolved_blueprint.driver_agent}"
         )
+    rag_corpus_path = None
     if adapter == CARIBOU_AGENT_ADAPTER:
-        _verify_blueprint_dependencies(agent_system, run)
+        rag_corpus_path = _verify_blueprint_dependencies(agent_system, run)
 
     condition = next(
         item
@@ -1385,6 +1397,9 @@ def execute_agent_workload(
         ]
     )
     checkpoint_states: list[AgentSessionCheckpointState] = []
+    previous_rag_corpus = os.environ.pop(FROZEN_RAG_CORPUS_ENV, None)
+    if rag_corpus_path is not None:
+        os.environ[FROZEN_RAG_CORPUS_ENV] = str(rag_corpus_path)
     try:
         if not sandbox.start_container():  # type: ignore[attr-defined]
             raise RuntimeError("agent sandbox failed to start")
@@ -1510,4 +1525,7 @@ def execute_agent_workload(
             )
         return result
     finally:
+        os.environ.pop(FROZEN_RAG_CORPUS_ENV, None)
+        if previous_rag_corpus is not None:
+            os.environ[FROZEN_RAG_CORPUS_ENV] = previous_rag_corpus
         sandbox.stop_container()  # type: ignore[attr-defined]
