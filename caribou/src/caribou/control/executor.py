@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .api import ControlError, ExitCode
-from .records import ExecutionHandle
+from .records import ExecutionHandle, SlurmExecutionHandle
 from .store import ExperimentStore, TERMINAL_RUN_STATES
 
 
 @dataclass(frozen=True)
 class LaunchResult:
-    handle: ExecutionHandle
+    handle: ExecutionHandle | SlurmExecutionHandle
     launched: bool
 
 
