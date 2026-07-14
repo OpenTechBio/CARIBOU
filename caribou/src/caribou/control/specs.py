@@ -12,7 +12,13 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from caribou.domain.enums import ExecutorKind, MemoryStrategy, SandboxKind, TopologyKind
+from caribou.domain.enums import (
+    ExecutorKind,
+    FailureCategory,
+    MemoryStrategy,
+    SandboxKind,
+    TopologyKind,
+)
 from caribou.domain.models import ExperimentSpec
 from caribou.domain.serialization import model_hash
 
@@ -28,6 +34,9 @@ LOCAL_ADAPTERS = frozenset(
 ADAPTER_PARAMETER = "caribou.execution_adapter"
 SMOKE_SECONDS_PARAMETER = "caribou.lifecycle_smoke_seconds"
 AGENT_SMOKE_DELAY_PARAMETER = "caribou.agent_smoke_delay_seconds"
+AGENT_RETRYABLE_FAILURES = frozenset(
+    {FailureCategory.provider, FailureCategory.timeout}
+)
 
 
 def load_experiment_spec(path: Path) -> ExperimentSpec:
@@ -229,16 +238,33 @@ def _validate_agent_adapter(
             details={"limited_counters": limited_budgets},
         )
     retry = spec.stop_rules.retry
-    if (
-        retry.maximum_attempts != 1
-        or retry.retryable_categories
-        or retry.base_delay_seconds != 0
-        or retry.maximum_delay_seconds != 0
-    ):
+    categories = set(retry.retryable_categories)
+    no_retry = (
+        retry.maximum_attempts == 1
+        and not categories
+        and retry.base_delay_seconds == 0
+        and retry.maximum_delay_seconds == 0
+    )
+    bounded_provider_retry = (
+        retry.maximum_attempts > 1
+        and FailureCategory.provider in categories
+        and categories <= AGENT_RETRYABLE_FAILURES
+    )
+    if not (no_retry or bounded_provider_retry):
         raise ControlError(
             "AGENT_RETRY_POLICY_UNSUPPORTED",
-            "the initial real agent workload requires a no-retry policy",
+            "real agent retries must be explicitly provider-scoped and may also "
+            "classify timeouts",
             exit_code=ExitCode.validation,
+            details={
+                "maximum_attempts": retry.maximum_attempts,
+                "retryable_categories": sorted(
+                    category.value for category in categories
+                ),
+                "supported_categories": sorted(
+                    category.value for category in AGENT_RETRYABLE_FAILURES
+                ),
+            },
         )
 
 
