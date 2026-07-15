@@ -34,6 +34,7 @@ LOCAL_ADAPTERS = frozenset(
 ADAPTER_PARAMETER = "caribou.execution_adapter"
 SMOKE_SECONDS_PARAMETER = "caribou.lifecycle_smoke_seconds"
 AGENT_SMOKE_DELAY_PARAMETER = "caribou.agent_smoke_delay_seconds"
+MODEL_MAX_OUTPUT_TOKENS_PARAMETER = "max_output_tokens"
 AGENT_RETRYABLE_FAILURES = frozenset(
     {FailureCategory.provider, FailureCategory.timeout}
 )
@@ -99,6 +100,28 @@ def _smoke_seconds(parameters: dict[str, Any]) -> float:
             exit_code=ExitCode.validation,
         )
     return seconds
+
+
+def _model_max_output_tokens(parameters: dict[str, Any]) -> int | None:
+    unsupported = sorted(set(parameters) - {MODEL_MAX_OUTPUT_TOKENS_PARAMETER})
+    if unsupported:
+        raise ControlError(
+            "AGENT_MODEL_PARAMETERS_UNSUPPORTED",
+            "the initial real agent workload supports only max_output_tokens",
+            exit_code=ExitCode.validation,
+            details={"parameters": unsupported},
+        )
+    raw = parameters.get(MODEL_MAX_OUTPUT_TOKENS_PARAMETER)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ControlError(
+            "AGENT_MODEL_PARAMETER_INVALID",
+            "max_output_tokens must be a positive integer",
+            exit_code=ExitCode.validation,
+            details={"parameter": MODEL_MAX_OUTPUT_TOKENS_PARAMETER},
+        )
+    return raw
 
 
 def _validate_agent_adapter(
@@ -168,13 +191,14 @@ def _validate_agent_adapter(
         condition.model.artifact is not None
         or condition.model.quantization is not None
         or condition.model.context_length is not None
-        or condition.model.parameters
     ):
         raise ControlError(
             "AGENT_MODEL_FIELDS_UNSUPPORTED",
-            "the initial external-model workload accepts only provider and exact model ID",
+            "the initial external-model workload does not bind model artifacts, "
+            "quantization, or context-length declarations",
             exit_code=ExitCode.validation,
         )
+    _model_max_output_tokens(dict(condition.model.parameters))
     if condition.memory.strategy != MemoryStrategy.full:
         raise ControlError(
             "AGENT_MEMORY_UNSUPPORTED",

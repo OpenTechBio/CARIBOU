@@ -10,15 +10,18 @@ This module handles:
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from caribou.core.io_helpers import extract_python_code_blocks
 
 
 # --- Regex Patterns ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
-# Matches both `query_rag_<topic>` (canonical) and `query_rag_topic` (LLMs often drop the brackets)
-_RAG_RE = re.compile(r"query_rag_(?:<([^>]+)>|([A-Za-z0-9_.]+))")
+_RAG_LINE_RE = re.compile(
+    r"^[ \t]*query_rag_(?:<(?P<canonical>[^<>`\r\n]+)>|"
+    r"(?P<bare>[^<>`\r\n]+?))[ \t]*$"
+)
+_MARKDOWN_FENCE_RE = re.compile(r"^[ \t]*(?P<marker>`{3,}|~{3,})")
 _END_SESSION_RE = re.compile(r"^\s*end_session\s*$", re.MULTILINE)
 
 
@@ -28,11 +31,45 @@ def detect_delegation(msg: str) -> Optional[str]:
     return f"delegate_to_{m.group(1)}" if m else None
 
 
+def _lines_outside_fenced_code(msg: str) -> Iterator[str]:
+    """Yield message lines that are not inside Markdown fenced code."""
+    fence_character: Optional[str] = None
+    fence_length = 0
+
+    for line in msg.splitlines():
+        fence_match = _MARKDOWN_FENCE_RE.match(line)
+        if fence_character is None:
+            if fence_match:
+                marker = fence_match.group("marker")
+                fence_character = marker[0]
+                fence_length = len(marker)
+                continue
+            yield line
+            continue
+
+        if fence_match:
+            marker = fence_match.group("marker")
+            if (
+                marker[0] == fence_character
+                and len(marker) >= fence_length
+                and not line[fence_match.end() :].strip()
+            ):
+                fence_character = None
+                fence_length = 0
+
+
 def detect_rag(msg: str) -> Optional[str]:
-    """Return the RAG topic if present (handles both `<topic>` and bare-word forms)."""
-    m = _RAG_RE.search(msg)
-    if m:
-        return m.group(1) or m.group(2)
+    """Return the topic from the first standalone RAG command outside code."""
+    if not msg:
+        return None
+
+    for line in _lines_outside_fenced_code(msg):
+        match = _RAG_LINE_RE.fullmatch(line)
+        if not match:
+            continue
+        topic = match.group("canonical") or match.group("bare")
+        if topic and topic.strip():
+            return topic.strip() if match.group("bare") else topic
     return None
 
 

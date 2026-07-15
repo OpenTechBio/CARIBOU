@@ -138,6 +138,107 @@ def _terminal_runner(raw: str) -> tuple[list[list[str]], Callable[[list[str]], s
     return commands, run
 
 
+def test_command_timeout_map_is_copied_and_resolved_per_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = {"squeue": 91.0, "sbatch": 22.0}
+    executor = SlurmExecutor(command_timeouts=configured)
+    configured["squeue"] = 1.0
+    observed: list[tuple[list[str], float]] = []
+
+    def run(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        env: object,
+    ) -> subprocess.CompletedProcess[str]:
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        observed.append((command, timeout))
+        return _completed(command)
+
+    monkeypatch.setattr(control_slurm_module.subprocess, "run", run)
+
+    executor._run(["squeue"])
+    executor._run(["/usr/bin/sacct"])
+    executor._run(["sbatch"])
+    executor._run(["scontrol"])
+    executor._run(["custom-slurm-command"], timeout=2.0)
+
+    custom_executor = SlurmExecutor(
+        squeue="site-queue-client",
+        sacct="/site/bin/accounting-client",
+    )
+    custom_executor._run(["site-queue-client"])
+    custom_executor._run(["/site/bin/accounting-client"])
+
+    assert observed == [
+        (["squeue"], 91.0),
+        (["/usr/bin/sacct"], 75.0),
+        (["sbatch"], 22.0),
+        (["scontrol"], 15.0),
+        (["custom-slurm-command"], 2.0),
+        (["site-queue-client"], 75.0),
+        (["/site/bin/accounting-client"], 75.0),
+    ]
+
+
+def test_command_timeout_error_reports_effective_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SlurmExecutor(command_timeouts={"squeue": 91.0})
+
+    def timeout(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, 91.0)
+
+    monkeypatch.setattr(control_slurm_module.subprocess, "run", timeout)
+
+    with pytest.raises(ControlError) as exc_info:
+        executor._run(["squeue", "--local"])
+
+    assert exc_info.value.code == "SLURM_COMMAND_TIMEOUT"
+    assert exc_info.value.retryable is True
+    assert exc_info.value.details == {
+        "command": "squeue",
+        "timeout_seconds": 91.0,
+    }
+
+
+def test_pre_submission_squeue_timeout_leaves_run_retryable_without_sbatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="query-timeout")
+    executor = SlurmExecutor()
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        assert command[0:2] == ["squeue", "--local"]
+        raise ControlError(
+            "SLURM_COMMAND_TIMEOUT",
+            "squeue timed out",
+            exit_code=ExitCode.transient,
+            retryable=True,
+            details={"command": "squeue", "timeout_seconds": 75.0},
+        )
+
+    monkeypatch.setattr(executor, "_run", run)
+
+    with pytest.raises(ControlError) as exc_info:
+        executor.launch(store, run_id)
+
+    assert exc_info.value.code == "SLURM_COMMAND_TIMEOUT"
+    assert [command[0] for command in commands] == ["squeue"]
+    assert store.run(run_id).state == RunState.queued
+    assert store.run(run_id).scheduler_job_id is None
+    assert store.scheduler_submission(run_id) is None
+    assert store.scheduler_handle(run_id) is None
+
+
 def test_held_submit_is_bound_before_release_and_script_is_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -152,6 +253,7 @@ def test_held_submit_is_bound_before_release_and_script_is_locked(
         if command[0] == "squeue":
             assert command == [
                 "squeue",
+                "--local",
                 "--noheader",
                 "--user",
                 str(os.geteuid()),
@@ -483,6 +585,7 @@ def test_cancel_without_handle_retries_named_lookup_and_then_cancels(
     lookups = 0
     recovery_command = [
         "squeue",
+        "--local",
         "--noheader",
         "--user",
         str(os.geteuid()),
@@ -634,6 +737,7 @@ def test_launch_recovers_one_named_held_job_without_sbatch(
         if command[0] == "squeue":
             assert command == [
                 "squeue",
+                "--local",
                 "--noheader",
                 "--user",
                 str(os.geteuid()),
@@ -1033,6 +1137,7 @@ def test_scheduler_artifact_retry_repairs_manifest_journal_boundary(
     assert commands == [
         [
             "squeue",
+            "--local",
             "--noheader",
             "--jobs",
             "742",
@@ -1040,6 +1145,7 @@ def test_scheduler_artifact_retry_repairs_manifest_journal_boundary(
         ],
         [
             "sacct",
+            "--local",
             "--jobs",
             "742",
             "--noheader",
@@ -1134,9 +1240,9 @@ def test_cancel_signals_exact_bound_job_and_reconciles_cancelled(
     assert reconciled.accounting is not None
     assert reconciled.accounting.consistent_with_run is True
     assert commands[1][0] == "squeue"
-    assert commands[1][3] == "742"
+    assert commands[1][commands[1].index("--jobs") + 1] == "742"
     assert commands[2][0] == "sacct"
-    assert commands[2][2] == "742"
+    assert commands[2][commands[2].index("--jobs") + 1] == "742"
 
 
 def test_duplicate_and_stale_cancel_do_not_repeat_scancel(

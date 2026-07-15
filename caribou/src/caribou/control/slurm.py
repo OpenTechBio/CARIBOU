@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from caribou.config import CARIBOU_HOME
 from caribou.domain.enums import ExecutorKind, RunState
@@ -25,6 +25,11 @@ from .store import ExperimentStore, TERMINAL_RUN_STATES
 
 
 _JOB_ID = re.compile(r"^[0-9]+$")
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 15.0
+_DEFAULT_COMMAND_TIMEOUTS = {
+    "squeue": 75.0,
+    "sacct": 75.0,
+}
 _SUBMISSION_VISIBILITY_GRACE_SECONDS = 30.0
 _SQUEUE_TERMINAL_ABSENCE_MARKERS = ("invalid job id specified",)
 _TERMINAL_STATES = frozenset(
@@ -270,15 +275,42 @@ class SlurmExecutor:
         scancel: str = "scancel",
         squeue: str = "squeue",
         sacct: str = "sacct",
+        command_timeouts: Optional[Mapping[str, float]] = None,
     ) -> None:
         self.sbatch = sbatch
         self.scontrol = scontrol
         self.scancel = scancel
         self.squeue = squeue
         self.sacct = sacct
+        self.command_timeouts = dict(_DEFAULT_COMMAND_TIMEOUTS)
+        if command_timeouts is not None:
+            self.command_timeouts.update(command_timeouts)
 
-    @staticmethod
-    def _run(command: list[str], *, timeout: float = 15) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, command: list[str], *, timeout: Optional[float] = None
+    ) -> subprocess.CompletedProcess[str]:
+        command_role = next(
+            (
+                role
+                for role in ("sbatch", "scontrol", "scancel", "squeue", "sacct")
+                if command[0] == getattr(self, role)
+            ),
+            Path(command[0]).name,
+        )
+        effective_timeout = (
+            timeout
+            if timeout is not None
+            else self.command_timeouts.get(
+                command[0],
+                self.command_timeouts.get(
+                    command_role,
+                    self.command_timeouts.get(
+                        Path(command[0]).name,
+                        _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+                    ),
+                ),
+            )
+        )
         environment = None
         if Path(command[0]).name == "sbatch":
             # SBATCH_* variables override script directives. Remove them so the
@@ -294,7 +326,7 @@ class SlurmExecutor:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=effective_timeout,
                 env=environment,
             )
         except FileNotFoundError as exc:
@@ -310,7 +342,10 @@ class SlurmExecutor:
                 f"Slurm command timed out: {command[0]}",
                 exit_code=ExitCode.transient,
                 retryable=True,
-                details={"command": command[0]},
+                details={
+                    "command": command[0],
+                    "timeout_seconds": effective_timeout,
+                },
             ) from exc
         if result.returncode != 0:
             detail = result.stderr.strip().splitlines()[-1:] or [""]
@@ -459,6 +494,7 @@ class SlurmExecutor:
         result = self._run(
             [
                 self.squeue,
+                "--local",
                 "--noheader",
                 "--user",
                 str(os.geteuid()),
@@ -750,6 +786,7 @@ class SlurmExecutor:
             result = self._run(
                 [
                     self.squeue,
+                    "--local",
                     "--noheader",
                     "--jobs",
                     handle.job_id,
@@ -795,6 +832,7 @@ class SlurmExecutor:
         result = self._run(
             [
                 self.sacct,
+                "--local",
                 "--jobs",
                 handle.job_id,
                 "--noheader",

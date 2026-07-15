@@ -258,7 +258,7 @@ class TestRAGIntegration:
 
         client = mock_llm_client(responses=[
             "Let me search for information.",
-            "I will query_rag_<API documentation> to find details.",
+            "I will retrieve the API details.\nquery_rag_<API documentation>",
             "Based on the documentation, here's the answer."
         ])
 
@@ -387,7 +387,7 @@ class TestCompleteIntegrationFlow:
         client = mock_llm_client(responses=[
             "I will plan the research task.\nNOTE: Starting with literature review",
             "delegate_to_researcher to find information",
-            "I will query_rag_<machine learning basics> for context",
+            "I will retrieve supporting context.\nquery_rag_<machine learning basics>",
             "Based on research: ML uses algorithms.\nTODO: Compile findings\n- [ ] Write report",
             "delegate_to_planner to finalize",
             "Final plan complete.\n- [x] Research done\n- [x] Report written"

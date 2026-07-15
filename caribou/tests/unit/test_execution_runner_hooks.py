@@ -266,7 +266,7 @@ def test_duplicate_successful_rag_is_suppressed_and_not_progress(
 
     rag_client = RagClient()
     monkeypatch.setattr(runner, "get_rag_client", lambda _console: rag_client)
-    events: list[dict[str, object]] = []
+    events = []
     llm = SequenceLlm(
         ["query_rag_<scanpy>", "query_rag_<  ScanPy  >", "end_session"]
     )
@@ -443,34 +443,57 @@ def test_configured_failure_thresholds_are_enforced(
     assert result.turns_completed == 1
 
 
-def test_failure_threshold_stops_remaining_blocks_in_same_response(tmp_path):
+def test_runaway_response_executes_only_first_block_and_records_ignored_blocks(
+    tmp_path,
+):
+    history = [{"role": "system", "content": "policy"}]
+    events: list[dict[str, object]] = []
     sandbox = RecordingSandbox(status="error")
+    response = (
+        "```python\nraise RuntimeError('first')\n```\n"
+        "```python\nraise RuntimeError('second')\n```\n"
+        "```python\nraise RuntimeError('must not run')\n```"
+    )
     result = _run(
         tmp_path,
-        SequenceLlm(
-            [
-                "```python\nraise RuntimeError('first')\n```\n"
-                "```python\nraise RuntimeError('second')\n```\n"
-                "```python\nraise RuntimeError('must not run')\n```"
-            ]
-        ),
+        SequenceLlm([response]),
         sandbox,
-        max_turns=10,
+        history=history,
+        max_turns=1,
         max_consecutive_exec_failures=2,
+        event_callback=events.append,
     )
 
     assert result.succeeded is False
-    assert result.end_reason == "stuck_code_failures"
-    assert result.code_exec_attempts == 2
-    assert result.code_exec_failures == 2
+    assert result.end_reason == "max_turns_reached"
+    assert result.code_blocks_produced == 3
+    assert result.code_exec_attempts == 1
+    assert result.code_exec_failures == 1
     assert result.correction_count == 0
-    assert sandbox.calls == [
-        "raise RuntimeError('first')",
-        "raise RuntimeError('second')",
+    assert sandbox.calls == ["raise RuntimeError('first')"]
+    assert [event["event_type"] for event in events] == [
+        "turn_started",
+        "assistant_message",
+        "code_blocks_ignored",
+        "code_submitted",
+        "code_result",
+        "session_end",
     ]
+    assert events[1]["payload"]["content"] == response
+    assert events[2]["payload"] == {
+        "total_blocks_produced": 3,
+        "executed_blocks": 1,
+        "ignored_blocks": 2,
+        "reason": "maximum one code block per provider turn",
+    }
+    assert any(
+        message["role"] == "system"
+        and "Ignored 2 additional complete Python code block(s)" in message["content"]
+        for message in history
+    )
 
 
-def test_correction_count_requires_success_after_failure(tmp_path):
+def test_same_response_failure_and_success_are_not_counted_as_correction(tmp_path):
     sandbox = RecordingSandbox()
     statuses = iter(["error", "ok"])
 
@@ -496,9 +519,62 @@ def test_correction_count_requires_success_after_failure(tmp_path):
         sandbox,
     )
 
+    assert result.code_blocks_produced == 2
+    assert result.code_exec_attempts == 1
+    assert result.code_exec_failures == 1
+    assert result.correction_count == 0
+    assert sandbox.calls == ["raise RuntimeError('first')"]
+
+
+def test_correction_count_requires_success_on_later_provider_turn(tmp_path):
+    sandbox = RecordingSandbox()
+    statuses = iter(["error", "ok"])
+
+    def exec_code(code: str, timeout: int) -> dict:
+        sandbox.calls.append(code)
+        status = next(statuses)
+        return {
+            "status": status,
+            "final_status": status,
+            "stdout": "corrected" if status == "ok" else "",
+            "stderr": "failure" if status != "ok" else "",
+        }
+
+    sandbox.exec_code = exec_code  # type: ignore[method-assign]
+    result = _run(
+        tmp_path,
+        SequenceLlm(
+            [
+                "```python\nraise RuntimeError('first')\n```",
+                "```python\nprint('corrected')\n```",
+            ]
+        ),
+        sandbox,
+        max_turns=2,
+        max_consecutive_exec_failures=2,
+    )
+
     assert result.code_exec_attempts == 2
     assert result.code_exec_failures == 1
     assert result.correction_count == 1
+    assert sandbox.calls == [
+        "raise RuntimeError('first')",
+        "print('corrected')",
+    ]
+
+
+def test_max_output_tokens_propagates_to_provider_request(tmp_path):
+    llm = SequenceLlm(["end_session"])
+
+    result = _run(
+        tmp_path,
+        llm,
+        RecordingSandbox(),
+        max_output_tokens=8192,
+    )
+
+    assert result.succeeded is True
+    assert llm.request_kwargs[0]["max_tokens"] == 8192
 
 
 def test_configured_retry_attempts_are_enforced(tmp_path):
