@@ -443,6 +443,105 @@ def test_configured_failure_thresholds_are_enforced(
     assert result.turns_completed == 1
 
 
+class _StderrSandbox(runner.SandboxManager):
+    """Sandbox whose failure stderr is caller-controlled, to exercise the
+    RAG signature-repair pattern matching (RecordingSandbox always reports
+    a fixed generic "failure" string)."""
+
+    def __init__(self, *, statuses: list[str], stderr: str) -> None:
+        self.statuses = statuses
+        self.stderr = stderr
+        self.calls: list[str] = []
+
+    def start_container(self) -> bool:
+        return True
+
+    def stop_container(self) -> None:
+        return None
+
+    def exec_code(self, code: str, timeout: int) -> dict:
+        status = self.statuses[min(len(self.calls), len(self.statuses) - 1)]
+        self.calls.append(code)
+        return {
+            "status": status,
+            "final_status": status,
+            "stdout": "executed" if status == "ok" else "",
+            "stderr": self.stderr if status != "ok" else "",
+        }
+
+
+def test_signature_repair_is_attempted_on_the_failure_that_reaches_the_threshold(
+    tmp_path, monkeypatch
+):
+    """A failure that pushes consecutive_failures to the configured threshold
+    must still get one RAG signature-repair attempt before the run halts —
+    not be pre-empted by the halt check."""
+
+    class RagClient:
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        def retrieve_function(self, name: str) -> str:
+            self.requested.append(name)
+            return "adata_hvg = adata[:, adata.var.highly_variable].copy()"
+
+    rag_client = RagClient()
+    monkeypatch.setattr(runner, "get_rag_client", lambda _console: rag_client)
+    llm = SequenceLlm(
+        [
+            "```python\nprint(adata_hvg.shape)\n```",
+            "end_session",
+        ]
+    )
+    sandbox = _StderrSandbox(
+        statuses=["error"],
+        stderr="NameError: name 'adata_hvg' is not defined",
+    )
+
+    result = _run(
+        tmp_path,
+        llm,
+        sandbox,
+        rag=True,
+        max_turns=10,
+        max_consecutive_exec_failures=1,
+    )
+
+    assert rag_client.requested == ["adata_hvg"]
+    assert result.succeeded is True
+    assert result.end_reason == "agent_finished"
+    assert result.turns_completed == 2
+
+
+def test_repair_miss_still_halts_at_the_configured_threshold(tmp_path, monkeypatch):
+    """If the RAG lookup does not resolve a matching signature, the run must
+    still halt at the configured consecutive-failure threshold."""
+
+    class RagClient:
+        def retrieve_function(self, name: str) -> None:
+            return None
+
+    monkeypatch.setattr(runner, "get_rag_client", lambda _console: RagClient())
+    llm = SequenceLlm(["```python\nprint(adata_hvg.shape)\n```"])
+    sandbox = _StderrSandbox(
+        statuses=["error"],
+        stderr="NameError: name 'adata_hvg' is not defined",
+    )
+
+    result = _run(
+        tmp_path,
+        llm,
+        sandbox,
+        rag=True,
+        max_turns=10,
+        max_consecutive_exec_failures=1,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_code_failures"
+    assert result.turns_completed == 1
+
+
 def test_runaway_response_executes_only_first_block_and_records_ignored_blocks(
     tmp_path,
 ):
