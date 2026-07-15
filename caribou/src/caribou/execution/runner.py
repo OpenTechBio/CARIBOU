@@ -1138,13 +1138,10 @@ def run_agent_session(
                     },
                 )
 
-                if (
-                    is_auto
-                    and consecutive_failures
-                    >= max_consecutive_exec_failures
-                ):
-                    break
-
+                # Try the RAG-based signature-repair lookup before deciding whether
+                # to halt: a failure that reaches the consecutive-failure threshold
+                # is exactly the failure most in need of a repair attempt, and must
+                # not be skipped in favor of the plain halt below.
                 stderr = exec_result.get("stderr", "")
                 if stderr and current_agent.is_rag_enabled:
                     func_error_patterns = [
