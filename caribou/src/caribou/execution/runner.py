@@ -779,8 +779,15 @@ def run_agent_session(
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
         if query_from_re and current_agent.is_rag_enabled:
-            _action_fired = True
-            console.print(f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]")
+            normalized_rag_query = " ".join(query_from_re.split()).casefold()
+            duplicate_rag_query = any(
+                action.get("type") == "rag_query"
+                and action.get("status") == "ok"
+                and action.get("meta", {}).get("agent") == current_agent.name
+                and action.get("meta", {}).get("normalized_query")
+                == normalized_rag_query
+                for action in action_space.past_actions
+            )
             _emit_runner_event(
                 event_callback,
                 event_type="rag_attempt",
@@ -789,44 +796,116 @@ def run_agent_session(
                 agent_name=current_agent.name,
                 payload={"query": query_from_re, "kind": "knowledge_query"},
             )
-            rag_error: Optional[Exception] = None
-            try:
-                rag_client = get_rag_client(console)
-                retrieved_docs = rag_client.query(query_from_re)
-            except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
-                rag_error = rag_exc
-                console.print(f"[red] RAG query failed: {rag_exc} [/red]")
-                rag_err = (
-                    f"[SYSTEM] RAG query for '{query_from_re}' failed: {rag_exc}. "
-                    f"Proceed without retrieved context."
+            if duplicate_rag_query:
+                duplicate_error = "duplicate successful RAG query suppressed"
+                duplicate_feedback = (
+                    f"[SYSTEM] {duplicate_error}: {query_from_re!r}. The result is "
+                    "already present in the conversation. Use it and continue with a "
+                    "different action."
                 )
-                history.append({"role": "system", "content": rag_err})
+                console.print(f"[yellow]{duplicate_feedback}[/yellow]")
+                history.append({"role": "system", "content": duplicate_feedback})
                 if memory_manager:
-                    memory_manager.add_message("system", rag_err)
-                retrieved_docs = None
-            _emit_runner_event(
-                event_callback,
-                event_type="rag_result",
-                run_id=run_id,
-                turn=turn,
-                agent_name=current_agent.name,
-                payload={
-                    "query": query_from_re,
-                    "kind": "knowledge_query",
-                    "success": bool(retrieved_docs),
-                    "content": retrieved_docs or "",
-                    "error": str(rag_error) if rag_error else "",
-                },
-            )
-            if retrieved_docs:
-                console.print("[green] RAG query successful. [/green]")
-                feedback = retrieved_docs
-                console.print(feedback)
-                if memory_manager:
-                    memory_manager.add_message("system", feedback)
-                history.append({"role": "system", "content": feedback})
+                    memory_manager.add_message("system", duplicate_feedback)
+                action_space.add_action(
+                    "rag_query_duplicate",
+                    f"Suppressed duplicate knowledge query: {query_from_re}",
+                    status="error",
+                    meta={
+                        "agent": current_agent.name,
+                        "query": query_from_re,
+                        "normalized_query": normalized_rag_query,
+                    },
+                )
+                _emit_runner_event(
+                    event_callback,
+                    event_type="rag_result",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "query": query_from_re,
+                        "kind": "knowledge_query",
+                        "success": False,
+                        "content": "",
+                        "error": duplicate_error,
+                    },
+                )
             else:
-                console.print("[red] RAG query unsuccessful. [/red]")
+                _action_fired = True
+                console.print(
+                    f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]"
+                )
+                rag_error: Optional[Exception] = None
+                try:
+                    rag_client = get_rag_client(console)
+                    retrieved_docs = rag_client.query(query_from_re)
+                except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
+                    rag_error = rag_exc
+                    console.print(f"[red] RAG query failed: {rag_exc} [/red]")
+                    rag_err = (
+                        f"[SYSTEM] RAG query for '{query_from_re}' failed: {rag_exc}. "
+                        f"Proceed without retrieved context."
+                    )
+                    history.append({"role": "system", "content": rag_err})
+                    if memory_manager:
+                        memory_manager.add_message("system", rag_err)
+                    retrieved_docs = None
+                _emit_runner_event(
+                    event_callback,
+                    event_type="rag_result",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "query": query_from_re,
+                        "kind": "knowledge_query",
+                        "success": bool(retrieved_docs),
+                        "content": retrieved_docs or "",
+                        "error": str(rag_error) if rag_error else "",
+                    },
+                )
+                if retrieved_docs:
+                    console.print("[green] RAG query successful. [/green]")
+                    feedback = (
+                        f"RAG RESULT for {query_from_re!r} (retrieval complete):\n"
+                        f"{retrieved_docs}\n\n"
+                        "Continue the task using this result. Do not repeat the same "
+                        "query unless new information is required."
+                    )
+                    console.print(feedback)
+                    if memory_manager:
+                        memory_manager.add_message("system", feedback)
+                    history.append({"role": "system", "content": feedback})
+                else:
+                    console.print("[red] RAG query unsuccessful. [/red]")
+
+                action_space.add_action(
+                    "rag_query",
+                    f"Retrieved knowledge for query: {query_from_re}",
+                    status="ok" if retrieved_docs else "error",
+                    meta={
+                        "agent": current_agent.name,
+                        "query": query_from_re,
+                        "normalized_query": normalized_rag_query,
+                    },
+                )
+
+            rag_action_msg = action_space.to_message()
+            history.append({"role": "system", "content": rag_action_msg})
+            if memory_manager:
+                memory_manager.add_message("system", rag_action_msg)
+
+            if duplicate_rag_query:
+                console.print(
+                    "[yellow]Repeated retrieval is not counted as progress.[/yellow]"
+                )
+            elif retrieved_docs:
+                # A successful first retrieval is a substantive action.
+                _action_fired = True
+            else:
+                # A failed first retrieval still records an attempted action.
+                _action_fired = True
 
             stop_reason = session_stop_reason()
             if stop_reason is not None:
@@ -941,9 +1020,9 @@ def run_agent_session(
                 if exec_result.get("status") != "ok":
                     code_exec_failures += 1
                     consecutive_failures += 1
-                    if consecutive_failures == 2:
-                        correction_count += 1
                 else:
+                    if consecutive_failures:
+                        correction_count += 1
                     consecutive_failures = 0
                 feedback = format_execute_response(
                     exec_result, output_dir if output_dir else get_default_runs_dir()
@@ -989,6 +1068,13 @@ def run_agent_session(
                         "total_blocks": total_blocks,
                     },
                 )
+
+                if (
+                    is_auto
+                    and consecutive_failures
+                    >= max_consecutive_exec_failures
+                ):
+                    break
 
                 stderr = exec_result.get("stderr", "")
                 if stderr and current_agent.is_rag_enabled:

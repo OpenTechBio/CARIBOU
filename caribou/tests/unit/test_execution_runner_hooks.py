@@ -220,6 +220,83 @@ def test_emits_agent_switch_and_rag_attempt_result(tmp_path, monkeypatch):
     assert events[4]["payload"]["to_agent"] == "coder"
 
 
+def test_successful_rag_is_visible_to_the_next_agent_turn(tmp_path, monkeypatch):
+    class RagClient:
+        def query(self, query: str) -> str:
+            return f"context for {query}"
+
+    monkeypatch.setattr(runner, "get_rag_client", lambda _console: RagClient())
+    llm = SequenceLlm(["query_rag_<scanpy>", "end_session"])
+
+    result = _run(
+        tmp_path,
+        llm,
+        RecordingSandbox(),
+        rag=True,
+        max_turns=2,
+    )
+
+    assert result.succeeded is True
+    assert result.end_reason == "agent_finished"
+    second_turn_messages = llm.request_kwargs[1]["messages"]
+    assert any(
+        message["role"] == "system"
+        and "RAG RESULT for 'scanpy' (retrieval complete)" in message["content"]
+        and "Do not repeat the same query" in message["content"]
+        for message in second_turn_messages
+    )
+    assert any(
+        message["role"] == "system"
+        and '"type": "rag_query"' in message["content"]
+        and '"status": "ok"' in message["content"]
+        for message in second_turn_messages
+    )
+
+
+def test_duplicate_successful_rag_is_suppressed_and_not_progress(
+    tmp_path, monkeypatch
+):
+    class RagClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def query(self, query: str) -> str:
+            self.calls.append(query)
+            return f"context for {query}"
+
+    rag_client = RagClient()
+    monkeypatch.setattr(runner, "get_rag_client", lambda _console: rag_client)
+    events: list[dict[str, object]] = []
+    llm = SequenceLlm(
+        ["query_rag_<scanpy>", "query_rag_<  ScanPy  >", "end_session"]
+    )
+
+    result = _run(
+        tmp_path,
+        llm,
+        RecordingSandbox(),
+        rag=True,
+        max_turns=3,
+        event_callback=events.append,
+    )
+
+    assert result.succeeded is True
+    assert result.end_reason == "agent_finished"
+    assert rag_client.calls == ["scanpy"]
+    duplicate_results = [
+        event
+        for event in events
+        if event["event_type"] == "rag_result"
+        and event["payload"]["error"] == "duplicate successful RAG query suppressed"
+    ]
+    assert len(duplicate_results) == 1
+    assert any(
+        "No action was recognised in your last message"
+        in message["content"]
+        for message in llm.request_kwargs[2]["messages"]
+    )
+
+
 def test_cancellation_is_observed_during_llm_retry_backoff(tmp_path):
     checks = 0
     events = []
@@ -364,6 +441,64 @@ def test_configured_failure_thresholds_are_enforced(
     assert result.succeeded is False
     assert result.end_reason == expected_reason
     assert result.turns_completed == 1
+
+
+def test_failure_threshold_stops_remaining_blocks_in_same_response(tmp_path):
+    sandbox = RecordingSandbox(status="error")
+    result = _run(
+        tmp_path,
+        SequenceLlm(
+            [
+                "```python\nraise RuntimeError('first')\n```\n"
+                "```python\nraise RuntimeError('second')\n```\n"
+                "```python\nraise RuntimeError('must not run')\n```"
+            ]
+        ),
+        sandbox,
+        max_turns=10,
+        max_consecutive_exec_failures=2,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_code_failures"
+    assert result.code_exec_attempts == 2
+    assert result.code_exec_failures == 2
+    assert result.correction_count == 0
+    assert sandbox.calls == [
+        "raise RuntimeError('first')",
+        "raise RuntimeError('second')",
+    ]
+
+
+def test_correction_count_requires_success_after_failure(tmp_path):
+    sandbox = RecordingSandbox()
+    statuses = iter(["error", "ok"])
+
+    def exec_code(code: str, timeout: int) -> dict:
+        sandbox.calls.append(code)
+        status = next(statuses)
+        return {
+            "status": status,
+            "final_status": status,
+            "stdout": "corrected" if status == "ok" else "",
+            "stderr": "failure" if status != "ok" else "",
+        }
+
+    sandbox.exec_code = exec_code  # type: ignore[method-assign]
+    result = _run(
+        tmp_path,
+        SequenceLlm(
+            [
+                "```python\nraise RuntimeError('first')\n```\n"
+                "```python\nprint('corrected')\n```"
+            ]
+        ),
+        sandbox,
+    )
+
+    assert result.code_exec_attempts == 2
+    assert result.code_exec_failures == 1
+    assert result.correction_count == 1
 
 
 def test_configured_retry_attempts_are_enforced(tmp_path):

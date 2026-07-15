@@ -3,8 +3,7 @@ Unit tests for message parsing and routing utilities.
 
 Tests delegation detection, RAG query detection, and artifact extraction.
 """
-import pytest
-
+from caribou.core.io_helpers import extract_python_code_blocks
 from caribou.execution.message_utils import (
     detect_delegation,
     detect_rag,
@@ -363,6 +362,22 @@ generic code
         msg = "This has `inline code` but no blocks."
         count = _count_code_blocks(msg)
         assert count == 0
+
+    def test_inline_opening_fences_are_counted_and_extracted_consistently(self):
+        msg = """```python
+x = 1
+```
+Continue now.```python
+y = 2
+```
+Then finish.```python
+z = 3
+```"""
+
+        blocks = extract_python_code_blocks(msg)
+
+        assert blocks == ["x = 1", "y = 2", "z = 3"]
+        assert _count_code_blocks(msg) == len(blocks) == 3
 
 
 class TestCodePreview:
