@@ -12,13 +12,14 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
+from caribou.core.io_helpers import extract_python_code_blocks
+
 
 # --- Regex Patterns ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
 # Matches both `query_rag_<topic>` (canonical) and `query_rag_topic` (LLMs often drop the brackets)
 _RAG_RE = re.compile(r"query_rag_(?:<([^>]+)>|([A-Za-z0-9_.]+))")
 _END_SESSION_RE = re.compile(r"^\s*end_session\s*$", re.MULTILINE)
-_CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
 
 
 def detect_delegation(msg: str) -> Optional[str]:
@@ -86,7 +87,7 @@ def _count_code_blocks(msg: str) -> int:
     """Count fenced code blocks in an assistant message."""
     if not msg:
         return 0
-    return len(_CODE_BLOCK_RE.findall(msg))
+    return len(extract_python_code_blocks(msg))
 
 
 def _code_preview(code: str, max_chars: int = 200, max_lines: int = 4) -> str:
