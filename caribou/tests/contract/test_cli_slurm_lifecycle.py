@@ -348,6 +348,7 @@ def test_external_agent_can_submit_reconnect_execute_reconcile_and_fetch(
     ]
     assert command_log[0] == [
         "squeue",
+        "--local",
         "--noheader",
         "--user",
         str(os.geteuid()),

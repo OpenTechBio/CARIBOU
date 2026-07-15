@@ -11,6 +11,7 @@ import pytest
 from caribou.agents.AgentSystem import Agent, AgentSystem, Command
 from caribou.control.agent_workload import (
     _CancellationAwareSandbox,
+    _event_recorder,
     _provider_client,
     _provider_receipt_recorder,
     _verify_blueprint_dependencies,
@@ -291,6 +292,52 @@ def test_real_adapter_accepts_bounded_provider_retry_policy() -> None:
     _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
 
 
+def test_real_adapter_accepts_frozen_max_output_tokens() -> None:
+    spec = _real_adapter_spec_with_retry(
+        maximum_attempts=3,
+        retryable_categories=["provider", "timeout"],
+    )
+    condition = spec.conditions[0].model_copy(
+        update={
+            "model": spec.conditions[0].model.model_copy(
+                update={"parameters": {"max_output_tokens": 8192}}
+            )
+        }
+    )
+    spec = spec.model_copy(update={"conditions": [condition]})
+
+    _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected_code"),
+    [
+        ({"max_output_tokens": 0}, "AGENT_MODEL_PARAMETER_INVALID"),
+        ({"max_output_tokens": True}, "AGENT_MODEL_PARAMETER_INVALID"),
+        ({"temperature": 0}, "AGENT_MODEL_PARAMETERS_UNSUPPORTED"),
+    ],
+)
+def test_real_adapter_rejects_invalid_or_unbound_model_parameters(
+    parameters: dict[str, object], expected_code: str
+) -> None:
+    spec = _real_adapter_spec_with_retry(
+        maximum_attempts=3,
+        retryable_categories=["provider", "timeout"],
+    )
+    condition = spec.conditions[0].model_copy(
+        update={
+            "model": spec.conditions[0].model.model_copy(
+                update={"parameters": parameters}
+            )
+        }
+    )
+    spec = spec.model_copy(update={"conditions": [condition]})
+
+    with pytest.raises(ControlError) as exc_info:
+        _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
+    assert exc_info.value.code == expected_code
+
+
 @pytest.mark.parametrize(
     "retryable_categories",
     [[], ["timeout"], ["provider", "scheduler"]],
@@ -333,7 +380,12 @@ def _local_reference(path: Path, media_type: str) -> ContentReference:
     )
 
 
-def _workload_spec(tmp_path: Path, adapter: str) -> ExperimentSpec:
+def _workload_spec(
+    tmp_path: Path,
+    adapter: str,
+    *,
+    max_output_tokens: int | None = None,
+) -> ExperimentSpec:
     blueprint_path = tmp_path / f"{adapter}-blueprint.json"
     blueprint_path.write_text("{}\n", encoding="utf-8")
     prompt_path = tmp_path / f"{adapter}-prompt.txt"
@@ -364,7 +416,15 @@ def _workload_spec(tmp_path: Path, adapter: str) -> ExperimentSpec:
             context_length=8192,
         )
         if is_smoke
-        else ModelSpec(provider="deepseek", model="frozen-request-model")
+        else ModelSpec(
+            provider="deepseek",
+            model="frozen-request-model",
+            parameters=(
+                {"max_output_tokens": max_output_tokens}
+                if max_output_tokens is not None
+                else {}
+            ),
+        )
     )
     parameters: dict[str, object] = {"caribou.execution_adapter": adapter}
     if is_smoke:
@@ -414,9 +474,16 @@ def _workload_spec(tmp_path: Path, adapter: str) -> ExperimentSpec:
 
 
 def _active_store(
-    tmp_path: Path, adapter: str
+    tmp_path: Path,
+    adapter: str,
+    *,
+    max_output_tokens: int | None = None,
 ) -> tuple[ExperimentStore, str, ExperimentSpec]:
-    spec = _workload_spec(tmp_path, adapter)
+    spec = _workload_spec(
+        tmp_path,
+        adapter,
+        max_output_tokens=max_output_tokens,
+    )
     store = ExperimentStore(tmp_path / f"{adapter}-store")
     submission = store.submit(spec, f"{adapter}-provider-receipt-test")
     run_id = submission.runs[0].run_id
@@ -601,6 +668,45 @@ def test_provider_receipt_recorder_rejects_frozen_request_model_drift(
     assert store.artifact_manifest(run_id).artifacts == ()
 
 
+def test_ignored_code_blocks_runner_event_is_recorded_durably(
+    tmp_path: Path,
+) -> None:
+    store, run_id, _ = _active_store(tmp_path, CARIBOU_AGENT_ADAPTER)
+    store.transition_run(
+        run_id,
+        RunState.running,
+        reason="ignored-code-block unit test initialized",
+        actor="test-worker",
+    )
+
+    _event_recorder(store, run_id)(
+        {
+            "schema_version": "caribou.runner_event.v1",
+            "event_type": "code_blocks_ignored",
+            "occurred_at": "2026-07-15T12:00:00Z",
+            "run_id": run_id,
+            "turn": 3,
+            "agent_name": "analyst",
+            "payload": {
+                "total_blocks_produced": 147,
+                "executed_blocks": 1,
+                "ignored_blocks": 146,
+                "reason": "maximum one code block per provider turn",
+            },
+        }
+    )
+
+    event = store.events(run_id)[-1]
+    assert event.event_type == EventType.heartbeat
+    assert event.stage == "code_block_limit"
+    assert event.turn == 3
+    assert store.run(run_id).current_agent == "analyst"
+    assert event.payload.message == (
+        "ignored 146 additional provider code block(s); executed only the first "
+        "complete block"
+    )
+
+
 class _NonExecutingBackend:
     def __init__(self) -> None:
         self.started = False
@@ -726,3 +832,74 @@ def test_workload_wires_receipts_only_for_actual_provider_adapter(
         assert backend.stopped is True
     else:
         assert observed_callbacks[0] is None
+
+
+def test_workload_propagates_frozen_max_output_tokens_to_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, run_id, spec = _active_store(
+        tmp_path,
+        CARIBOU_AGENT_ADAPTER,
+        max_output_tokens=8192,
+    )
+    system = AgentSystem(
+        global_policy="policy",
+        agents={
+            "analyst": Agent(
+                name="analyst",
+                prompt="analyze",
+                commands={},
+                code_samples={},
+            )
+        },
+    )
+    monkeypatch.setattr(
+        AgentSystem,
+        "load_from_json",
+        classmethod(lambda cls, path: system),
+    )
+    monkeypatch.setattr(
+        "caribou.control.agent_workload._verify_code_identity",
+        lambda expected, selected_adapter: None,
+    )
+    backend = _NonExecutingBackend()
+    monkeypatch.setattr(
+        "caribou.control.agent_workload._real_sandbox",
+        lambda *args, **kwargs: backend,
+    )
+    provider_calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_provider_client(
+        provider: str, parameters: dict[str, object]
+    ) -> object:
+        provider_calls.append((provider, parameters))
+        return object()
+
+    monkeypatch.setattr(
+        "caribou.control.agent_workload._provider_client",
+        fake_provider_client,
+    )
+    runner_kwargs: dict[str, object] = {}
+
+    def fake_run_agent_session(**kwargs: object) -> AgentSessionResult:
+        runner_kwargs.update(kwargs)
+        return _successful_session(run_id)
+
+    monkeypatch.setattr(
+        "caribou.control.agent_workload.run_agent_session",
+        fake_run_agent_session,
+    )
+
+    result = execute_agent_workload(
+        store,
+        run_id,
+        adapter=CARIBOU_AGENT_ADAPTER,
+    )
+
+    assert result is not None and result.succeeded is True
+    assert spec.conditions[0].model.parameters == {"max_output_tokens": 8192}
+    assert provider_calls == [
+        ("deepseek", {"max_output_tokens": 8192}),
+    ]
+    assert runner_kwargs["max_output_tokens"] == 8192

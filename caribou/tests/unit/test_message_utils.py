@@ -82,21 +82,27 @@ class TestRAGDetection:
 
     def test_detect_simple_rag_query(self):
         """Test detecting simple RAG query."""
-        msg = "Let me query_rag_<search for documentation> to find info."
+        msg = "query_rag_<search for documentation>"
         result = detect_rag(msg)
         assert result == "search for documentation"
 
-    def test_detect_rag_query_with_spaces(self):
-        """Test RAG query with spaces."""
-        msg = "I need to query_rag_<API authentication methods>"
+    def test_detect_standalone_rag_query_among_prose_lines(self):
+        """A command line may be surrounded by separate prose lines."""
+        msg = "I need more context.\nquery_rag_<API authentication methods>\nThanks."
         result = detect_rag(msg)
         assert result == "API authentication methods"
 
-    def test_detect_rag_query_at_start(self):
-        """Test RAG query at message start."""
-        msg = "query_rag_<database schema> should help us here."
+    def test_detect_bare_rag_query_with_full_topic(self):
+        """Recover a bare command without truncating spaces or hyphens."""
+        msg = "query_rag_database schema-v2 migration guidance"
         result = detect_rag(msg)
-        assert result == "database schema"
+        assert result == "database schema-v2 migration guidance"
+
+    def test_detect_bare_rag_query_with_surrounding_whitespace(self):
+        """Ignore outer whitespace around a standalone bare command."""
+        msg = "  query_rag_scanpy highly-variable genes  \t"
+        result = detect_rag(msg)
+        assert result == "scanpy highly-variable genes"
 
     def test_no_rag_query(self):
         """Test when no RAG query present."""
@@ -104,25 +110,55 @@ class TestRAGDetection:
         result = detect_rag(msg)
         assert result is None
 
-    def test_rag_query_empty_brackets(self):
-        """Test RAG query with empty brackets won't match (requires at least one char)."""
-        msg = "What about query_rag_<> this?"
-        result = detect_rag(msg)
-        # The [^>]+ pattern requires at least one character, so empty brackets don't match
-        assert result is None
+    def test_rag_query_must_be_a_standalone_line(self):
+        """Do not turn prose mentioning a command into an action."""
+        messages = [
+            "Let me query_rag_<search for documentation> to find info.",
+            "query_rag_<database schema> should help us here.",
+            "First query_rag_<query1> then query_rag_<query2>",
+            "prefixquery_rag_database schema",
+        ]
+        assert all(detect_rag(message) is None for message in messages)
+
+    def test_rag_query_rejects_empty_or_partial_commands(self):
+        """Reject commands without a complete non-empty topic."""
+        messages = [
+            "query_rag_",
+            "query_rag_<>",
+            "query_rag_<   >",
+            "query_rag_<missing close",
+            "query_rag_missing open>",
+        ]
+        assert all(detect_rag(message) is None for message in messages)
 
     def test_multiple_rag_queries(self):
         """Test that first RAG query is found when multiple present."""
-        msg = "First query_rag_<query1> then query_rag_<query2>"
+        msg = "query_rag_<query1>\nquery_rag_<query2>"
         result = detect_rag(msg)
         assert result == "query1"
 
-    def test_rag_query_with_newlines(self):
-        """Test RAG query can match content with newlines."""
+    def test_rag_query_rejects_multiline_topic(self):
+        """A canonical topic cannot span lines."""
         msg = "query_rag_<this has\nnewlines>"
         result = detect_rag(msg)
-        # The [^>]+ pattern matches any char except >, including newlines
-        assert result == "this has\nnewlines"
+        assert result is None
+
+    def test_rag_query_ignores_backticks_and_fenced_code(self):
+        """Examples and code must never trigger retrieval."""
+        messages = [
+            "`query_rag_<inline example>`",
+            "Use `query_rag_<inline example>` to retrieve context.",
+            "```\nquery_rag_<fenced example>\n```",
+            "```text\nquery_rag_bare fenced-example\n```",
+            "~~~\nquery_rag_<tilde fenced example>\n~~~",
+        ]
+        assert all(detect_rag(message) is None for message in messages)
+
+    def test_rag_query_after_fenced_code_is_detected(self):
+        """Fence filtering must not hide a later real command."""
+        msg = "```text\nquery_rag_<example only>\n```\nquery_rag_<real topic>"
+        result = detect_rag(msg)
+        assert result == "real topic"
 
     def test_empty_message(self):
         """Test with empty message."""
@@ -468,7 +504,7 @@ Then query_rag_<find examples> for more info.
         assert delegation == "delegate_to_planner"
 
         rag = detect_rag(msg)
-        assert rag == "find examples"
+        assert rag is None
 
         notes, todos = _extract_artifacts_from_msg(msg)
         assert len(notes) == 1

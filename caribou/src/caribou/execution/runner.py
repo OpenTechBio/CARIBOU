@@ -364,6 +364,7 @@ def _call_llm_with_retry(
     retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
     retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
     request_timeout_seconds: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> Optional[str]:
     """
     Call the LLM with exponential backoff on transient errors. Returns the
@@ -376,6 +377,12 @@ def _call_llm_with_retry(
         raise ValueError("invalid LLM retry policy")
     if request_timeout_seconds is not None and request_timeout_seconds <= 0:
         raise ValueError("request timeout must be greater than zero")
+    if max_output_tokens is not None and (
+        isinstance(max_output_tokens, bool)
+        or not isinstance(max_output_tokens, int)
+        or max_output_tokens < 1
+    ):
+        raise ValueError("max_output_tokens must be a positive integer")
     last_failure_type = "provider error"
     for attempt in range(1, retry_attempts + 1):
         if _cancellation_requested(should_cancel):
@@ -390,6 +397,10 @@ def _call_llm_with_retry(
             }
             if request_timeout_seconds is not None:
                 request_options["timeout"] = request_timeout_seconds
+            if max_output_tokens is not None:
+                # The external providers currently supported by the experiment
+                # workload use the OpenAI-compatible ``max_tokens`` request key.
+                request_options["max_tokens"] = max_output_tokens
             resp = cast(Any, llm_client).chat.completions.create(**request_options)
         except _LlmCallCancelled:
             raise
@@ -483,6 +494,7 @@ def run_agent_session(
     llm_retry_attempts: int = _LLM_RETRY_ATTEMPTS,
     llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
     llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
+    max_output_tokens: int | None = None,
 ) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
@@ -493,6 +505,12 @@ def run_agent_session(
         raise ValueError("timeout_seconds must be greater than zero")
     if max_consecutive_no_action < 1 or max_consecutive_exec_failures < 1:
         raise ValueError("consecutive failure limits must be positive")
+    if max_output_tokens is not None and (
+        isinstance(max_output_tokens, bool)
+        or not isinstance(max_output_tokens, int)
+        or max_output_tokens < 1
+    ):
+        raise ValueError("max_output_tokens must be a positive integer")
     if (should_checkpoint is None) != (checkpoint_callback is None):
         raise ValueError(
             "should_checkpoint and checkpoint_callback must be supplied together"
@@ -582,6 +600,15 @@ def run_agent_session(
         resume_state.consecutive_no_action if resume_state is not None else 0
     )
     correction_count = resume_state.correction_count if resume_state is not None else 0
+    # A nonzero consecutive-failure count proves that a prior provider turn left
+    # an unresolved execution failure. The exact historical turn is unnecessary
+    # after resume: the next provider turn is necessarily later than the captured
+    # completed-turn boundary.
+    pending_correction_turn = (
+        resume_state.turns_completed
+        if resume_state is not None and consecutive_failures
+        else None
+    )
     prior_elapsed_seconds = (
         resume_state.elapsed_seconds if resume_state is not None else 0.0
     )
@@ -686,6 +713,7 @@ def run_agent_session(
                 retry_base_delay=llm_retry_base_delay,
                 retry_max_delay=llm_retry_max_delay,
                 request_timeout_seconds=request_timeout_seconds,
+                max_output_tokens=max_output_tokens,
             )
         except _LlmCallCancelled:
             session_end_reason = session_stop_reason() or "cancelled"
@@ -981,9 +1009,45 @@ def run_agent_session(
             session_end_reason = stop_reason
             break
 
-        code_blocks = extract_python_code_blocks(msg)
-        if code_blocks:
+        produced_code_blocks = extract_python_code_blocks(msg)
+        if produced_code_blocks:
             _action_fired = True
+            ignored_block_count = max(0, len(produced_code_blocks) - 1)
+            if ignored_block_count:
+                ignored_feedback = (
+                    f"[SYSTEM] Ignored {ignored_block_count} additional complete "
+                    "Python code block(s) from this provider turn. CARIBOU executes "
+                    "at most the first complete Python block per provider turn so "
+                    "the model can observe its result before proposing another "
+                    "action. Emit at most one Python code block on the next turn."
+                )
+                history.append({"role": "system", "content": ignored_feedback})
+                if memory_manager:
+                    memory_manager.add_message("system", ignored_feedback)
+                action_space.add_action(
+                    "code_blocks_ignored",
+                    f"Ignored {ignored_block_count} additional code block(s).",
+                    status="error",
+                    meta={
+                        "total_blocks_produced": len(produced_code_blocks),
+                        "executed_blocks": 1,
+                        "ignored_blocks": ignored_block_count,
+                    },
+                )
+                _emit_runner_event(
+                    event_callback,
+                    event_type="code_blocks_ignored",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "total_blocks_produced": len(produced_code_blocks),
+                        "executed_blocks": 1,
+                        "ignored_blocks": ignored_block_count,
+                        "reason": "maximum one code block per provider turn",
+                    },
+                )
+            code_blocks = produced_code_blocks[:1]
             total_blocks = len(code_blocks)
             rag_short_circuit = False
             cancelled_during_actions = False
@@ -1020,9 +1084,14 @@ def run_agent_session(
                 if exec_result.get("status") != "ok":
                     code_exec_failures += 1
                     consecutive_failures += 1
+                    pending_correction_turn = turn
                 else:
-                    if consecutive_failures:
+                    if (
+                        pending_correction_turn is not None
+                        and turn > pending_correction_turn
+                    ):
                         correction_count += 1
+                    pending_correction_turn = None
                     consecutive_failures = 0
                 feedback = format_execute_response(
                     exec_result, output_dir if output_dir else get_default_runs_dir()

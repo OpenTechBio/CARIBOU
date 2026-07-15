@@ -46,6 +46,7 @@ from .specs import (
     AGENT_PATH_SMOKE_ADAPTER,
     AGENT_SMOKE_DELAY_PARAMETER,
     CARIBOU_AGENT_ADAPTER,
+    _model_max_output_tokens,
 )
 from .store import ExperimentStore, SUPPORTED_RESUME_REQUIREMENTS
 
@@ -344,14 +345,9 @@ def _verify_blueprint_dependencies(agent_system: Any, run: Any) -> Path | None:
 
 def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
     load_dotenv(dotenv_path=ENV_FILE, override=False)
-    unsupported_parameters = sorted(parameters)
-    if unsupported_parameters:
-        raise ControlError(
-            "MODEL_PARAMETERS_UNSUPPORTED",
-            "the initial real agent workload cannot silently ignore model parameters",
-            exit_code=ExitCode.validation,
-            details={"parameters": unsupported_parameters},
-        )
+    # Validate the frozen model request here as well as during preflight so a
+    # direct worker invocation cannot silently discard unsupported parameters.
+    _model_max_output_tokens(parameters)
     if provider == "openai":
         from openai import OpenAI
 
@@ -634,6 +630,23 @@ def _event_recorder(
                 actor="agent-runner",
                 turn=turn,
                 current_agent=agent_name,
+            )
+            return
+        if event_type == "code_blocks_ignored":
+            store.append_run_event(
+                run_id,
+                event_type=EventType.heartbeat,
+                payload=HeartbeatPayload(
+                    message=(
+                        f"ignored {_payload_int(payload, 'ignored_blocks')} "
+                        "additional provider code block(s); executed only the "
+                        "first complete block"
+                    )
+                ),
+                actor="agent-runner",
+                turn=turn,
+                current_agent=agent_name,
+                stage="code_block_limit",
             )
             return
         if event_type == "code_result":
@@ -1350,16 +1363,16 @@ def execute_agent_workload(
         )
         sandbox: object = _RecordingSandbox()
         llm_attempt_callback: Callable[[dict[str, object]], None] | None = None
+        max_output_tokens = None
     else:
         # The backend verifies this large image immediately before launch; avoid
         # reading a multi-gigabyte SIF twice in the same worker.
         container_path = _local_file(
             run.container.image, role="container", verify_hash=False
         )
-        llm_client = _provider_client(
-            run.resolved_model.provider,
-            dict(run.resolved_model.parameters),
-        )
+        model_parameters = dict(run.resolved_model.parameters)
+        llm_client = _provider_client(run.resolved_model.provider, model_parameters)
+        max_output_tokens = _model_max_output_tokens(model_parameters)
         llm_attempt_callback = _provider_receipt_recorder(store, run_id)
         sandbox = _CancellationAwareSandbox(
             _real_sandbox(
@@ -1456,6 +1469,7 @@ def execute_agent_workload(
             llm_retry_attempts=run.resolved_stop_rules.retry.maximum_attempts,
             llm_retry_base_delay=(run.resolved_stop_rules.retry.base_delay_seconds),
             llm_retry_max_delay=(run.resolved_stop_rules.retry.maximum_delay_seconds),
+            max_output_tokens=max_output_tokens,
         )
         checkpointed = result.end_reason == "checkpointed"
         if checkpointed != (len(checkpoint_states) == 1):
