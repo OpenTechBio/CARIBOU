@@ -369,6 +369,29 @@ def test_failure_end_reasons_are_not_successful(
     assert result.end_reason == expected_reason
 
 
+def test_empty_provider_response_is_treated_as_no_action_not_a_crash(tmp_path):
+    """A blank completion (observed for real: a truncated final turn with
+    finish_reason 'length') must not raise downstream — the event layer
+    rejects empty message content, so runner.py must never emit it. It
+    should instead flow through the existing no-action feedback path."""
+
+    events = []
+    result = _run(
+        tmp_path,
+        SequenceLlm([""]),
+        RecordingSandbox(),
+        max_turns=10,
+        max_consecutive_no_action=1,
+        event_callback=events.append,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_no_action"
+    assistant_events = [e for e in events if e["event_type"] == "assistant_message"]
+    assert len(assistant_events) == 1
+    assert assistant_events[0]["payload"]["content"].strip() != ""
+
+
 def test_legacy_callers_need_no_new_arguments(tmp_path):
     result = _run(
         tmp_path,

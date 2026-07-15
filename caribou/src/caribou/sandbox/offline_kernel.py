@@ -44,6 +44,28 @@ os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/.transformers")
 SENTINEL = "<<<EOF>>>"           # Delimits code blocks in REPL mode
 GLOBAL_NS: Dict = {"__builtins__": __builtins__}  # Persistent namespace
 
+# Observed failure: agent-generated code calling json.dump/json.dumps on an
+# object containing a numpy scalar (e.g. a per-cluster mean expression value
+# read straight out of an AnnData/pandas computation) raises an unhandled
+# TypeError, since numpy scalar and array types are not natively JSON
+# serializable. Patch the encoder's fallback so numpy types are coerced to
+# native Python automatically for any call that does not already pass its
+# own `default=`; anything genuinely non-serializable still raises.
+_ORIGINAL_JSON_DEFAULT = json.JSONEncoder.default
+
+
+def _json_default_with_numpy_support(self, o):
+    item = getattr(o, "item", None)
+    if callable(item) and getattr(o, "shape", None) == ():
+        return item()
+    tolist = getattr(o, "tolist", None)
+    if callable(tolist):
+        return tolist()
+    return _ORIGINAL_JSON_DEFAULT(self, o)
+
+
+json.JSONEncoder.default = _json_default_with_numpy_support
+
 # ---------------------------------------------------------------------------
 # Core execution helper
 # ---------------------------------------------------------------------------

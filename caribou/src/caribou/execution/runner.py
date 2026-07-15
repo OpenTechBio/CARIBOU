@@ -721,6 +721,14 @@ def run_agent_session(
         if msg is None:
             session_end_reason = "llm_error"
             break
+        if not msg.strip():
+            # A blank completion (e.g. a truncated or empty provider turn) is
+            # treated as no action, not a fatal error: downstream event
+            # recording requires non-empty message content, and this turn
+            # must still flow through the existing no-action feedback path
+            # below rather than crash the whole run on an unhandled
+            # validation error.
+            msg = "[SYSTEM: provider returned an empty response]"
 
         history.append({"role": "assistant", "content": msg})
         if memory_manager:
