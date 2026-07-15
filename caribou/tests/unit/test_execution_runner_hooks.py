@@ -542,6 +542,39 @@ def test_repair_miss_still_halts_at_the_configured_threshold(tmp_path, monkeypat
     assert result.turns_completed == 1
 
 
+def test_repeated_rag_rescues_cannot_indefinitely_postpone_the_halt(
+    tmp_path, monkeypatch
+):
+    """A lexical corpus match can hit on an unrelated error every turn, so
+    repair must not be able to bypass the stuck-run safety net forever: once
+    consecutive_failures exceeds max_consecutive_exec_failures * 2, the run
+    must halt even though every failure keeps matching and getting rescued."""
+
+    class RagClient:
+        def retrieve_function(self, name: str) -> str:
+            return "x = 1"
+
+    monkeypatch.setattr(runner, "get_rag_client", lambda _console: RagClient())
+    llm = SequenceLlm(["```python\nprint(x)\n```"])
+    sandbox = _StderrSandbox(
+        statuses=["error"],
+        stderr="NameError: name 'x' is not defined",
+    )
+
+    result = _run(
+        tmp_path,
+        llm,
+        sandbox,
+        rag=True,
+        max_turns=10,
+        max_consecutive_exec_failures=1,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_code_failures"
+    assert result.turns_completed == 3
+
+
 def test_runaway_response_executes_only_first_block_and_records_ignored_blocks(
     tmp_path,
 ):

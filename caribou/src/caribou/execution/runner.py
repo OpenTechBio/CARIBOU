@@ -1141,9 +1141,16 @@ def run_agent_session(
                 # Try the RAG-based signature-repair lookup before deciding whether
                 # to halt: a failure that reaches the consecutive-failure threshold
                 # is exactly the failure most in need of a repair attempt, and must
-                # not be skipped in favor of the plain halt below.
+                # not be skipped in favor of the plain halt below. This is bounded
+                # to at most one threshold's worth of extra rescues — a lexical
+                # corpus match can hit on an unrelated error, so repair must not be
+                # able to indefinitely postpone the stuck-run safety net.
                 stderr = exec_result.get("stderr", "")
-                if stderr and current_agent.is_rag_enabled:
+                if (
+                    stderr
+                    and current_agent.is_rag_enabled
+                    and consecutive_failures <= max_consecutive_exec_failures * 2
+                ):
                     func_error_patterns = [
                         r"(\w+)\(.*\) missing \d+ required positional argument",  # TypeError missing arguments
                         r"NameError: name '(\w+)' is not defined",  # NameError
