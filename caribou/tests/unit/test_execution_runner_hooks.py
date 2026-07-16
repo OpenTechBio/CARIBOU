@@ -495,8 +495,9 @@ class _StderrSandbox(runner.SandboxManager):
 
 class _InvalidatedReplSandbox(runner.SandboxManager):
     """Mirrors the real singularity backend: once its REPL is invalidated
-    by a timeout or cancellation, exec_code raises RuntimeError on the
-    next call rather than silently starting a fresh, state-losing REPL."""
+    by a timeout or cancellation, exec_code raises SandboxReplUnavailableError
+    on the next call rather than silently starting a fresh, state-losing
+    REPL."""
 
     def start_container(self) -> bool:
         return True
@@ -505,7 +506,9 @@ class _InvalidatedReplSandbox(runner.SandboxManager):
         return None
 
     def exec_code(self, code: str, timeout: int) -> dict:
-        raise RuntimeError("REPL not running")
+        from caribou.core.sandbox_management import SandboxReplUnavailableError
+
+        raise SandboxReplUnavailableError("REPL not running")
 
 
 def test_dead_repl_is_a_recoverable_failure_not_a_worker_crash(tmp_path):
@@ -526,6 +529,52 @@ def test_dead_repl_is_a_recoverable_failure_not_a_worker_crash(tmp_path):
     assert result.succeeded is False
     assert result.end_reason == "stuck_code_failures"
     assert result.code_exec_failures == 1
+
+
+def test_dead_repl_halts_immediately_without_waiting_out_the_threshold(tmp_path):
+    """Every subsequent call against a dead REPL is guaranteed to fail
+    identically, so the run must end on the very turn the dead REPL is
+    detected rather than burning further provider turns retrying up to
+    the configured consecutive-failure threshold."""
+
+    result = _run(
+        tmp_path,
+        SequenceLlm(["```python\nprint('hello')\n```"]),
+        _InvalidatedReplSandbox(),
+        max_turns=10,
+        max_consecutive_exec_failures=5,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_code_failures"
+    assert result.turns_completed == 1
+    assert result.code_exec_failures == 1
+
+
+def test_unrelated_runtime_errors_still_propagate_as_a_crash(tmp_path):
+    """Only SandboxReplUnavailableError is treated as a recoverable dead-
+    REPL condition. A plain RuntimeError from a genuinely different bug
+    (e.g. an unimplemented backend, or a real sandbox-contract violation)
+    must still surface as an uncaught exception rather than being
+    silently downgraded to an ordinary execution failure."""
+
+    class _BuggySandbox(runner.SandboxManager):
+        def start_container(self) -> bool:
+            return True
+
+        def stop_container(self) -> None:
+            return None
+
+        def exec_code(self, code: str, timeout: int) -> dict:
+            raise RuntimeError("sandbox returned a non-object result")
+
+    with pytest.raises(RuntimeError, match="sandbox returned a non-object result"):
+        _run(
+            tmp_path,
+            SequenceLlm(["```python\nprint('hello')\n```"]),
+            _BuggySandbox(),
+            max_turns=10,
+        )
 
 
 def test_signature_repair_is_attempted_on_the_failure_that_reaches_the_threshold(
