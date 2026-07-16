@@ -41,6 +41,18 @@ for _key, _value in _env_before_import.items():
         os.environ[_key] = _value
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _restore_json_encoder_default_after_module():
+    # offline_kernel patches json.JSONEncoder.default process-globally on
+    # import, by design: it runs as its own disposable per-session sandbox
+    # subprocess in production, where a permanent patch is exactly what's
+    # wanted. In the shared test process, restore it once every test in
+    # this module has run so later, unrelated test files see the
+    # unpatched encoder rather than silently inheriting numpy support.
+    yield
+    json.JSONEncoder.default = offline_kernel._ORIGINAL_JSON_DEFAULT
+
+
 def test_numpy_scalar_is_json_serializable_after_patch():
     result = offline_kernel._run(
         "import json\n"
