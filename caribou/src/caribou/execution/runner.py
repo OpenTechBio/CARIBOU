@@ -1086,7 +1086,27 @@ def run_agent_session(
                         1,
                         min(600, math.ceil(session_deadline - time.monotonic())),
                     )
-                exec_result = sandbox_manager.exec_code(code, timeout=code_timeout)
+                try:
+                    exec_result = sandbox_manager.exec_code(code, timeout=code_timeout)
+                except RuntimeError as sandbox_error:
+                    # A prior turn's execution timeout or cancellation can
+                    # invalidate the stateful REPL; the sandbox layer then
+                    # deliberately raises on the next call rather than
+                    # silently starting a fresh, state-losing REPL. Treat
+                    # that as an ordinary execution failure so it flows
+                    # through the existing consecutive-failure accounting
+                    # and halt logic, instead of crashing the whole worker.
+                    exec_result = {
+                        "status": "error",
+                        "stdout": "",
+                        "stderr": (
+                            f"Sandbox execution unavailable: {sandbox_error}. "
+                            "A previous turn's execution timeout or "
+                            "cancellation left the REPL unusable; in-memory "
+                            "state from earlier turns cannot be recovered."
+                        ),
+                        "images": [],
+                    }
                 code_duration_ms = max(0, int((time.monotonic() - code_started) * 1000))
                 code_exec_attempts += 1
                 if exec_result.get("status") != "ok":
