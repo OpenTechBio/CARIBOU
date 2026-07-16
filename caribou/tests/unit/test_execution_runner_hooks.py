@@ -493,6 +493,41 @@ class _StderrSandbox(runner.SandboxManager):
         }
 
 
+class _InvalidatedReplSandbox(runner.SandboxManager):
+    """Mirrors the real singularity backend: once its REPL is invalidated
+    by a timeout or cancellation, exec_code raises RuntimeError on the
+    next call rather than silently starting a fresh, state-losing REPL."""
+
+    def start_container(self) -> bool:
+        return True
+
+    def stop_container(self) -> None:
+        return None
+
+    def exec_code(self, code: str, timeout: int) -> dict:
+        raise RuntimeError("REPL not running")
+
+
+def test_dead_repl_is_a_recoverable_failure_not_a_worker_crash(tmp_path):
+    """A code submission against an already-invalidated REPL must not
+    propagate as an uncaught exception (observed for real: agent_pilot_v5
+    ordinal 3 crashed the whole worker with "worker failure: RuntimeError"
+    after a timeout invalidated the REPL). It should flow through the
+    same consecutive-failure accounting as any other execution error."""
+
+    result = _run(
+        tmp_path,
+        SequenceLlm(["```python\nprint('hello')\n```"]),
+        _InvalidatedReplSandbox(),
+        max_turns=10,
+        max_consecutive_exec_failures=1,
+    )
+
+    assert result.succeeded is False
+    assert result.end_reason == "stuck_code_failures"
+    assert result.code_exec_failures == 1
+
+
 def test_signature_repair_is_attempted_on_the_failure_that_reaches_the_threshold(
     tmp_path, monkeypatch
 ):
