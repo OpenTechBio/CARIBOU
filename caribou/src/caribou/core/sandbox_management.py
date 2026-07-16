@@ -19,6 +19,15 @@ from caribou.sandbox.benchmarking_sandbox_management import (
 )
 
 
+class SandboxReplUnavailableError(RuntimeError):
+    """Raised when exec_code is called against a REPL already invalidated
+    by a prior timeout or cancellation. A narrow subclass of RuntimeError
+    so callers can recover from exactly this case without also catching
+    unrelated RuntimeErrors (e.g. an unimplemented-backend NotImplementedError,
+    which is itself a RuntimeError subclass, or a genuine sandbox-contract
+    violation) that should still propagate as real bugs."""
+
+
 def _nvidia_gpu_available() -> bool:
     """
     Check if NVIDIA GPU is actually available and accessible.
@@ -365,7 +374,7 @@ def init_singularity_exec(
             if timeout <= 0:
                 raise ValueError("timeout must be greater than zero")
             if not self._proc:
-                raise RuntimeError("REPL not running")
+                raise SandboxReplUnavailableError("REPL not running")
             assert self._proc.stdin and self._proc.stdout
 
             if cancel_event is not None and cancel_event.is_set():

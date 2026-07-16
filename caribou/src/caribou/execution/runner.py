@@ -21,6 +21,7 @@ try:
         extract_python_code_blocks,
         format_execute_response,
     )
+    from caribou.core.sandbox_management import SandboxReplUnavailableError
     from caribou.execution.MemoryManager import MemoryManager
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.artifacts import SessionArtifacts
@@ -1059,6 +1060,7 @@ def run_agent_session(
             total_blocks = len(code_blocks)
             rag_short_circuit = False
             cancelled_during_actions = False
+            sandbox_permanently_unavailable = False
             for idx, code in enumerate(code_blocks, start=1):
                 if session_stop_reason() is not None:
                     cancelled_during_actions = True
@@ -1088,14 +1090,17 @@ def run_agent_session(
                     )
                 try:
                     exec_result = sandbox_manager.exec_code(code, timeout=code_timeout)
-                except RuntimeError as sandbox_error:
+                except SandboxReplUnavailableError as sandbox_error:
                     # A prior turn's execution timeout or cancellation can
                     # invalidate the stateful REPL; the sandbox layer then
                     # deliberately raises on the next call rather than
-                    # silently starting a fresh, state-losing REPL. Treat
-                    # that as an ordinary execution failure so it flows
-                    # through the existing consecutive-failure accounting
-                    # and halt logic, instead of crashing the whole worker.
+                    # silently starting a fresh, state-losing REPL. Every
+                    # subsequent call is guaranteed to fail identically, so
+                    # record it as an ordinary execution failure (for the
+                    # audit trail) but end the session immediately below
+                    # rather than crashing the worker or burning further
+                    # provider turns on retries that cannot possibly succeed.
+                    sandbox_permanently_unavailable = True
                     exec_result = {
                         "status": "error",
                         "stdout": "",
@@ -1177,6 +1182,7 @@ def run_agent_session(
                 if (
                     stderr
                     and current_agent.is_rag_enabled
+                    and not sandbox_permanently_unavailable
                     and consecutive_failures <= max_consecutive_exec_failures * 2
                 ):
                     func_error_patterns = [
@@ -1223,6 +1229,21 @@ def run_agent_session(
                     break
             if cancelled_during_actions:
                 session_end_reason = session_stop_reason() or "cancelled"
+                break
+            if sandbox_permanently_unavailable:
+                console.print(
+                    "[bold red]Auto run halted: the sandbox REPL is "
+                    "unavailable and cannot recover mid-session.[/bold red]"
+                )
+                escalation_msg = (
+                    "[SYSTEM] The sandbox REPL is unavailable after a prior "
+                    "execution timeout or cancellation. Ending this auto run "
+                    "so a human can inspect the state."
+                )
+                history.append({"role": "system", "content": escalation_msg})
+                if memory_manager:
+                    memory_manager.add_message("system", escalation_msg)
+                session_end_reason = "stuck_code_failures"
                 break
             if rag_short_circuit:
                 if checkpoint_at_completed_turn():
