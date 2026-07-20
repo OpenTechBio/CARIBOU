@@ -50,6 +50,20 @@ class ArtifactType(str, Enum):
 # ---------------------------------------------------------------------------
 
 
+class MemoryStrategy(str, Enum):
+    full = "full"
+    episodic = "episodic"
+    agent_report = "agent_report"
+    none = "none"
+
+
+class MemoryConfigResponse(BaseModel):
+    strategy: str = "full"
+    working_history_size: Optional[int] = None
+    summarization_threshold: Optional[int] = None
+    chunk_size: Optional[int] = None
+
+
 class SessionCreateRequest(BaseModel):
     mode: SessionMode
     run_mode: RunMode = RunMode.full_system
@@ -62,6 +76,10 @@ class SessionCreateRequest(BaseModel):
     reference_dataset_path: Optional[str] = None
     max_turns: Optional[int] = None
     initial_prompt: Optional[str] = None
+    memory_strategy: MemoryStrategy = MemoryStrategy.full
+    memory_working_history_size: Optional[int] = None
+    memory_summarization_threshold: Optional[int] = None
+    memory_chunk_size: Optional[int] = None
     compress_memory: bool = False
     agent_report_memory: bool = False
 
@@ -130,6 +148,7 @@ class SessionResponse(BaseModel):
     updated_at: datetime
     artifact_count: int
     message_count: int
+    memory: Optional[MemoryConfigResponse] = None
 
 
 # ---------------------------------------------------------------------------

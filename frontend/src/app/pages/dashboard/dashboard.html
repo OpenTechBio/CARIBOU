@@ -514,6 +514,28 @@
             rows="4"
             placeholder="Describe the analysis task…"
           ></textarea>
+
+          <label>Memory strategy</label>
+          <select [(ngModel)]="form.memory_strategy">
+            <option value="full">Full (keep all messages)</option>
+            <option value="episodic">Episodic (LLM summarization)</option>
+            <option value="agent_report">Agent Report (handoff reports)</option>
+            <option value="none">None</option>
+          </select>
+
+          @if (form.memory_strategy === 'episodic' || form.memory_strategy === 'agent_report') {
+            <label>Working history size</label>
+            <input type="number" [(ngModel)]="form.memory_working_history_size" min="1" max="20" />
+            <span class="field-note">Most recent messages kept in full</span>
+
+            <label>Summarization threshold</label>
+            <input type="number" [(ngModel)]="form.memory_summarization_threshold" min="5" max="100" />
+            <span class="field-note">Trigger summarization after this many unsummarized messages</span>
+
+            <label>Chunk size</label>
+            <input type="number" [(ngModel)]="form.memory_chunk_size" min="2" max="50" />
+            <span class="field-note">Messages to condense per summary</span>
+          }
         </div>
 
         <div class="dialog-actions">
@@ -560,6 +582,18 @@
               <pre class="prompt-preview">{{ form.initial_prompt }}</pre>
             } @else {
               <span class="dim">(none — you'll be prompted for one)</span>
+            }
+          </dd>
+          <dt>Memory</dt>
+          <dd>
+            @if (form.memory_strategy === 'episodic') {
+              Episodic &middot; {{ form.memory_working_history_size }} working &middot;
+              threshold {{ form.memory_summarization_threshold }} &middot;
+              chunk {{ form.memory_chunk_size }}
+            } @else if (form.memory_strategy === 'agent_report') {
+              Agent Report &middot; {{ form.memory_working_history_size }} working
+            } @else {
+              {{ form.memory_strategy === 'none' ? 'None' : 'Full (unlimited)' }}
             }
           </dd>
         </dl>

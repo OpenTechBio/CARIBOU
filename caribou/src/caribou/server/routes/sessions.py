@@ -113,3 +113,13 @@ async def get_code_events(session_id: str) -> List[CodeEventRecord]:
     if not s:
         raise HTTPException(404, "Session not found")
     return s.code_events
+
+
+@router.get("/{session_id}/memory")
+async def get_memory_state(session_id: str) -> dict:
+    """Return the current memory state and context breakdown of the session."""
+    s = session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    state = session_manager.get_context_breakdown(session_id)
+    return state
