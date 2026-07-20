@@ -114,6 +114,57 @@ export interface SubmitData {
   workers_launched: number;
 }
 
+export type PresetProfile = 'fast' | 'thorough';
+export type PresetExecutor = 'local' | 'slurm';
+export type PresetProvider = 'openai' | 'deepseek';
+
+export const DEEPSEEK_MODELS = [
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash (Quick)',
+    thinking: false,
+  },
+  {
+    id: 'deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro (Thinking)',
+    thinking: true,
+  },
+] as const;
+
+export interface PresetResourceProfile {
+  cpu_cores: number;
+  memory_bytes: number;
+  wall_seconds: number;
+}
+
+export interface PresetSummary {
+  id: string;
+  name: string;
+  description: string;
+  default_profile: PresetProfile;
+  default_max_turns: number;
+  maximum_max_turns: number;
+  resource_profiles: Record<PresetProfile, PresetResourceProfile>;
+}
+
+export interface PresetResolveRequest {
+  dataset_path: string;
+  model_provider: PresetProvider;
+  model_name: string;
+  profile: PresetProfile;
+  max_turns: number;
+  executor: PresetExecutor;
+  owner: string;
+  reviewer: string;
+}
+
+export interface PresetResolveData {
+  preset_id: string;
+  spec_hash: string;
+  specification: Record<string, unknown>;
+  checks: Record<string, unknown>[];
+}
+
 export interface StatusData {
   run: RunRecord;
   cursor: number;

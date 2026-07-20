@@ -63,6 +63,14 @@ class SessionCreateRequest(BaseModel):
     agent_report_memory: bool = False
 
 
+class ResolvedModelInfo(BaseModel):
+    """Exact model identity and effective request controls for provenance."""
+
+    provider: str
+    model: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
 class MessageRecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     session_id: str
@@ -109,6 +117,7 @@ class SessionResponse(BaseModel):
     run_mode: RunMode
     agent_system: str
     llm_backend: str
+    resolved_model: Optional[ResolvedModelInfo] = None
     sandbox_type: SandboxType
     dataset_path: str
     max_turns: Optional[int]
@@ -129,6 +138,8 @@ class LLMBackend(BaseModel):
     provider: str
     display_name: str
     available: bool
+    model_name: Optional[str] = None
+    thinking: Optional[bool] = None
     status: Optional[str] = None
     message: Optional[str] = None
     suggested_fix: Optional[str] = None

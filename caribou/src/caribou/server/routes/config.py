@@ -13,6 +13,7 @@ from pydantic import BaseModel
 import shutil
 
 from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
+from caribou.core.deepseek import DEEPSEEK_PROFILES
 from caribou.server.models import (
     AgentBlueprint, AgentConfig, BlueprintContent, CommandConfig,
     LLMBackend, OllamaModelsResponse, SaveBlueprintRequest, ServerStatus,
@@ -31,7 +32,17 @@ router = APIRouter(prefix="/api", tags=["config"])
 _BACKENDS = [
     LLMBackend(id="chatgpt", provider="openai", display_name="GPT-4o (OpenAI)", available=False),
     LLMBackend(id="claude", provider="anthropic", display_name="Claude Sonnet (Anthropic)", available=False),
-    LLMBackend(id="deepseek", provider="deepseek", display_name="DeepSeek Chat", available=False),
+    *[
+        LLMBackend(
+            id=profile.backend_id,
+            provider="deepseek",
+            display_name=profile.display_name,
+            available=False,
+            model_name=profile.model,
+            thinking=profile.thinking,
+        )
+        for profile in DEEPSEEK_PROFILES
+    ],
     LLMBackend(id="ollama", provider="ollama", display_name="Ollama (local)", available=False),
 ]
 
@@ -39,6 +50,7 @@ _KEY_MAP = {
     "chatgpt": "OPENAI_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "deepseek-thinking": "DEEPSEEK_API_KEY",
     "ollama": None,
 }
 

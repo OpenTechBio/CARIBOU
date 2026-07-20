@@ -197,6 +197,72 @@ def test_real_code_identity_does_not_trust_environment_override(
     assert exc_info.value.details["actual"] == actual
 
 
+def test_smoke_code_identity_accepts_a_matching_dirty_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        if "--show-toplevel" in command:
+            return SimpleNamespace(returncode=0, stdout=str(tmp_path) + "\n")
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(returncode=0, stdout=commit + "\n")
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout=" M source.py\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(
+        "caribou.control.agent_workload.subprocess.run",
+        fake_run,
+    )
+
+    _verify_code_identity(
+        commit,
+        AGENT_PATH_SMOKE_ADAPTER,
+        expected_dirty=True,
+    )
+
+    with pytest.raises(ControlError) as exc_info:
+        _verify_code_identity(
+            commit,
+            AGENT_PATH_SMOKE_ADAPTER,
+            expected_dirty=False,
+        )
+    assert exc_info.value.code == "CODE_COMMIT_MISMATCH"
+    assert exc_info.value.details["expected_dirty"] is False
+
+
+def test_real_code_identity_rejects_a_dirty_worktree_even_when_declared(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        if "--show-toplevel" in command:
+            return SimpleNamespace(returncode=0, stdout=str(tmp_path) + "\n")
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(returncode=0, stdout=commit + "\n")
+        if "status" in command:
+            return SimpleNamespace(returncode=0, stdout=" M source.py\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(
+        "caribou.control.agent_workload.subprocess.run",
+        fake_run,
+    )
+
+    with pytest.raises(ControlError) as exc_info:
+        _verify_code_identity(
+            commit,
+            CARIBOU_AGENT_ADAPTER,
+            expected_dirty=True,
+        )
+    assert exc_info.value.code == "CODE_COMMIT_MISMATCH"
+    assert exc_info.value.details["dirty"] is True
+
+
 @pytest.mark.parametrize(
     ("runtime_version", "tools", "expected_code"),
     [
@@ -314,6 +380,13 @@ def test_real_adapter_accepts_frozen_max_output_tokens() -> None:
     [
         ({"max_output_tokens": 0}, "AGENT_MODEL_PARAMETER_INVALID"),
         ({"max_output_tokens": True}, "AGENT_MODEL_PARAMETER_INVALID"),
+        ({"thinking": "yes"}, "AGENT_MODEL_PARAMETER_INVALID"),
+        ({"thinking": True}, "AGENT_MODEL_PARAMETERS_UNSUPPORTED"),
+        ({"reasoning_effort": "high"}, "AGENT_MODEL_PARAMETER_INVALID"),
+        (
+            {"thinking": True, "reasoning_effort": "medium"},
+            "AGENT_MODEL_PARAMETER_INVALID",
+        ),
         ({"temperature": 0}, "AGENT_MODEL_PARAMETERS_UNSUPPORTED"),
     ],
 )
@@ -336,6 +409,31 @@ def test_real_adapter_rejects_invalid_or_unbound_model_parameters(
     with pytest.raises(ControlError) as exc_info:
         _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
     assert exc_info.value.code == expected_code
+
+
+def test_real_deepseek_adapter_accepts_frozen_thinking_controls() -> None:
+    spec = _real_adapter_spec_with_retry(
+        maximum_attempts=3,
+        retryable_categories=["provider", "timeout"],
+    )
+    condition = spec.conditions[0].model_copy(
+        update={
+            "model": spec.conditions[0].model.model_copy(
+                update={
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "parameters": {
+                        "max_output_tokens": 8192,
+                        "thinking": True,
+                        "reasoning_effort": "high",
+                    },
+                }
+            )
+        }
+    )
+    spec = spec.model_copy(update={"conditions": [condition]})
+
+    _validate_agent_adapter(spec, 0, CARIBOU_AGENT_ADAPTER)
 
 
 @pytest.mark.parametrize(
@@ -361,14 +459,48 @@ def test_external_provider_disables_sdk_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    raw_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kwargs: kwargs)
+        )
+    )
     monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
     monkeypatch.setattr(
-        "openai.OpenAI", lambda **kwargs: calls.append(kwargs) or object()
+        "openai.OpenAI", lambda **kwargs: calls.append(kwargs) or raw_client
     )
 
     _provider_client(provider, {})
 
     assert calls[0]["max_retries"] == 0
+
+
+def test_deepseek_provider_applies_frozen_thinking_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    expected_client = object()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "caribou.core.deepseek.create_deepseek_client",
+        lambda api_key, **kwargs: (
+            calls.append({"api_key": api_key, **kwargs}) or expected_client
+        ),
+    )
+
+    client = _provider_client(
+        "deepseek",
+        {"thinking": True, "reasoning_effort": "max"},
+    )
+
+    assert client is expected_client
+    assert calls == [
+        {
+            "api_key": "test-key",
+            "thinking": True,
+            "reasoning_effort": "max",
+            "max_retries": 0,
+        }
+    ]
 
 
 def _local_reference(path: Path, media_type: str) -> ContentReference:
@@ -789,7 +921,7 @@ def test_workload_wires_receipts_only_for_actual_provider_adapter(
     )
     monkeypatch.setattr(
         "caribou.control.agent_workload._verify_code_identity",
-        lambda expected, selected_adapter: None,
+        lambda expected, selected_adapter, **kwargs: None,
     )
     backend = _NonExecutingBackend()
     monkeypatch.setattr(
@@ -861,7 +993,7 @@ def test_workload_propagates_frozen_max_output_tokens_to_runner(
     )
     monkeypatch.setattr(
         "caribou.control.agent_workload._verify_code_identity",
-        lambda expected, selected_adapter: None,
+        lambda expected, selected_adapter, **kwargs: None,
     )
     backend = _NonExecutingBackend()
     monkeypatch.setattr(
@@ -870,9 +1002,7 @@ def test_workload_propagates_frozen_max_output_tokens_to_runner(
     )
     provider_calls: list[tuple[str, dict[str, object]]] = []
 
-    def fake_provider_client(
-        provider: str, parameters: dict[str, object]
-    ) -> object:
+    def fake_provider_client(provider: str, parameters: dict[str, object]) -> object:
         provider_calls.append((provider, parameters))
         return object()
 

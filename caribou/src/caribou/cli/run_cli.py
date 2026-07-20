@@ -4,9 +4,8 @@ from __future__ import annotations
 import os
 import textwrap
 from pathlib import Path
-from typing import List, Tuple, Optional, cast, Dict, Any
+from typing import TYPE_CHECKING, List, Tuple, Optional, cast, Dict, Any
 import subprocess
-import json
 from datetime import datetime
 
 import typer
@@ -15,6 +14,16 @@ from rich.prompt import Prompt, IntPrompt
 from dotenv import load_dotenv
 
 from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME, DEFAULT_BLUEPRINT_NAME
+from caribou.core.deepseek import (
+    DEEPSEEK_BACKEND_IDS,
+    create_deepseek_client,
+    deepseek_profile_for_backend,
+    is_deepseek_backend,
+)
+
+if TYPE_CHECKING:
+    from caribou.agents.AgentSystem import AgentSystem
+    from caribou.execution.runner import SandboxManager
 
 # --------------------------------------------------------------------------------------
 # Constants & Package Paths
@@ -28,6 +37,16 @@ PACKAGE_CODE_SAMPLES_DIR = PACKAGE_ROOT / "code_samples"
 
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"
+LLM_BACKEND_CHOICES = [
+    "chatgpt",
+    "claude",
+    "ollama",
+    *DEEPSEEK_BACKEND_IDS,
+]
+LLM_BACKEND_HELP = (
+    "LLM backend: 'chatgpt', 'claude', 'ollama', 'deepseek' (V4 Flash quick), "
+    "or 'deepseek-thinking' (V4 Pro thinking)."
+)
 
 # --------------------------------------------------------------------------------------
 # Typer App
@@ -55,6 +74,7 @@ class AppContext:
         self.sandbox_manager: "SandboxManager" | None = None
         self.llm_client: object | None = None
         self.model_name: str | None = None
+        self.model_parameters: Dict[str, object] = {}
         self.initial_history: List[dict] | None = None
         self.dataset_path: Path | None = None
         self.reference_dataset_path: Optional[Path] = None
@@ -177,6 +197,7 @@ def _setup_and_run_session(
             max_turns=max_turns,
             benchmark_modules=benchmark_modules,
             model_name=cast(str, context.model_name),
+            model_parameters=context.model_parameters,
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
             make_report=context.make_report,
@@ -222,13 +243,13 @@ def _setup_and_run_session(
 
                 if is_exec_mode:
                     keep = Prompt.ask(
-                        f"\nDo you want to keep the output directory and its contents?",
+                        "\nDo you want to keep the output directory and its contents?",
                         choices=["y", "n"],
                         default="y",
                     ).lower() == "y"
                     if not keep and not auto_save_mode:
                         shutil.rmtree(host_output_path, ignore_errors=True)
-                        console.print(f"[dim]Removed temporary output directory.[/dim]")
+                        console.print("[dim]Removed temporary output directory.[/dim]")
                     else:
                         console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
                 else:
@@ -362,9 +383,14 @@ def initialize_context(
 
     # ---- LLM Backend ----
     if llm_backend is None:
-        llm_backend = Prompt.ask("Choose an LLM backend", choices=["chatgpt", "claude", "ollama", "deepseek"], default="chatgpt")
+        llm_backend = Prompt.ask(
+            "Choose an LLM backend",
+            choices=LLM_BACKEND_CHOICES,
+            default="chatgpt",
+        )
 
     console.print(f"[cyan]Initializing LLM backend: {llm_backend}[/cyan]")
+    context.model_parameters = {}
 
     if llm_backend == "chatgpt":
         if not os.getenv("OPENAI_API_KEY"):
@@ -380,12 +406,17 @@ def initialize_context(
         from caribou.core.anthropic_wrapper import AnthropicClient
         context.llm_client = AnthropicClient(api_key=anthropic_key)
         context.model_name = "claude-sonnet-4-5-20250929"
-    elif llm_backend == "deepseek":
+    elif is_deepseek_backend(llm_backend):
         if not os.getenv("DEEPSEEK_API_KEY"):
             console.print("[bold red]Error: DEEPSEEK_API_KEY not set. Use 'caribou config set-deepseek-key'.[/bold red]")
             raise typer.Exit(1)
-        context.llm_client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
-        context.model_name = "deepseek-chat"
+        profile = deepseek_profile_for_backend(llm_backend)
+        context.llm_client = create_deepseek_client(
+            cast(str, os.getenv("DEEPSEEK_API_KEY")),
+            profile=profile,
+        )
+        context.model_name = profile.model
+        context.model_parameters = profile.model_parameters()
     elif llm_backend == "ollama":
         if ollama_host == "http://localhost:11434" and output_dir is None:
             ollama_host = Prompt.ask("Enter the Ollama base URL", default="http://localhost:11434")
@@ -443,7 +474,8 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
     out["compress_memory"] = bool(out.get("compress_memory", False))
     out["make_report"] = bool(out.get("make_report", False))
     out["agent_report_memory"] = bool(out.get("agent_report_memory", False))
-    if out.get("ollama_host") is None: out["ollama_host"] = "http://localhost:11434"
+    if out.get("ollama_host") is None:
+        out["ollama_host"] = "http://localhost:11434"
     return out
 
 # --------------------------------------------------------------------------------------
@@ -458,7 +490,7 @@ def main_run_callback(
     dataset: Optional[Path] = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
     reference_dataset: Optional[Path] = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
     resources_dir: Optional[Path] = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: Optional[str] = typer.Option(None, "--llm", help="LLM backend: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
+    llm_backend: Optional[str] = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
     sandbox: Optional[str] = typer.Option(None, "--sandbox", help="Sandbox backend: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
@@ -514,7 +546,7 @@ def run_interactive(
     dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
     reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
     resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
+    llm_backend: str = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
@@ -559,7 +591,7 @@ def run_auto(
     dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
     reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
     resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
+    llm_backend: str = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),

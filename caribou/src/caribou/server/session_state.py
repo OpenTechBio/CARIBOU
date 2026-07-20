@@ -19,6 +19,7 @@ from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
     MessageRecord,
+    ResolvedModelInfo,
     SessionCreateRequest,
     SessionResponse,
     SessionStatus,
@@ -77,6 +78,7 @@ class _Session:
     driver_agent: Any = None
     initial_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
+    resolved_model: Optional[ResolvedModelInfo] = None
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
     logger: Any = None
@@ -89,6 +91,7 @@ class _Session:
             run_mode=self.config.run_mode,
             agent_system=self.config.agent_system,
             llm_backend=self.config.llm_backend,
+            resolved_model=self.resolved_model,
             sandbox_type=self.config.sandbox_type,
             dataset_path=self.config.dataset_path,
             max_turns=self.config.max_turns,

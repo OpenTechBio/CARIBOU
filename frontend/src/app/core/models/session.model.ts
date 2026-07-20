@@ -11,6 +11,7 @@ export interface Session {
   run_mode: RunMode;
   agent_system: string;
   llm_backend: string;
+  resolved_model: ResolvedModelInfo | null;
   sandbox_type: SandboxType;
   dataset_path: string;
   max_turns: number | null;
@@ -20,6 +21,12 @@ export interface Session {
   updated_at: string;
   artifact_count: number;
   message_count: number;
+}
+
+export interface ResolvedModelInfo {
+  provider: string;
+  model: string;
+  parameters: Record<string, unknown>;
 }
 
 export interface SessionCreateRequest {
@@ -78,6 +85,8 @@ export interface LLMBackend {
   provider: string;
   display_name: string;
   available: boolean;
+  model_name?: string | null;
+  thinking?: boolean | null;
   status?: string | null;
   message?: string | null;
   suggested_fix?: string | null;

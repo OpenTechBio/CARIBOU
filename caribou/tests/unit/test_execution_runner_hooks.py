@@ -142,6 +142,37 @@ def _run(tmp_path, llm, sandbox, **kwargs):
     )
 
 
+def test_session_report_records_exact_model_and_mode_parameters(
+    tmp_path, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    def capture_report(_console, *, output_dir, stats):
+        captured["output_dir"] = output_dir
+        captured["stats"] = stats
+        return None
+
+    monkeypatch.setattr(runner, "_write_session_report", capture_report)
+
+    _run(
+        tmp_path,
+        SequenceLlm(["end_session"]),
+        RecordingSandbox(),
+        model_name="deepseek-v4-pro",
+        model_parameters={"thinking": True, "reasoning_effort": "high"},
+        make_report=True,
+    )
+
+    assert captured["output_dir"] == tmp_path
+    stats = captured["stats"]
+    assert isinstance(stats, dict)
+    assert stats["model"] == "deepseek-v4-pro"
+    assert stats["model_parameters"] == {
+        "thinking": True,
+        "reasoning_effort": "high",
+    }
+
+
 def test_returns_frozen_result_and_emits_code_lifecycle(tmp_path):
     events = []
     sandbox = RecordingSandbox()

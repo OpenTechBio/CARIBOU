@@ -71,6 +71,22 @@ caribou run auto --turns 10 --prompt "Perform QC and generate a UMAP."
 
 The run wizard prompts for blueprint, dataset, sandbox, and LLM backend if not supplied as flags.
 
+DeepSeek uses exact V4 model IDs and exposes two locked modes:
+
+```bash
+# Fast responses: DeepSeek V4 Flash with thinking disabled
+caribou run auto --llm deepseek --turns 10 --prompt "Perform QC."
+
+# Deliberate responses: DeepSeek V4 Pro with thinking enabled at high effort
+caribou run auto --llm deepseek-thinking --turns 10 --prompt "Perform QC."
+```
+
+The existing `deepseek` backend name remains compatible and now resolves to
+`deepseek-v4-flash`; CARIBOU no longer relies on the retiring `deepseek-chat`
+alias. Web session records persist the exact model ID and effective mode, and
+CLI runs using `--make-report` write both `model` and `model_parameters` into
+the session report.
+
 ---
 
 ## Web Frontend
@@ -92,6 +108,18 @@ caribou serve                    # binds to 0.0.0.0:8000
 caribou serve --port 9000        # custom port
 caribou serve --refresh          # backend reload + Angular browser refresh
 ```
+
+At startup, `caribou serve` displays the experiment access token used by the
+guided experiment interface. If no token is configured, CARIBOU generates one,
+saves it in the protected CARIBOU environment file, and reuses it on later
+starts. Retrieve the same token at any time with:
+
+```bash
+caribou config get-control-token
+```
+
+Treat this value as a deployment secret: anyone who has it can operate durable
+experiments on that CARIBOU server. It is not a model-provider API key.
 
 FastAPI serves both the REST/WebSocket API and the Angular static bundle. The server auto-detects the Open OnDemand node-proxy path pattern and strips it transparently — no extra flags needed.
 

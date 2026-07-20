@@ -9,14 +9,16 @@ import {
   RunRecord,
 } from '../../core/models/experiment-control.model';
 import { ExperimentControlService } from '../../core/services/experiment-control.service';
+import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 
 const LAST_RUN_KEY = 'caribou:control:last-run:v1';
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled', 'rejected', 'resumable']);
+type AccessStatus = 'missing' | 'saved' | 'checking' | 'verified' | 'invalid';
 
 @Component({
   selector: 'app-experiments',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, TooltipDirective],
   templateUrl: './experiments.html',
   styleUrl: './experiments.scss',
 })
@@ -38,6 +40,37 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   result = signal<string | null>(null);
   verifiedCount = signal<number | null>(null);
   tokenConfigured = this.control.hasAccessToken;
+  accessStatus = signal<AccessStatus>(this.tokenConfigured() ? 'saved' : 'missing');
+
+  accessStatusLabel = computed(() => {
+    switch (this.accessStatus()) {
+      case 'saved':
+        return 'Saved in this tab';
+      case 'checking':
+        return 'Checking access…';
+      case 'verified':
+        return 'Access verified';
+      case 'invalid':
+        return 'Access not verified';
+      default:
+        return 'Token required';
+    }
+  });
+
+  accessStatusDetail = computed(() => {
+    switch (this.accessStatus()) {
+      case 'saved':
+        return 'A token is stored, but the server has not accepted it yet.';
+      case 'checking':
+        return 'Sending a read-only request to the CARIBOU experiment service.';
+      case 'verified':
+        return 'The server accepted this token for experiment operations.';
+      case 'invalid':
+        return 'Replace the token or ask the CARIBOU server operator for access.';
+      default:
+        return 'Ask the CARIBOU server operator for the experiment access token.';
+    }
+  });
 
   isTerminal = computed(() => {
     const current = this.run();
@@ -71,10 +104,13 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-    file.text().then(text => {
-      this.specificationText.set(text);
-      this.error.set(null);
-    }).catch(error => this.setError(error));
+    file
+      .text()
+      .then((text) => {
+        this.specificationText.set(text);
+        this.error.set(null);
+      })
+      .catch((error) => this.setError(error));
   }
 
   saveAccessToken(): void {
@@ -86,20 +122,51 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     this.control.setAccessToken(token);
     this.tokenInput.set('');
     this.error.set(null);
+    this.verifyAccess();
+  }
+
+  verifyAccess(): void {
+    if (!this.tokenConfigured()) {
+      this.accessStatus.set('missing');
+      this.error.set('Paste the experiment access token before checking access.');
+      return;
+    }
+    this.accessStatus.set('checking');
+    this.error.set(null);
+    this.control.schema().subscribe({
+      next: () => this.accessStatus.set('verified'),
+      error: (error) => {
+        this.accessStatus.set('invalid');
+        if (error instanceof HttpErrorResponse && error.status === 401) {
+          this.error.set(
+            'The CARIBOU server rejected this experiment access token. Check it for typing errors or request the current token from the server operator.',
+          );
+          return;
+        }
+        if (error instanceof HttpErrorResponse && error.status === 503) {
+          this.error.set(
+            "Experiment control is disabled on this server. The server operator should run 'caribou config get-control-token' and restart with 'caribou serve'.",
+          );
+          return;
+        }
+        this.setError(error);
+      },
+    });
   }
 
   clearAccessToken(): void {
     this.stopPolling();
     this.control.clearAccessToken();
     this.tokenInput.set('');
+    this.accessStatus.set('missing');
     this.error.set(null);
   }
 
   showSchema(): void {
-    this.runAction('schema', callback => {
+    this.runAction('schema', (callback) => {
       this.control.schema().subscribe({
-        next: response => callback(response.data.schema),
-        error: error => this.failAction(error),
+        next: (response) => callback(response.data.schema),
+        error: (error) => this.failAction(error),
       });
     });
   }
@@ -107,10 +174,10 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   validateSpec(): void {
     const spec = this.parsedSpec();
     if (spec === null) return;
-    this.runAction('validate', callback => {
+    this.runAction('validate', (callback) => {
       this.control.validate(spec).subscribe({
-        next: response => callback(response),
-        error: error => this.failAction(error),
+        next: (response) => callback(response),
+        error: (error) => this.failAction(error),
       });
     });
   }
@@ -118,14 +185,14 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   planSpec(): void {
     const spec = this.parsedSpec();
     if (spec === null) return;
-    this.runAction('plan', callback => {
+    this.runAction('plan', (callback) => {
       this.control.plan(spec).subscribe({
-        next: response => {
+        next: (response) => {
           const planHash = response.data['plan_hash'];
           if (typeof planHash === 'string') this.expectedPlanHash.set(planHash);
           callback(response);
         },
-        error: error => this.failAction(error),
+        error: (error) => this.failAction(error),
       });
     });
   }
@@ -138,14 +205,14 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
       this.error.set('Submission requires a stable idempotency key.');
       return;
     }
-    this.runAction('submit', callback => {
+    this.runAction('submit', (callback) => {
       this.control.submit(spec, key, this.expectedPlanHash().trim() || undefined).subscribe({
-        next: response => {
+        next: (response) => {
           callback(response);
           const runId = response.data.run_ids[0];
           if (runId) this.monitor(runId);
         },
-        error: error => this.failAction(error),
+        error: (error) => this.failAction(error),
       });
     });
   }
@@ -166,12 +233,12 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     if (!runId) return;
     this.action.set('cancel');
     this.control.cancel(runId, 'cancel requested from experiment web interface').subscribe({
-      next: response => {
+      next: (response) => {
         this.run.set(response.data.run);
         this.result.set(JSON.stringify(response, null, 2));
         this.action.set(null);
       },
-      error: error => this.failAction(error),
+      error: (error) => this.failAction(error),
     });
   }
 
@@ -180,18 +247,20 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     const runId = this.run()?.run_id;
     if (!runId) return;
     this.action.set('checkpoint');
-    this.control.requestCheckpoint(
-      runId,
-      `web-checkpoint-${runId}`,
-      'cooperative checkpoint requested from experiment web interface',
-    ).subscribe({
-      next: response => {
-        this.run.set(response.data.run);
-        this.result.set(JSON.stringify(response, null, 2));
-        this.action.set(null);
-      },
-      error: error => this.failAction(error),
-    });
+    this.control
+      .requestCheckpoint(
+        runId,
+        `web-checkpoint-${runId}`,
+        'cooperative checkpoint requested from experiment web interface',
+      )
+      .subscribe({
+        next: (response) => {
+          this.run.set(response.data.run);
+          this.result.set(JSON.stringify(response, null, 2));
+          this.action.set(null);
+        },
+        error: (error) => this.failAction(error),
+      });
   }
 
   resume(): void {
@@ -200,7 +269,7 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     if (!source) return;
     this.action.set('resume');
     this.control.checkpoints(source.run_id).subscribe({
-      next: response => {
+      next: (response) => {
         const checkpoints = response.data.checkpoints.slice().sort((left, right) => {
           if (left.turn !== right.turn) return right.turn - left.turn;
           return right.created_at.localeCompare(left.created_at);
@@ -210,20 +279,22 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
           this.failAction(new Error('The source run has no complete checkpoint.'));
           return;
         }
-        this.control.resume(
-          source.run_id,
-          checkpoint.checkpoint_id,
-          `web-resume-${source.run_id}-${checkpoint.checkpoint_id}`,
-        ).subscribe({
-          next: resumed => {
-            this.result.set(JSON.stringify(resumed, null, 2));
-            this.action.set(null);
-            this.monitor(resumed.data.child_run.run_id);
-          },
-          error: error => this.failAction(error),
-        });
+        this.control
+          .resume(
+            source.run_id,
+            checkpoint.checkpoint_id,
+            `web-resume-${source.run_id}-${checkpoint.checkpoint_id}`,
+          )
+          .subscribe({
+            next: (resumed) => {
+              this.result.set(JSON.stringify(resumed, null, 2));
+              this.action.set(null);
+              this.monitor(resumed.data.child_run.run_id);
+            },
+            error: (error) => this.failAction(error),
+          });
       },
-      error: error => this.failAction(error),
+      error: (error) => this.failAction(error),
     });
   }
 
@@ -233,12 +304,12 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     if (!runId) return;
     this.action.set('verify');
     this.control.verifyArtifacts(runId).subscribe({
-      next: response => {
+      next: (response) => {
         this.verifiedCount.set(response.data.verified);
         this.result.set(JSON.stringify(response, null, 2));
         this.action.set(null);
       },
-      error: error => this.failAction(error),
+      error: (error) => this.failAction(error),
     });
   }
 
@@ -247,7 +318,7 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     const runId = this.run()?.run_id ?? artifact.run_id;
     this.action.set(`download:${artifact.artifact_id}`);
     this.control.downloadArtifact(runId, artifact.artifact_id).subscribe({
-      next: blob => {
+      next: (blob) => {
         const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = objectUrl;
@@ -259,7 +330,7 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
         this.action.set(null);
       },
-      error: error => this.failAction(error),
+      error: (error) => this.failAction(error),
     });
   }
 
@@ -294,15 +365,12 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     }
   }
 
-  private runAction(
-    name: string,
-    start: (complete: (value: unknown) => void) => void,
-  ): void {
+  private runAction(name: string, start: (complete: (value: unknown) => void) => void): void {
     if (!this.requireAccessToken()) return;
     this.action.set(name);
     this.error.set(null);
     this.result.set(null);
-    start(value => {
+    start((value) => {
       this.result.set(JSON.stringify(value, null, 2));
       this.action.set(null);
     });
@@ -328,12 +396,12 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
     if (!runId || this.polling) return;
     this.polling = true;
     this.control.status(runId).subscribe({
-      next: response => {
+      next: (response) => {
         if (this.activeRunId !== runId) return;
         this.run.set(response.data.run);
         this.loadEventsAndArtifacts(runId);
       },
-      error: error => {
+      error: (error) => {
         this.polling = false;
         this.setError(error);
       },
@@ -343,10 +411,10 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   private loadEventsAndArtifacts(runId: string): void {
     const after = this.cursor();
     this.control.events(runId, after).subscribe({
-      next: response => {
+      next: (response) => {
         if (this.activeRunId !== runId) return;
         if (response.data.events.length) {
-          this.events.update(current => [...current, ...response.data.events]);
+          this.events.update((current) => [...current, ...response.data.events]);
           this.cursor.set(response.data.next_cursor);
         }
         if (response.data.has_more) {
@@ -355,19 +423,19 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
           return;
         }
         this.control.artifacts(runId).subscribe({
-          next: artifacts => {
+          next: (artifacts) => {
             if (this.activeRunId !== runId) return;
             this.artifacts.set(artifacts.data.artifacts);
             if (this.isTerminal()) this.stopPolling();
             else this.polling = false;
           },
-          error: error => {
+          error: (error) => {
             this.polling = false;
             this.setError(error);
           },
         });
       },
-      error: error => {
+      error: (error) => {
         this.polling = false;
         this.setError(error);
       },

@@ -200,6 +200,12 @@ def _executing_code_identity() -> CodeIdentity:
     )
 
 
+def executing_code_identity() -> CodeIdentity:
+    """Resolve the exact repository identity used by new frozen specifications."""
+
+    return _executing_code_identity()
+
+
 class ExperimentService:
     """Authoritative local lifecycle operations with transport-free semantics."""
 

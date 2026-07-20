@@ -40,6 +40,7 @@ from caribou.server.routes.experiments import (
 from caribou.server.routes.websocket import router as ws_router
 from caribou.server.ollama_service import shutdown_owned_ollama
 from caribou.server.session_manager import session_manager
+from caribou.server.routes.presets import router as presets_router
 
 _PACKAGE_DIR = Path(__file__).resolve().parents[1]
 _FRONTEND_DIST = _PACKAGE_DIR / "frontend" / "browser"
@@ -139,6 +140,7 @@ app.include_router(config_router)
 app.include_router(sessions_router)
 app.include_router(datasets_router)
 app.include_router(experiments_router)
+app.include_router(presets_router)
 app.include_router(ws_router)
 
 

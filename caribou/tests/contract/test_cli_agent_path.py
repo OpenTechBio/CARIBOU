@@ -33,6 +33,23 @@ def _head_commit() -> str:
     return result.stdout.strip()
 
 
+def _worktree_dirty() -> bool:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(Path(__file__).resolve().parents[3]),
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
 def _reference(path: Path, media_type: str) -> ContentReference:
     return ContentReference(
         uri=path.resolve().as_uri(),
@@ -55,7 +72,9 @@ def write_agent_spec(
     blueprint_path = tmp_path / "integration-system.json"
     blueprint_path.write_bytes(package_blueprint.read_bytes())
     prompt_path = tmp_path / "prompt.txt"
-    prompt_path.write_text("Exercise the durable CARIBOU agent path.\n", encoding="utf-8")
+    prompt_path.write_text(
+        "Exercise the durable CARIBOU agent path.\n", encoding="utf-8"
+    )
     input_path = tmp_path / "input.h5ad"
     input_path.write_bytes(b"scripted-agent-path-fixture\n")
     image_path = tmp_path / "offline.fixture"
@@ -105,6 +124,7 @@ def write_agent_spec(
                 repository="OpenTechBio/caribou",
                 branch="AddingAgentInterface",
                 commit=_head_commit(),
+                dirty=_worktree_dirty(),
             ),
             "inputs": [_reference(input_path, "application/x-hdf5")],
             "conditions": [condition],
@@ -140,9 +160,9 @@ def _wait_for_state(
 
 
 def test_agent_submit_detach_events_and_artifacts(tmp_path: Path) -> None:
-    run_id = submit(tmp_path, write_agent_spec(tmp_path), "agent-path-success")[
-        "data"
-    ]["run_ids"][0]
+    run_id = submit(tmp_path, write_agent_spec(tmp_path), "agent-path-success")["data"][
+        "run_ids"
+    ][0]
     terminal = wait_for_terminal(tmp_path, run_id)
     assert terminal["object"]["state"] == "succeeded"
 
@@ -192,16 +212,13 @@ def test_agent_submit_detach_events_and_artifacts(tmp_path: Path) -> None:
     history = json.loads(destination.read_text(encoding="utf-8"))
     assert history["run_id"] == run_id
     assert any(
-        "CARIBOU_AGENT_PATH_OK" in message["content"]
-        for message in history["messages"]
+        "CARIBOU_AGENT_PATH_OK" in message["content"] for message in history["messages"]
     )
 
 
 def test_agent_cancellation_is_observed_after_provider_boundary(tmp_path: Path) -> None:
     specification = write_agent_spec(tmp_path, delay=0.8)
-    run_id = submit(tmp_path, specification, "agent-path-cancel")["data"][
-        "run_ids"
-    ][0]
+    run_id = submit(tmp_path, specification, "agent-path-cancel")["data"]["run_ids"][0]
     _wait_for_state(tmp_path, run_id, "running")
     cancelled = run_cli(
         tmp_path,
@@ -237,6 +254,9 @@ def test_agent_workload_rejects_frozen_content_mismatch(tmp_path: Path) -> None:
     assert terminal["data"]["run"]["end_reason"] == (
         "worker failure: CONTENT_HASH_MISMATCH"
     )
-    assert response(run_cli(tmp_path, "artifact", "list", run_id, "--json"))[
-        "data"
-    ]["artifacts"] == []
+    assert (
+        response(run_cli(tmp_path, "artifact", "list", run_id, "--json"))["data"][
+            "artifacts"
+        ]
+        == []
+    )

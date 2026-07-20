@@ -1,0 +1,203 @@
+<div class="wizard-page">
+  <header class="page-header">
+    <div class="page-heading">
+      <a routerLink="/experiments" class="back-link">← Experiments</a>
+      <span class="eyebrow">Guided setup</span>
+      <h1>Create a reproducible experiment</h1>
+      <p>
+        Choose what to analyze, configure how it should run, and verify the frozen plan before
+        submission.
+      </p>
+    </div>
+    <span
+      class="mode-badge"
+      title="Every choice in this wizard resolves to this versioned experiment specification schema"
+    >
+      caribou.experiment_spec.v1
+    </span>
+  </header>
+
+  @if (!tokenConfigured()) {
+    <div class="alert error" role="alert">
+      <strong>Experiment access is not configured.</strong>
+      <span>Add the control API token before this experiment can be prepared or submitted.</span>
+      <a routerLink="/experiments">Configure access</a>
+    </div>
+  }
+
+  <nav class="progress-bar" aria-label="Experiment creation progress">
+    <button
+      type="button"
+      class="progress-step"
+      [class.active]="currentStep() === 'dataset'"
+      [class.completed]="currentStep() !== 'dataset'"
+      [attr.aria-current]="currentStep() === 'dataset' ? 'step' : null"
+      (click)="goToStep('dataset')"
+      title="Choose the input dataset that will be frozen into the experiment"
+    >
+      <span class="step-number">1</span>
+      <span class="step-copy"><strong>Data</strong><small>Choose input</small></span>
+    </button>
+    <button
+      type="button"
+      class="progress-step"
+      [class.active]="currentStep() === 'preset'"
+      [class.completed]="currentStep() === 'resources' || currentStep() === 'confirm'"
+      [disabled]="!canNavigateTo('preset')"
+      [attr.aria-current]="currentStep() === 'preset' ? 'step' : null"
+      (click)="goToStep('preset')"
+      title="Choose the supported analysis workflow to run"
+    >
+      <span class="step-number">2</span>
+      <span class="step-copy"><strong>Analysis</strong><small>Choose workflow</small></span>
+    </button>
+    <button
+      type="button"
+      class="progress-step"
+      [class.active]="currentStep() === 'resources'"
+      [class.completed]="currentStep() === 'confirm'"
+      [disabled]="!canNavigateTo('resources')"
+      [attr.aria-current]="currentStep() === 'resources' ? 'step' : null"
+      (click)="goToStep('resources')"
+      title="Set execution, model, resource, and accountability fields"
+    >
+      <span class="step-number">3</span>
+      <span class="step-copy"><strong>Configure</strong><small>Set execution</small></span>
+    </button>
+    <button
+      type="button"
+      class="progress-step"
+      [class.active]="currentStep() === 'confirm'"
+      [disabled]="!canNavigateTo('confirm')"
+      [attr.aria-current]="currentStep() === 'confirm' ? 'step' : null"
+      (click)="goToStep('confirm')"
+      title="Review the server-resolved specification and plan hashes before submission"
+    >
+      <span class="step-number">4</span>
+      <span class="step-copy"><strong>Review</strong><small>Verify plan</small></span>
+    </button>
+  </nav>
+
+  @if (selectedDataset() || selectedPresetDefinition()) {
+    <aside class="selection-summary" aria-label="Current experiment selections">
+      @if (selectedDataset(); as dataset) {
+        <div title="Dataset currently selected for this experiment">
+          <span>Data</span><strong>{{ dataset.filename }}</strong>
+        </div>
+      }
+      @if (selectedPresetDefinition(); as preset) {
+        <div title="Analysis workflow currently selected for this experiment">
+          <span>Analysis</span><strong>{{ preset.name }}</strong>
+        </div>
+      }
+      @if (currentStep() === 'resources' || currentStep() === 'confirm') {
+        <div title="Exact provider and model that will be recorded in provenance">
+          <span>Model</span><strong>{{ provider() }} · {{ modelName() }}</strong>
+        </div>
+      }
+    </aside>
+  }
+
+  @if (error(); as message) {
+    <div class="alert error" role="alert">{{ message }}</div>
+  }
+
+  <main class="wizard-content panel">
+    <div class="step-status">
+      <span>Step {{ currentStepNumber() }} of 4</span>
+      <span>{{ currentStepNumber() * 25 }}% complete</span>
+    </div>
+    @switch (currentStep()) {
+      @case ('dataset') {
+        <app-dataset-step
+          [datasets]="datasets()"
+          [selectedDataset]="selectedDataset()"
+          (selectedDatasetChange)="selectDataset($event)"
+        />
+      }
+      @case ('preset') {
+        <app-preset-step
+          [presets]="presets()"
+          [selectedPreset]="selectedPreset()"
+          (selectedPresetChange)="selectPreset($event)"
+        />
+      }
+      @case ('resources') {
+        <app-resources-step
+          [preset]="selectedPresetDefinition()"
+          [profile]="profile()"
+          [maxTurns]="maxTurns()"
+          [provider]="provider()"
+          [modelName]="modelName()"
+          [executor]="executor()"
+          [owner]="owner()"
+          [reviewer]="reviewer()"
+          (profileChange)="updateProfile($event)"
+          (maxTurnsChange)="updateMaxTurns($event)"
+          (providerChange)="updateProvider($event)"
+          (modelNameChange)="updateModelName($event)"
+          (executorChange)="updateExecutor($event)"
+          (ownerChange)="updateOwner($event)"
+          (reviewerChange)="updateReviewer($event)"
+        />
+      }
+      @case ('confirm') {
+        <app-confirm-step
+          [selectedDataset]="selectedDataset()"
+          [preset]="selectedPresetDefinition()"
+          [profile]="profile()"
+          [maxTurns]="maxTurns()"
+          [provider]="provider()"
+          [modelName]="modelName()"
+          [executor]="executor()"
+          [owner]="owner()"
+          [reviewer]="reviewer()"
+          [specHash]="specHash()"
+          [planHash]="planHash()"
+        />
+      }
+    }
+  </main>
+
+  <footer class="wizard-footer">
+    <div class="footer-content">
+      <button
+        class="btn btn-ghost"
+        type="button"
+        (click)="prevStep()"
+        [disabled]="currentStep() === 'dataset' || busy()"
+        title="Return to the previous setup step"
+      >
+        ← Back
+      </button>
+      <p>
+        @if (currentStep() === 'confirm') {
+          Submission starts durable compute and model work.
+        } @else {
+          Your choices are not submitted until the final review.
+        }
+      </p>
+      @if (currentStep() === 'confirm') {
+        <button
+          class="btn btn-primary next-button"
+          type="button"
+          (click)="submit()"
+          [disabled]="busy() || !tokenConfigured()"
+          title="Submit the reviewed plan and return to the durable run monitor"
+        >
+          {{ busy() ? 'Submitting…' : 'Submit experiment' }}
+        </button>
+      } @else {
+        <button
+          class="btn btn-primary next-button"
+          type="button"
+          (click)="nextStep()"
+          [disabled]="busy() || !tokenConfigured()"
+          title="Continue after completing the required choices on this step"
+        >
+          {{ busy() ? 'Preparing plan…' : nextButtonLabel() }}
+        </button>
+      }
+    </div>
+  </footer>
+</div>
