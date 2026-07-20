@@ -239,7 +239,7 @@ def test_web_control_errors_keep_machine_contract(
     assert payload["error"]["code"] == "RUN_NOT_FOUND"
 
 
-def test_control_access_is_default_off_and_requires_exact_bearer_token(
+def test_control_access_accepts_proxy_safe_header_and_legacy_bearer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -259,9 +259,19 @@ def test_control_access_is_default_off_and_requires_exact_bearer_token(
         require_control_access("Bearer wrong-token")
     assert wrong.value.status_code == 401
     assert wrong.value.detail["error"]["code"] == "CONTROL_API_UNAUTHORIZED"
-    assert wrong.value.headers == {"WWW-Authenticate": "Bearer"}
+    assert wrong.value.headers is None
 
     assert require_control_access("Bearer test-control-token") is None
+    assert require_control_access(None, "test-control-token") is None
+
+    # The proxy-safe header is authoritative when an HPC proxy injects or
+    # rewrites the standard Authorization header.
+    assert (
+        require_control_access("Bearer proxy-credential", "test-control-token") is None
+    )
+    with pytest.raises(HTTPException) as custom_wrong:
+        require_control_access("Bearer test-control-token", "wrong-token")
+    assert custom_wrong.value.status_code == 401
 
 
 def test_request_validation_error_response_is_sanitized_machine_contract() -> None:
@@ -354,7 +364,7 @@ def test_frontend_control_client_keeps_token_session_scoped_and_headers_all_call
     assert "localStorage" not in service_source
     assert service_source.count("this.http.get") + service_source.count(
         "this.http.post"
-    ) == service_source.count("this.authorizationHeaders()")
+    ) == service_source.count("this.controlHeaders()")
     assert "responseType: 'blob'" in service_source
     assert "artifactDownloadUrl" not in service_source
     assert "?token=" not in service_source

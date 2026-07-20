@@ -41,13 +41,14 @@ from caribou.execution.runner import (
     run_agent_session,
 )
 
-from .records import ProviderCallReceipt, ProviderCallUsage
+from .records import ProviderCallReceipt, ProviderCallReceiptV2, ProviderCallUsage
 from .specs import (
     AGENT_PATH_SMOKE_ADAPTER,
     AGENT_SMOKE_DELAY_PARAMETER,
     CARIBOU_AGENT_ADAPTER,
     _model_deepseek_options,
     _model_max_output_tokens,
+    _model_openrouter_options,
 )
 from .store import ExperimentStore, SUPPORTED_RESUME_REQUIREMENTS
 
@@ -362,6 +363,7 @@ def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
     # direct worker invocation cannot silently discard unsupported parameters.
     _model_max_output_tokens(parameters)
     thinking, reasoning_effort = _model_deepseek_options(parameters)
+    openrouter_endpoint = _model_openrouter_options(parameters)
     if provider == "openai":
         if thinking is not None or reasoning_effort is not None:
             raise RuntimeError("DeepSeek thinking controls require provider=deepseek")
@@ -381,6 +383,19 @@ def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
             key,
             thinking=thinking,
             reasoning_effort=reasoning_effort,
+            max_retries=0,
+        )
+    if provider == "openrouter":
+        from caribou.core.openrouter import create_openrouter_client
+
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        if openrouter_endpoint is None:
+            raise RuntimeError("OpenRouter experiment endpoint is not frozen")
+        return create_openrouter_client(
+            key,
+            endpoint=openrouter_endpoint,
             max_retries=0,
         )
     raise RuntimeError(f"unsupported provider: {provider}")
@@ -442,7 +457,35 @@ def _provider_receipt_recorder(
             raise RuntimeError(
                 "provider observation retry policy differs from frozen run"
             )
-        receipt = ProviderCallReceipt(
+        if (
+            run.resolved_model.provider == "openrouter"
+            and observation.get("outcome") == "succeeded"
+        ):
+            response_model = _required_receipt_text(observation, "response_model")
+            if response_model != requested_model:
+                raise RuntimeError(
+                    "OpenRouter response model differs from the frozen canonical model"
+                )
+            endpoint = str(
+                run.resolved_model.parameters.get("openrouter_endpoint", "")
+            ).split("/", 1)[0]
+            upstream = _required_receipt_text(observation, "upstream_provider")
+
+            def normalize(value: str) -> str:
+                return "".join(
+                    character for character in value.casefold() if character.isalnum()
+                )
+
+            if normalize(endpoint) != normalize(upstream):
+                raise RuntimeError(
+                    "OpenRouter upstream provider differs from the frozen endpoint"
+                )
+        receipt_type = (
+            ProviderCallReceiptV2
+            if run.resolved_model.provider == "openrouter"
+            else ProviderCallReceipt
+        )
+        receipt = receipt_type(
             call_id=(f"{run_id}:turn:{turn}:attempt:{attempt}"),
             run_id=run_id,
             turn=turn,
@@ -470,6 +513,17 @@ def _provider_receipt_recorder(
             ),
             failure_type=_receipt_text(observation, "failure_type"),
             http_status_code=_receipt_int(observation, "http_status_code"),
+            **(
+                {
+                    "upstream_provider": _receipt_text(
+                        observation, "upstream_provider"
+                    ),
+                    "cost_usd": observation.get("cost_usd"),
+                    "upstream_cost_usd": observation.get("upstream_cost_usd"),
+                }
+                if receipt_type is ProviderCallReceiptV2
+                else {}
+            ),
         )
         store.record_idempotent_json_artifact(
             run_id,
@@ -479,7 +533,9 @@ def _provider_receipt_recorder(
             producer="provider-client",
             artifact_type=ArtifactType.manifest,
             schema_type="caribou.provider_call_receipt",
-            schema_version_name="v1",
+            schema_version_name=(
+                "v2" if receipt_type is ProviderCallReceiptV2 else "v1"
+            ),
             turn=turn,
             current_agent=receipt.agent_name,
         )

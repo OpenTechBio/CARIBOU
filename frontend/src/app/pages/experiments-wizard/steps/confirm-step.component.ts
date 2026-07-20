@@ -23,6 +23,7 @@ export class ConfirmStepComponent {
   @Input() maxTurns = 10;
   @Input() provider: PresetProvider = 'openai';
   @Input() modelName = '';
+  @Input() openrouterEndpoint = '';
   @Input() executor: PresetExecutor = 'slurm';
   @Input() owner = '';
   @Input() reviewer = '';

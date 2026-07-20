@@ -138,8 +138,8 @@
             <strong>Browser handling</strong>
             <p>
               The token is stored in this tab's session storage and attached only as an
-              <code>Authorization: Bearer</code> header on <code>/api/control/*</code> requests. It
-              survives reloads in this tab, is normally cleared when the tab closes, and can be
+              <code>X-Caribou-Control-Token</code> header on <code>/api/control/*</code> requests.
+              It survives reloads in this tab, is normally cleared when the tab closes, and can be
               removed immediately with Clear token.
             </p>
           </div>

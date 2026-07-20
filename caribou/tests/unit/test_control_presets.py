@@ -167,6 +167,55 @@ def test_deepseek_preset_rejects_retiring_alias(
     }
 
 
+def test_openrouter_preset_freezes_strict_private_routing(
+    resolver: PresetResolver,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "openrouter.h5ad"
+    dataset.write_bytes(b"frozen-dataset")
+    spec = resolver.resolve(
+        "single_agent_qc",
+        dataset_path=str(dataset),
+        model_provider="openrouter",
+        model_name="anthropic/claude-fixed-20260720",
+        openrouter_endpoint="anthropic",
+        profile="fast",
+        max_turns=10,
+        executor="local",
+        owner="test-operator",
+        reviewer="test-reviewer",
+    )
+
+    parameters = dict(spec.conditions[0].model.parameters)
+    assert parameters["openrouter_endpoint"] == "anthropic"
+    assert parameters["openrouter_allow_fallbacks"] is False
+    assert parameters["openrouter_zdr"] is True
+    assert parameters["openrouter_data_collection"] == "deny"
+    assert validate_control_spec(spec, require_submit_adapter=True)
+
+
+def test_openrouter_preset_rejects_dynamic_alias(
+    resolver: PresetResolver,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "openrouter-alias.h5ad"
+    dataset.write_bytes(b"frozen-dataset")
+    with pytest.raises(ControlError) as failure:
+        resolver.resolve(
+            "single_agent_qc",
+            dataset_path=str(dataset),
+            model_provider="openrouter",
+            model_name="~anthropic/claude-latest",
+            openrouter_endpoint="anthropic",
+            profile="fast",
+            max_turns=10,
+            executor="local",
+            owner="test-operator",
+            reviewer="test-reviewer",
+        )
+    assert failure.value.code == "PRESET_OPENROUTER_MODEL_INVALID"
+
+
 @pytest.mark.parametrize(
     ("updates", "expected_code"),
     [

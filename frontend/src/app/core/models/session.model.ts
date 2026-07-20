@@ -34,6 +34,7 @@ export interface SessionCreateRequest {
   run_mode: RunMode;
   agent_system: string;
   llm_backend: string;
+  model_name?: string;
   ollama_model?: string;
   sandbox_type: SandboxType;
   dataset_path: string;
@@ -42,6 +43,37 @@ export interface SessionCreateRequest {
   initial_prompt?: string;
   compress_memory?: boolean;
   agent_report_memory?: boolean;
+}
+
+export interface OpenRouterModel {
+  id: string;
+  canonical_slug: string;
+  name: string;
+  context_length: number | null;
+  pricing: Record<string, string>;
+  supported_parameters: string[];
+  description: string | null;
+  expiration_date: string | null;
+}
+
+export interface OpenRouterCatalogue {
+  models: OpenRouterModel[];
+  fetched_at: number;
+  stale: boolean;
+  catalog_url: string;
+}
+
+export interface OpenRouterEndpoint {
+  slug: string;
+  name: string;
+  context_length: number | null;
+  pricing: Record<string, string>;
+}
+
+export interface OpenRouterEndpointsResponse {
+  model_id: string;
+  endpoints: OpenRouterEndpoint[];
+  catalog_url: string;
 }
 
 export interface Message {

@@ -316,6 +316,7 @@ class PresetResolver:
         dataset_path: str,
         model_provider: str,
         model_name: str,
+        openrouter_endpoint: str | None = None,
         profile: PresetProfile,
         max_turns: int | None,
         executor: str,
@@ -330,10 +331,10 @@ class PresetResolver:
                 exit_code=ExitCode.validation,
             )
         provider = model_provider.strip().casefold()
-        if provider not in {"openai", "deepseek"}:
+        if provider not in {"openai", "deepseek", "openrouter"}:
             raise ControlError(
                 "PRESET_PROVIDER_UNSUPPORTED",
-                "preset experiments support openai or deepseek",
+                "preset experiments support openai, deepseek, or openrouter",
                 exit_code=ExitCode.validation,
                 details={"provider": provider},
             )
@@ -358,6 +359,37 @@ class PresetResolver:
                     details={"supported_models": list(DEEPSEEK_MODEL_IDS)},
                 ) from exc
             model_parameters.update(deepseek_profile.model_parameters())
+        if provider == "openrouter":
+            from caribou.core.openrouter import (
+                OpenRouterError,
+                validate_openrouter_model_id,
+            )
+
+            try:
+                resolved_model_name = validate_openrouter_model_id(
+                    resolved_model_name, strict=True
+                )
+            except OpenRouterError as exc:
+                raise ControlError(
+                    "PRESET_OPENROUTER_MODEL_INVALID",
+                    str(exc),
+                    exit_code=ExitCode.validation,
+                ) from exc
+            endpoint = (openrouter_endpoint or "").strip()
+            if not endpoint:
+                raise ControlError(
+                    "PRESET_OPENROUTER_ENDPOINT_REQUIRED",
+                    "select an OpenRouter provider endpoint",
+                    exit_code=ExitCode.validation,
+                )
+            model_parameters.update(
+                {
+                    "openrouter_endpoint": endpoint,
+                    "openrouter_allow_fallbacks": False,
+                    "openrouter_zdr": True,
+                    "openrouter_data_collection": "deny",
+                }
+            )
         turns = definition.default_max_turns if max_turns is None else max_turns
         if (
             isinstance(turns, bool)

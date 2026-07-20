@@ -15,7 +15,11 @@ from caribou.control.api import (
     fail_json,
     machine_response,
 )
-from caribou.control.records import CheckpointRequest, ProviderCallReceipt
+from caribou.control.records import (
+    CheckpointRequest,
+    ProviderCallReceipt,
+    ProviderCallReceiptV2,
+)
 from caribou.control.service import ExperimentService
 from caribou.control.specs import (
     build_local_plan,
@@ -68,6 +72,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "budget": BudgetRecord,
     "aggregate": Aggregate,
     "provider-call-receipt": ProviderCallReceipt,
+    "provider-call-receipt-v2": ProviderCallReceiptV2,
     "checkpoint-request": CheckpointRequest,
 }
 

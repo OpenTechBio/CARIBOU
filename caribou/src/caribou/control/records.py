@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     model_validator,
 )
@@ -255,6 +256,28 @@ class ProviderCallReceipt(ControlRecord):
                 raise ValueError(
                     "failed provider call cannot contain response or usage fields"
                 )
+        return self
+
+
+class ProviderCallReceiptV2(ProviderCallReceipt):
+    """Provider receipt with provider-reported routing and cost accounting."""
+
+    schema_version: Literal["caribou.provider_call_receipt.v2"] = (
+        "caribou.provider_call_receipt.v2"
+    )
+    upstream_provider: Optional[NonEmptyStr] = None
+    cost_usd: Optional[StrictFloat] = Field(default=None, ge=0, allow_inf_nan=False)
+    upstream_cost_usd: Optional[StrictFloat] = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
+    cost_basis: Literal["provider_reported"] = "provider_reported"
+
+    @model_validator(mode="after")
+    def validate_v2_cost(self) -> "ProviderCallReceiptV2":
+        if self.outcome == "failed" and (
+            self.cost_usd is not None or self.upstream_cost_usd is not None
+        ):
+            raise ValueError("failed provider call cannot contain cost fields")
         return self
 
 

@@ -132,6 +132,7 @@
             >
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
 
@@ -158,6 +159,28 @@
                   <option [value]="model.id">{{ model.label }}</option>
                 }
               </select>
+            } @else if (provider === 'openrouter') {
+              <select
+                id="model-name"
+                [ngModel]="modelName"
+                (ngModelChange)="modelNameChange.emit($event)"
+                title="Select an account-authorized canonical OpenRouter model"
+              >
+                @for (
+                  model of config.openRouterCatalogue()?.models || [];
+                  track model.canonical_slug
+                ) {
+                  <option [value]="model.canonical_slug">
+                    {{ model.name }} · {{ model.canonical_slug }}
+                  </option>
+                }
+              </select>
+              <small>
+                Canonical model identifier preserved permanently.
+                <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer"
+                  >Browse catalogue</a
+                >
+              </small>
             } @else {
               <input
                 id="model-name"
@@ -171,6 +194,39 @@
             <small>This value becomes part of the permanent run record.</small>
           </div>
         </div>
+
+        @if (provider === 'openrouter') {
+          <div class="field-grid">
+            <div class="field">
+              <div class="field-label">
+                <label for="openrouter-endpoint">Inference provider endpoint</label>
+                <button
+                  type="button"
+                  class="help-tip"
+                  appTooltip="Frozen for reproducibility; OpenRouter fallbacks are disabled for this experiment"
+                  aria-label="About OpenRouter endpoint routing"
+                >
+                  ?
+                </button>
+              </div>
+              <select
+                id="openrouter-endpoint"
+                [ngModel]="openrouterEndpoint"
+                (ngModelChange)="openrouterEndpointChange.emit($event)"
+                [disabled]="loadingOpenrouterEndpoints()"
+              >
+                <option value="">Select an endpoint…</option>
+                @for (endpoint of openrouterEndpoints(); track endpoint.slug) {
+                  <option [value]="endpoint.slug">{{ endpoint.name }} · {{ endpoint.slug }}</option>
+                }
+              </select>
+              <small>Zero retention and no provider data collection are required.</small>
+              @if (openrouterError()) {
+                <small class="field-error">{{ openrouterError() }}</small>
+              }
+            </div>
+          </div>
+        }
       </section>
 
       <section class="form-section" aria-labelledby="accountability-heading">

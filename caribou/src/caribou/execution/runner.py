@@ -254,10 +254,17 @@ def _provider_count(value: object | None) -> int | None:
     return value
 
 
+def _provider_cost(value: object | None) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return float(value)
+
+
 def _provider_success_observation(response: object) -> Dict[str, object]:
     usage = _provider_value(response, "usage")
     prompt_details = _provider_value(usage, "prompt_tokens_details")
     completion_details = _provider_value(usage, "completion_tokens_details")
+    cost_details = _provider_value(usage, "cost_details")
     cached_tokens = _provider_count(_provider_value(prompt_details, "cached_tokens"))
     if cached_tokens is None:
         cached_tokens = _provider_count(
@@ -273,6 +280,7 @@ def _provider_success_observation(response: object) -> Dict[str, object]:
         "request_id": _provider_text(_provider_value(response, "_request_id"))
         or _provider_text(_provider_value(response, "request_id")),
         "response_model": _provider_text(_provider_value(response, "model")),
+        "upstream_provider": _provider_text(_provider_value(response, "provider")),
         "system_fingerprint": _provider_text(
             _provider_value(response, "system_fingerprint")
         ),
@@ -289,6 +297,10 @@ def _provider_success_observation(response: object) -> Dict[str, object]:
         "reasoning_tokens": _provider_count(
             _provider_value(completion_details, "reasoning_tokens")
         ),
+        "cost_usd": _provider_cost(_provider_value(usage, "cost")),
+        "upstream_cost_usd": _provider_cost(
+            _provider_value(cost_details, "upstream_inference_cost")
+        ),
         "failure_type": None,
         "http_status_code": None,
     }
@@ -301,6 +313,7 @@ def _provider_failure_observation(error: Exception) -> Dict[str, object]:
         "response_id": None,
         "request_id": _provider_text(_provider_value(error, "request_id")),
         "response_model": None,
+        "upstream_provider": None,
         "system_fingerprint": None,
         "finish_reason": None,
         "prompt_tokens": None,
@@ -309,6 +322,8 @@ def _provider_failure_observation(error: Exception) -> Dict[str, object]:
         "cached_tokens": None,
         "cache_miss_tokens": None,
         "reasoning_tokens": None,
+        "cost_usd": None,
+        "upstream_cost_usd": None,
         "failure_type": type(error).__name__,
         "http_status_code": (
             status_code
