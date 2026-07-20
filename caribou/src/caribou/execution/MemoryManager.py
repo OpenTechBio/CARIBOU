@@ -2,6 +2,8 @@ from __future__ import annotations
 import json
 from typing import List, Dict
 
+from caribou.execution.token_utils import estimate_message_tokens, estimate_messages_tokens
+
 # Bound on how many episodic summaries we keep. Older summaries are dropped
 # so the context we send never grows unboundedly during multi-hour sessions.
 _MAX_SUMMARIZED_LOG = 20
@@ -195,3 +197,81 @@ class MemoryManager:
             + working_history
         )
         return context_to_send
+
+    def get_context_breakdown(self) -> Dict:
+        """Categorize the assembled context window by source bucket and role,
+        both by message count and by estimated token count (see token_utils)."""
+        working_history = self._full_history[-self.config["working_history_size"]:] if self._full_history else []
+        working_user = working_assistant = working_system = 0
+        working_user_tokens = working_assistant_tokens = working_system_tokens = 0
+        for msg in working_history:
+            role = msg.get("role", "unknown")
+            tokens = estimate_message_tokens(msg)
+            if role == "user":
+                working_user += 1
+                working_user_tokens += tokens
+            elif role == "assistant":
+                working_assistant += 1
+                working_assistant_tokens += tokens
+            else:
+                working_system += 1
+                working_system_tokens += tokens
+
+        pinned_tokens = estimate_messages_tokens(self._pinned_messages)
+        pivotal_tokens = estimate_messages_tokens(self._pivotal_code)
+        summaries_tokens = estimate_messages_tokens(self._summarized_log)
+        working_tokens = working_user_tokens + working_assistant_tokens + working_system_tokens
+
+        return {
+            "pinned_system": len(self._pinned_messages),
+            "pivotal_code": len(self._pivotal_code),
+            "summaries": len(self._summarized_log),
+            "working_user": working_user,
+            "working_assistant": working_assistant,
+            "working_system": working_system,
+            "total": (
+                len(self._pinned_messages)
+                + len(self._pivotal_code)
+                + len(self._summarized_log)
+                + working_user
+                + working_assistant
+                + working_system
+            ),
+            "total_full_history": len(self._full_history),
+            "pinned_system_tokens": pinned_tokens,
+            "pivotal_code_tokens": pivotal_tokens,
+            "summaries_tokens": summaries_tokens,
+            "working_user_tokens": working_user_tokens,
+            "working_assistant_tokens": working_assistant_tokens,
+            "working_system_tokens": working_system_tokens,
+            "total_tokens": pinned_tokens + pivotal_tokens + summaries_tokens + working_tokens,
+            "total_full_history_tokens": estimate_messages_tokens(self._full_history),
+        }
+
+    def get_state(self) -> Dict:
+        """Read-only snapshot of memory state for inspection by the UI."""
+        chunk_size = self.config["chunk_size_to_summarize"]
+        working_tail = self.config["working_history_size"]
+        summarized_msg_count = len(self._summarized_log) * chunk_size
+        total = len(self._full_history)
+        head = len(self._pinned_messages)
+        unsummarized = max(0, total - head - working_tail - summarized_msg_count)
+        breakdown = self.get_context_breakdown()
+        return {
+            "strategy": "episodic",
+            "config": dict(self.config),
+            "total_messages": total,
+            "pinned_count": head,
+            "summary_entries": len(self._summarized_log),
+            "summarized_message_count": summarized_msg_count,
+            "unsummarized_count": unsummarized,
+            "pivotal_code_count": len(self._pivotal_code),
+            "working_history_count": min(working_tail, total),
+            "context_estimate": len(self._pinned_messages)
+            + len(self._pivotal_code)
+            + len(self._summarized_log)
+            + min(working_tail, total),
+            "context_estimate_tokens": breakdown["total_tokens"],
+            "total_full_history_tokens": breakdown["total_full_history_tokens"],
+            "context_breakdown": breakdown,
+        }

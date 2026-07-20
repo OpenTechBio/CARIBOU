@@ -131,6 +131,10 @@ export class DashboardComponent implements OnInit {
     dataset_path: '',
     max_turns: 20,
     initial_prompt: '',
+    memory_strategy: 'full',
+    memory_working_history_size: 4,
+    memory_summarization_threshold: 20,
+    memory_chunk_size: 10,
   };
 
   availableBackends = computed(() =>
@@ -215,6 +219,10 @@ export class DashboardComponent implements OnInit {
       this.availableBackends().find((backend) => backend.available) ??
       this.availableBackends().find((backend) => backend.id === 'ollama');
     if (be && !this.form.llm_backend) this.form.llm_backend = be.id;
+    this.form.memory_strategy = 'full';
+    this.form.memory_working_history_size = 4;
+    this.form.memory_summarization_threshold = 20;
+    this.form.memory_chunk_size = 10;
     this.applyOllamaDefaultModel();
   }
 

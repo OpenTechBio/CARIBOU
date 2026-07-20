@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 
 from rich.console import Console
 
+from caribou.execution.token_utils import estimate_messages_tokens, estimate_tokens
+
 
 class AgentReportMemory:
     """
@@ -47,6 +49,40 @@ class AgentReportMemory:
             context.append({"role": "user", "content": "Continue with the next step."})
 
         return context
+
+    def get_state(self) -> Dict[str, object]:
+        """Read-only snapshot of report-memory state for inspection by the UI."""
+        global_tokens = estimate_messages_tokens(self._global_messages)
+        agent_reports_tokens = estimate_messages_tokens(self._agent_reports)
+        agent_prompt_tokens = estimate_tokens(self._agent_prompt) if self._agent_prompt else 0
+        total_messages = (
+            len(self._global_messages) + (1 if self._agent_prompt else 0) + len(self._agent_reports)
+        )
+        total_tokens = global_tokens + agent_prompt_tokens + agent_reports_tokens
+        return {
+            "strategy": "agent_report",
+            "global_message_count": len(self._global_messages),
+            "report_count": len(self._agent_reports),
+            "has_agent_prompt": bool(self._agent_prompt),
+            "context_breakdown": {
+                "pinned_system": 0,
+                "pivotal_code": 0,
+                "summaries": 0,
+                "working_user": 0,
+                "working_assistant": 0,
+                "working_system": 0,
+                "total": total_messages,
+                "total_full_history": total_messages,
+                "global_messages": len(self._global_messages),
+                "agent_reports": len(self._agent_reports),
+                "has_agent_prompt": bool(self._agent_prompt),
+                "global_messages_tokens": global_tokens,
+                "agent_reports_tokens": agent_reports_tokens,
+                "agent_prompt_tokens": agent_prompt_tokens,
+                "total_tokens": total_tokens,
+                "total_full_history_tokens": total_tokens,
+            },
+        }
 
 
 def _write_session_report(

@@ -42,6 +42,15 @@
         <app-icon [name]="showTimeline() ? 'x' : 'list'" />
         <span>Timeline</span>
       </button>
+      <button class="btn btn-ghost btn-sm" type="button"
+        aria-label="Show context breakdown"
+        title="View context composition and memory plan"
+        [class.active]="showContext()"
+        (click)="toggleContext()"
+        *ngIf="chatItems().length > 0">
+        <app-icon [name]="showContext() ? 'x' : 'sliders'" />
+        <span>Context</span>
+      </button>
       @if (session(); as s) {
         <a class="btn btn-ghost btn-sm" [href]="sessionSvc.notebookDownloadUrl(s.id)" download
            aria-label="Download session notebook"
@@ -383,8 +392,59 @@
           }
           <span class="ml">Sandbox</span><span>{{ s.sandbox_type }}</span>
           <span class="ml">Mode</span><span>{{ s.mode }}</span>
+          @if (s.memory; as mem) {
+            <span class="ml">Memory</span>
+            <span>
+              {{ mem.strategy }}
+              @if (mem.strategy !== 'full' && mem.strategy !== 'none') {
+                · {{ mem.working_history_size }}w · t{{ mem.summarization_threshold }} · c{{ mem.chunk_size }}
+              }
+            </span>
+          }
         </div>
       </section>
+
+      @if (memoryActive() && memoryState(); as ms) {
+        <section class="sidebar-section">
+          <h3>Memory <span class="count">{{ ms.total_messages }}</span></h3>
+          <div class="memory-stats">
+            <div class="memory-stat">
+              <span class="memory-stat-label">Total messages</span>
+              <span class="memory-stat-value">{{ ms.total_messages }}</span>
+            </div>
+            @if ((ms.summarized_message_count ?? 0) > 0) {
+              <div class="memory-stat">
+                <span class="memory-stat-label">Summarized</span>
+                <span class="memory-stat-value">{{ ms.summarized_message_count }} ({{ ms.summary_entries }} entries)</span>
+              </div>
+            }
+            <div class="memory-stat">
+              <span class="memory-stat-label">Unsummarized</span>
+              <span class="memory-stat-value">{{ ms.unsummarized_count }}</span>
+            </div>
+            <div class="memory-stat">
+              <span class="memory-stat-label">Working history</span>
+              <span class="memory-stat-value">{{ ms.working_history_count }}</span>
+            </div>
+            @if ((ms.pivotal_code_count ?? 0) > 0) {
+              <div class="memory-stat">
+                <span class="memory-stat-label">Pivotal code</span>
+                <span class="memory-stat-value">{{ ms.pivotal_code_count }}</span>
+              </div>
+            }
+            <div class="memory-stat">
+              <span class="memory-stat-label" title="Approximate — estimated at ~4 characters per token, not an exact tokenizer count">Context estimate</span>
+              <span class="memory-stat-value">~{{ ms.context_estimate_tokens ?? '?' }} tok ({{ ms.context_estimate }} msgs)</span>
+            </div>
+            @if (ms.report_count !== undefined) {
+              <div class="memory-stat">
+                <span class="memory-stat-label">Agent reports</span>
+                <span class="memory-stat-value">{{ ms.report_count }}</span>
+              </div>
+            }
+          </div>
+        </section>
+      }
     </aside>
   </div>
 
@@ -424,6 +484,16 @@
           <app-icon name="send" />
           <span>Send</span>
         </button>
+        @if (isIdle() && session()?.mode === 'interactive' && (session()?.current_turn ?? 0) > 0) {
+          <button
+            class="btn btn-ghost send-btn"
+            (click)="continueSession()"
+            [disabled]="isError() || isStopped() || isRunning() || waitingForAgent() || isInitializing()"
+            aria-label="Send continue">
+            <app-icon name="play" />
+            <span>Continue</span>
+          </button>
+        }
       }
   </footer>
 
@@ -446,6 +516,118 @@
         </dl>
         <div class="dialog-actions">
           <button class="btn btn-primary btn-sm" (click)="showShortcutHelp.set(false)">Close</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Context inspector modal -->
+  @if (showContext()) {
+    <div class="overlay" (click)="showContext.set(false)" role="dialog" aria-label="Context breakdown">
+      <div class="context-dialog" (click)="$event.stopPropagation()">
+        <h3>Context Inspector</h3>
+
+        @if (contextSummary(); as cs) {
+          <div class="context-strategy">
+            <span class="context-strategy-badge">{{ cs.strategy === 'full' ? 'Full (keep all)' : cs.strategy === 'episodic' ? 'Episodic' : cs.strategy === 'agent_report' ? 'Agent Report' : cs.strategy }}</span>
+            @if (cs.strategy === 'episodic' && cs.working_history_size) {
+              <span class="context-strategy-params">
+                Working window: {{ cs.working_history_size }} · Threshold: {{ cs.summarization_threshold }} · Chunk: {{ cs.chunk_size }}
+              </span>
+            }
+          </div>
+
+          <div class="context-bar-wrapper">
+            <div class="context-bar" role="img" aria-label="Context composition bar chart, sized by estimated tokens">
+              @for (b of contextBreakdown(); track b.label) {
+                <div
+                  class="context-bar-seg"
+                  [title]="b.label + ': ~' + b.tokens + ' tokens, ' + b.msgs + ' msgs (' + ((b.pct * 100) | number:'1.0-0') + '%)'"
+                  [style.background-color]="b.color"
+                  [style.flex-grow]="b.tokens"
+                  aria-hidden="true"
+                ></div>
+              }
+            </div>
+          </div>
+
+          <table class="context-table">
+            <thead>
+              <tr><th>Category</th><th title="Approximate — estimated at ~4 characters per token, not an exact tokenizer count">~Tokens</th><th>Msgs</th><th>Share</th></tr>
+            </thead>
+            <tbody>
+              @for (b of contextBreakdown(); track b.label) {
+                <tr>
+                  <td>
+                    <span class="context-swatch" [style.background-color]="b.color" aria-hidden="true"></span>
+                    {{ b.label }}
+                  </td>
+                  <td class="num">{{ b.tokens }}</td>
+                  <td class="num">{{ b.msgs }}</td>
+                  <td class="num">{{ (b.pct * 100) | number:'1.0-0' }}%</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td><strong>Context window</strong></td>
+                <td class="num"><strong>~{{ cs.total_tokens }}</strong></td>
+                <td class="num"><strong>{{ cs.total }}</strong></td>
+                <td></td>
+              </tr>
+              <tr class="dim">
+                <td>Full history</td>
+                <td class="num">~{{ cs.total_full_history_tokens }}</td>
+                <td class="num">{{ cs.total_full_history }}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+          <p class="dim context-token-note">Token counts are estimates (~4 chars/token), not an exact tokenizer count.</p>
+
+          @if (cs.strategy === 'episodic') {
+            <div class="context-plan">
+              <h4>Memory plan</h4>
+              <div class="context-plan-bar" aria-label="Memory layout visualization">
+                <div class="plan-pinned">Pinned (~{{ cs.pinned_system_tokens }} tok, {{ cs.pinned_system }} msgs)</div>
+                <div class="plan-summarized">Summarized ({{ cs.summaries }} entries, ~{{ cs.summarized_message_count }} original msgs, ~{{ cs.summaries_tokens }} tok)</div>
+                <div class="plan-working">Working (~{{ (cs.working_user_tokens ?? 0) + (cs.working_assistant_tokens ?? 0) + (cs.working_system_tokens ?? 0) }} tok, {{ cs.working_user + cs.working_assistant + cs.working_system }} msgs)</div>
+              </div>
+              <ul>
+                <li><strong>Pinned:</strong> First {{ cs.pinned_system }} system messages kept in every context.</li>
+                <li><strong>Summarization:</strong> Triggers when unsummarized messages exceed {{ cs.summarization_threshold }}. Each summary condenses {{ cs.chunk_size }} messages.</li>
+                <li><strong>Working window:</strong> Last {{ cs.working_history_size }} messages always kept in full.</li>
+              </ul>
+            </div>
+          }
+
+          @if (cs.strategy === 'agent_report') {
+            <div class="context-plan">
+              <h4>Memory plan</h4>
+              <ul>
+                <li><strong>Global messages:</strong> {{ cs.global_messages ?? 0 }} system prompts (~{{ cs.global_messages_tokens ?? 0 }} tok).</li>
+                <li><strong>Agent reports:</strong> {{ cs.agent_reports ?? 0 }} handoff reports from prior agents (~{{ cs.agent_reports_tokens ?? 0 }} tok).</li>
+                <li><strong>Agent prompt:</strong> {{ cs.has_agent_prompt ? 'Active (~' + (cs.agent_prompt_tokens ?? 0) + ' tok)' : 'None' }}.</li>
+              </ul>
+            </div>
+          }
+
+          @if (cs.strategy === 'full') {
+            <div class="context-plan">
+              <h4>Memory plan</h4>
+              <p class="dim">No summarization — all messages are kept in full. Context grows without bound.</p>
+            </div>
+          }
+        } @else if (memoryStateError()) {
+          <p class="dim">Failed to load context data.
+            <button class="btn btn-ghost btn-sm" type="button" (click)="retryMemoryState()">Retry</button>
+          </p>
+        } @else {
+          <p class="dim">Loading context data…</p>
+        }
+
+        <div class="dialog-actions">
+          <button class="btn btn-primary btn-sm" (click)="showContext.set(false)">Close</button>
         </div>
       </div>
     </div>
