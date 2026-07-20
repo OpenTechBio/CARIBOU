@@ -153,6 +153,7 @@ export class DashboardComponent implements OnInit {
         s.id.toLowerCase().includes(q) ||
         s.agent_system.toLowerCase().includes(q) ||
         s.llm_backend.toLowerCase().includes(q) ||
+        (s.resolved_model?.model ?? '').toLowerCase().includes(q) ||
         (s.current_agent ?? '').toLowerCase().includes(q)
       );
     }

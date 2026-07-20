@@ -119,9 +119,12 @@ def test_web_submit_status_events_and_verified_artifact_use_shared_store(
         range(1, cursor + 1)
     )
     assert events["data"]["has_more"] is False
-    assert _payload(
-        run_events(run_id, after=cursor, limit=1000, service=service)
-    )["data"]["events"] == []
+    assert (
+        _payload(run_events(run_id, after=cursor, limit=1000, service=service))["data"][
+            "events"
+        ]
+        == []
+    )
 
     listed = _payload(list_artifacts(run_id, service))
     assert listed["data"]["count"] == 1
@@ -170,14 +173,12 @@ def test_web_checkpoint_resume_and_cancel_preserve_interface_and_actor(
     monkeypatch.setattr(
         agent_workload,
         "_verify_code_identity",
-        lambda _expected_commit, _adapter: None,
+        lambda _expected_commit, _adapter, **_kwargs: None,
     )
     assert execute_worker(service.store, source_id) == 0
     assert service.store.run(source_id).state == RunState.resumable
 
-    checkpoints = _payload(list_checkpoints(source_id, service))["data"][
-        "checkpoints"
-    ]
+    checkpoints = _payload(list_checkpoints(source_id, service))["data"]["checkpoints"]
     assert len(checkpoints) == 1
     checkpoint_id = checkpoints[0]["checkpoint_id"]
 
@@ -240,7 +241,12 @@ def test_web_control_errors_keep_machine_contract(
 
 def test_control_access_is_default_off_and_requires_exact_bearer_token(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(
+        "caribou.core.control_access.ENV_FILE",
+        tmp_path / "missing.env",
+    )
     monkeypatch.delenv("CARIBOU_CONTROL_API_TOKEN", raising=False)
     with pytest.raises(HTTPException) as disabled:
         require_control_access(None)
@@ -331,11 +337,12 @@ def test_control_routing_errors_are_sanitized_machine_responses(
     assert "must-not-leak" not in response.body.decode("utf-8")
 
 
-def test_frontend_control_client_keeps_token_session_scoped_and_headers_all_calls() -> None:
+def test_frontend_control_client_keeps_token_session_scoped_and_headers_all_calls() -> (
+    None
+):
     repository_root = Path(__file__).resolve().parents[3]
     service_source = (
-        repository_root
-        / "frontend/src/app/core/services/experiment-control.service.ts"
+        repository_root / "frontend/src/app/core/services/experiment-control.service.ts"
     ).read_text(encoding="utf-8")
     template_source = (
         repository_root / "frontend/src/app/pages/experiments/experiments.html"

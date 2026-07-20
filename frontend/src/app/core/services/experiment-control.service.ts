@@ -8,6 +8,9 @@ import {
   CheckpointsData,
   EventsData,
   MachineResponse,
+  PresetResolveData,
+  PresetResolveRequest,
+  PresetSummary,
   ResumeData,
   StatusData,
   SubmitData,
@@ -41,6 +44,24 @@ export class ExperimentControlService {
   schema(): Observable<MachineResponse<{ name: string; schema: Record<string, unknown> }>> {
     return this.http.get<MachineResponse<{ name: string; schema: Record<string, unknown> }>>(
       'api/control/schema/experiment',
+      { headers: this.authorizationHeaders() },
+    );
+  }
+
+  presets(): Observable<MachineResponse<{ presets: PresetSummary[] }>> {
+    return this.http.get<MachineResponse<{ presets: PresetSummary[] }>>(
+      'api/control/presets',
+      { headers: this.authorizationHeaders() },
+    );
+  }
+
+  resolvePreset(
+    presetId: string,
+    request: PresetResolveRequest,
+  ): Observable<MachineResponse<PresetResolveData>> {
+    return this.http.post<MachineResponse<PresetResolveData>>(
+      `api/control/presets/${encodeURIComponent(presetId)}/resolve`,
+      request,
       { headers: this.authorizationHeaders() },
     );
   }

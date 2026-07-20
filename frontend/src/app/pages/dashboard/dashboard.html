@@ -117,6 +117,8 @@
             <span>{{ session.agent_system }}</span>
             <span class="label">Backend</span>
             <span>{{ session.llm_backend }}</span>
+            <span class="label">Model</span>
+            <span>{{ session.resolved_model?.model || 'resolving…' }}</span>
             <span class="label">Turn</span>
             <span>{{ session.current_turn }}{{ session.max_turns ? ' / ' + session.max_turns : '' }}</span>
             <span class="label">Agent</span>
@@ -143,7 +145,7 @@
       <p class="confirm-detail">
         <code>{{ pendingDeleteId()?.slice(0, 8) }}</code>
         @if (pendingDeleteSession; as s) {
-          &nbsp;·&nbsp;{{ s.agent_system }}&nbsp;·&nbsp;{{ s.llm_backend }}
+          &nbsp;·&nbsp;{{ s.agent_system }}&nbsp;·&nbsp;{{ s.resolved_model?.model || s.llm_backend }}
         }
       </p>
       <p class="confirm-warning">This will permanently remove the session and all its messages. This cannot be undone.</p>

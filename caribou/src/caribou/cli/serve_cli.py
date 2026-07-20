@@ -9,6 +9,12 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm
 
+from caribou.config import ENV_FILE
+from caribou.core.control_access import (
+    ControlAccessToken,
+    resolve_control_access_token,
+)
+
 serve_app = typer.Typer(
     name="serve",
     help="Start the CARIBOU web server (API + Angular frontend).",
@@ -192,6 +198,23 @@ def _stop_process(process: subprocess.Popen) -> None:
         process.wait(timeout=5)
 
 
+def _announce_control_access_token(resolved: ControlAccessToken) -> None:
+    """Print the exact browser token deliberately requested for serve startup."""
+
+    if resolved.source == "generated":
+        source = f"generated once and saved to {resolved.env_file}"
+    elif resolved.source == "caribou_env_file":
+        source = f"reused from {resolved.env_file}"
+    else:
+        source = "CARIBOU_CONTROL_API_TOKEN from the current environment"
+    typer.echo("")
+    typer.echo("Experiment access token (paste into the Experiments page):")
+    typer.echo(resolved.value)
+    typer.echo(f"Token source: {source}")
+    typer.echo("Retrieve it later with: caribou config get-control-token")
+    typer.echo("Security: anyone with this token can operate experiments on this server.")
+
+
 @serve_app.callback(invoke_without_command=True)
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind to."),
@@ -218,11 +241,16 @@ def serve(
     if not refresh:
         _ensure_frontend_built(_FRONTEND_DIR, _FRONTEND_DIST)
 
+    control_access = resolve_control_access_token(create=True, env_file=ENV_FILE)
+    if control_access is None:  # Defensive: create=True always returns a token.
+        raise typer.Exit(1)
+
     display_host = _display_host(host)
     typer.echo(f"Starting CARIBOU server at http://{display_host}:{port}")
     if display_host != host:
         typer.echo(f"Backend bound to {host}:{port}")
     typer.echo(f"OOD access: https://<ood-host>/node/<hostname>/{port}/")
+    _announce_control_access_token(control_access)
 
     frontend_process = None
     proxy_config = None

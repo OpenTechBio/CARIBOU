@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import secrets
 from collections.abc import Callable
 from pathlib import Path
@@ -22,12 +21,10 @@ from caribou.control.api import (
 )
 from caribou.control.service import ExperimentService
 from caribou.control.specs import validate_control_spec
+from caribou.core.control_access import CONTROL_TOKEN_ENV, resolve_control_access_token
 from caribou.domain.enums import InterfaceOrigin
 from caribou.domain.models import ExperimentSpec
 from caribou.domain.serialization import model_hash
-
-
-_CONTROL_TOKEN_ENV = "CARIBOU_CONTROL_API_TOKEN"
 
 
 def require_control_access(
@@ -35,11 +32,12 @@ def require_control_access(
 ) -> None:
     """Require an operator-supplied bearer token for every control-plane route."""
 
-    expected = os.environ.get(_CONTROL_TOKEN_ENV, "")
-    if not expected:
+    resolved = resolve_control_access_token(create=False)
+    if resolved is None:
         error = ControlError(
             "CONTROL_API_DISABLED",
-            f"set {_CONTROL_TOKEN_ENV} before exposing the experiment control API",
+            "run 'caribou config get-control-token' or set "
+            f"{CONTROL_TOKEN_ENV} before exposing the experiment control API",
             exit_code=ExitCode.permission,
         )
         raise HTTPException(
@@ -48,7 +46,7 @@ def require_control_access(
         )
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.casefold() != "bearer" or not supplied or not secrets.compare_digest(
-        supplied, expected
+        supplied, resolved.value
     ):
         error = ControlError(
             "CONTROL_API_UNAUTHORIZED",

@@ -2,29 +2,217 @@
   <header class="page-header">
     <div>
       <a routerLink="/" class="back-link">← Sessions</a>
-      <h1>Durable experiments</h1>
-      <p>Operate the same experiment service and store used by the CARIBOU CLI.</p>
+      <h1>Experiments</h1>
+      <p>Create reproducible analyses, reconnect to active runs, and inspect their records.</p>
     </div>
-    <span class="contract-badge">caribou.machine_response.v1</span>
+    <div class="button-row">
+      <a
+        class="btn btn-primary"
+        routerLink="/experiments/wizard"
+        title="Open the guided setup for a new reproducible experiment"
+      >
+        <span aria-hidden="true">＋</span> New experiment
+      </a>
+      <span class="contract-badge" title="Machine-readable API response schema used by this page"
+        >caribou.machine_response.v1</span
+      >
+    </div>
   </header>
 
-  <section class="panel access-panel">
-    <div>
-      <h2>Control API access</h2>
-      <p>The bearer token is kept only in this browser tab's session storage and is sent only in request headers.</p>
+  <section class="panel launch-panel" aria-labelledby="create-experiment-title">
+    <div class="launch-copy">
+      <span class="eyebrow">Recommended</span>
+      <h2 id="create-experiment-title">Start with guided setup</h2>
+      <p>
+        Choose a dataset and analysis workflow, configure compute and model settings, then review
+        the frozen plan before anything runs.
+      </p>
+      <div class="launch-actions">
+        <a
+          class="btn btn-primary launch-button"
+          routerLink="/experiments/wizard"
+          title="Guides you through data, analysis, execution settings, and final review"
+        >
+          Create an experiment <span aria-hidden="true">→</span>
+        </a>
+        <a
+          class="btn btn-ghost"
+          href="#advanced-spec"
+          title="Jump to the JSON editor for an existing ExperimentSpec"
+        >
+          I already have a specification
+        </a>
+      </div>
     </div>
-    <div class="access-form">
-      <input type="password" [ngModel]="tokenInput()"
-        (ngModelChange)="tokenInput.set($event)"
-        (keyup.enter)="saveAccessToken()"
-        autocomplete="off" spellcheck="false" placeholder="Bearer token"
-        aria-label="Experiment control bearer token" />
-      <button class="btn btn-primary btn-sm" type="button" (click)="saveAccessToken()">Save for tab</button>
-      <button class="btn btn-ghost btn-sm" type="button" (click)="clearAccessToken()"
-        [disabled]="!tokenConfigured()">Clear</button>
-      <span class="access-state" [class.ready]="tokenConfigured()">
-        {{ tokenConfigured() ? 'Token configured' : 'Token required' }}
-      </span>
+    <ol class="launch-steps" aria-label="Guided experiment setup steps">
+      <li>
+        <span>1</span>
+        <div><strong>Choose data</strong><small>Select the frozen input dataset.</small></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Choose analysis</strong><small>Start from a supported workflow.</small></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div>
+          <strong>Review and submit</strong><small>Verify the exact plan before launch.</small>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="panel access-panel" aria-labelledby="experiment-access-title">
+    <div class="access-overview">
+      <div class="access-heading">
+        <span class="access-icon" aria-hidden="true">◆</span>
+        <div>
+          <span class="eyebrow neutral">Required for experiment controls</span>
+          <div class="heading-with-help">
+            <h2 id="experiment-access-title">Experiment access</h2>
+            <button
+              type="button"
+              class="help-tip"
+              appTooltip="A shared CARIBOU deployment secret that authorizes experiment creation, monitoring, cancellation, and artifact access"
+              aria-label="What is an experiment access token?"
+            >
+              ?
+            </button>
+          </div>
+        </div>
+      </div>
+      <p class="access-intro">
+        This token proves that you are allowed to operate experiments on this CARIBOU server. It is
+        provided by the server operator and is <strong>not</strong> an OpenAI, DeepSeek, or other
+        model API key.
+      </p>
+
+      <div class="access-flow" aria-label="How experiment access works">
+        <div>
+          <span>1</span>
+          <p><strong>Get the token</strong><small>From your CARIBOU server operator</small></p>
+        </div>
+        <span class="flow-arrow" aria-hidden="true">→</span>
+        <div>
+          <span>2</span>
+          <p><strong>Save and verify</strong><small>Once for this browser tab</small></p>
+        </div>
+        <span class="flow-arrow" aria-hidden="true">→</span>
+        <div>
+          <span>3</span>
+          <p><strong>Use experiments</strong><small>The browser authorizes each request</small></p>
+        </div>
+      </div>
+
+      <div class="access-cli-hint">
+        <div>
+          <span>Have terminal access?</span>
+          <code>caribou config get-control-token</code>
+        </div>
+        <p>
+          <code>caribou serve</code> also displays this same persistent token when the server
+          starts.
+        </p>
+      </div>
+
+      <details class="access-details">
+        <summary>Where do I get this token, and where is it stored?</summary>
+        <div class="access-detail-grid">
+          <div>
+            <strong>Using a shared server</strong>
+            <p>
+              If you have terminal access under the CARIBOU service account, run
+              <code>caribou config get-control-token</code>. Otherwise, request the token from the
+              server operator through an approved secure channel.
+            </p>
+          </div>
+          <div>
+            <strong>Running CARIBOU yourself</strong>
+            <p>
+              <code>caribou serve</code> displays the token during startup. If none exists, it
+              generates one and saves it in CARIBOU's protected environment file; later serve runs
+              reuse it.
+            </p>
+          </div>
+          <div>
+            <strong>Browser handling</strong>
+            <p>
+              The token is stored in this tab's session storage and attached only as an
+              <code>Authorization: Bearer</code> header on <code>/api/control/*</code> requests. It
+              survives reloads in this tab, is normally cleared when the tab closes, and can be
+              removed immediately with Clear token.
+            </p>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="access-entry">
+      <label for="experiment-access-token">
+        Experiment access token
+        <small>Never paste a model-provider API key here.</small>
+      </label>
+      <div class="token-entry-row">
+        <input
+          id="experiment-access-token"
+          type="password"
+          [ngModel]="tokenInput()"
+          (ngModelChange)="tokenInput.set($event)"
+          (keyup.enter)="saveAccessToken()"
+          autocomplete="off"
+          spellcheck="false"
+          [placeholder]="
+            tokenConfigured() ? 'Paste a replacement token' : 'Paste experiment access token'
+          "
+          aria-label="Experiment access token"
+          title="CARIBOU experiment token supplied by this server's operator"
+        />
+        <button
+          class="btn btn-primary"
+          type="button"
+          (click)="saveAccessToken()"
+          [disabled]="accessStatus() === 'checking'"
+          title="Save this token in the current tab and verify it with a read-only server request"
+        >
+          {{ accessStatus() === 'checking' ? 'Checking…' : 'Save & verify' }}
+        </button>
+      </div>
+      <div class="access-secondary-actions">
+        <button
+          class="btn btn-ghost btn-sm"
+          type="button"
+          (click)="verifyAccess()"
+          [disabled]="!tokenConfigured() || accessStatus() === 'checking'"
+          title="Check the stored token using a read-only schema request"
+        >
+          Verify stored token
+        </button>
+        <button
+          class="btn btn-ghost btn-sm"
+          type="button"
+          (click)="clearAccessToken()"
+          [disabled]="!tokenConfigured()"
+          title="Remove the experiment access token from this browser tab"
+        >
+          Clear token
+        </button>
+      </div>
+
+      <div
+        class="access-status-card"
+        [class.saved]="accessStatus() === 'saved'"
+        [class.checking]="accessStatus() === 'checking'"
+        [class.verified]="accessStatus() === 'verified'"
+        [class.invalid]="accessStatus() === 'invalid'"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="status-dot" aria-hidden="true"></span>
+        <div>
+          <strong>{{ accessStatusLabel() }}</strong>
+          <p>{{ accessStatusDetail() }}</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -33,45 +221,88 @@
   }
 
   <section class="two-column">
-    <article class="panel specification-panel">
+    <article class="panel specification-panel" id="advanced-spec">
       <div class="panel-title">
         <div>
-          <h2>Submit a frozen specification</h2>
-          <p>JSON is validated by the canonical ExperimentSpec model.</p>
+          <span class="eyebrow neutral">Advanced</span>
+          <h2>Submit an existing specification</h2>
+          <p>For operators who already have canonical ExperimentSpec JSON.</p>
         </div>
-        <button class="btn btn-ghost btn-sm" type="button" (click)="showSchema()"
-          [disabled]="!tokenConfigured() || action() !== null">View schema</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          type="button"
+          (click)="showSchema()"
+          [disabled]="!tokenConfigured() || action() !== null"
+          title="Inspect the canonical JSON schema accepted by the experiment service"
+        >
+          View schema
+        </button>
       </div>
 
-      <label class="file-picker">
+      <label class="file-picker" title="Load a saved ExperimentSpec JSON file into the editor">
         <span>Load ExperimentSpec JSON</span>
         <input type="file" accept=".json,application/json" (change)="onSpecFile($event)" />
       </label>
-      <textarea class="spec-editor" [ngModel]="specificationText()"
+      <textarea
+        class="spec-editor"
+        [ngModel]="specificationText()"
         (ngModelChange)="specificationText.set($event)"
         placeholder='{"schema_version":"caribou.experiment_spec.v1", ...}'
-        aria-label="Experiment specification JSON"></textarea>
+        aria-label="Experiment specification JSON"
+        title="Paste the complete canonical experiment specification as JSON"
+      ></textarea>
 
       <div class="field-grid">
         <label>
           <span>Idempotency key</span>
-          <input type="text" [ngModel]="idempotencyKey()"
-            (ngModelChange)="idempotencyKey.set($event)" placeholder="study-condition-v1" />
+          <input
+            type="text"
+            [ngModel]="idempotencyKey()"
+            (ngModelChange)="idempotencyKey.set($event)"
+            placeholder="study-condition-v1"
+            title="Stable key that prevents an accidental duplicate submission"
+          />
         </label>
         <label>
           <span>Expected plan hash <small>optional</small></span>
-          <input type="text" [ngModel]="expectedPlanHash()"
-            (ngModelChange)="expectedPlanHash.set($event)" placeholder="sha256:…" />
+          <input
+            type="text"
+            [ngModel]="expectedPlanHash()"
+            (ngModelChange)="expectedPlanHash.set($event)"
+            placeholder="sha256:…"
+            title="Optional integrity check: submission fails if the server plan has changed"
+          />
         </label>
       </div>
 
       <div class="button-row">
-        <button class="btn btn-ghost" type="button" (click)="validateSpec()"
-          [disabled]="!tokenConfigured() || action() !== null">Validate</button>
-        <button class="btn btn-ghost" type="button" (click)="planSpec()"
-          [disabled]="!tokenConfigured() || action() !== null">Plan</button>
-        <button class="btn btn-primary" type="button" (click)="submitSpec()"
-          [disabled]="!tokenConfigured() || action() !== null">{{ action() === 'submit' ? 'Submitting…' : 'Submit & detach' }}</button>
+        <button
+          class="btn btn-ghost"
+          type="button"
+          (click)="validateSpec()"
+          [disabled]="!tokenConfigured() || action() !== null"
+          title="Check schema, paths, policy, and experiment constraints without submitting"
+        >
+          Validate
+        </button>
+        <button
+          class="btn btn-ghost"
+          type="button"
+          (click)="planSpec()"
+          [disabled]="!tokenConfigured() || action() !== null"
+          title="Resolve runs and generate the integrity hash without launching work"
+        >
+          Plan
+        </button>
+        <button
+          class="btn btn-primary"
+          type="button"
+          (click)="submitSpec()"
+          [disabled]="!tokenConfigured() || action() !== null"
+          title="Create the durable experiment and return immediately while workers continue"
+        >
+          {{ action() === 'submit' ? 'Submitting…' : 'Submit & detach' }}
+        </button>
       </div>
     </article>
 
@@ -83,11 +314,23 @@
         </div>
       </div>
       <div class="monitor-form">
-        <input type="text" [ngModel]="monitorRunId()"
-          (ngModelChange)="monitorRunId.set($event)" placeholder="run_…"
-          aria-label="Run ID" />
-        <button class="btn btn-primary" type="button" (click)="monitorRequested()"
-          [disabled]="!tokenConfigured()">Monitor</button>
+        <input
+          type="text"
+          [ngModel]="monitorRunId()"
+          (ngModelChange)="monitorRunId.set($event)"
+          placeholder="run_…"
+          aria-label="Run ID"
+          title="Durable run identifier returned when an experiment is submitted"
+        />
+        <button
+          class="btn btn-primary"
+          type="button"
+          (click)="monitorRequested()"
+          [disabled]="!tokenConfigured()"
+          title="Load this run and poll its durable state, events, and artifacts"
+        >
+          Monitor
+        </button>
       </div>
 
       @if (run(); as current) {
@@ -97,25 +340,64 @@
             <code>{{ current.run_id }}</code>
           </div>
           <dl class="facts">
-            <div><dt>Origin</dt><dd>{{ current.interface }}</dd></div>
-            <div><dt>Executor</dt><dd>{{ current.executor }}{{ current.scheduler_job_id ? ' · ' + current.scheduler_job_id : '' }}</dd></div>
-            <div><dt>Turn</dt><dd>{{ current.current_turn }}</dd></div>
-            <div><dt>Events</dt><dd>{{ current.event_sequence }}</dd></div>
+            <div title="Interface that originally submitted this durable run">
+              <dt>Origin</dt>
+              <dd>{{ current.interface }}</dd>
+            </div>
+            <div title="Execution adapter and scheduler job identifier, when available">
+              <dt>Executor</dt>
+              <dd>
+                {{ current.executor
+                }}{{ current.scheduler_job_id ? ' · ' + current.scheduler_job_id : '' }}
+              </dd>
+            </div>
+            <div title="Latest agent turn recorded by the durable run store">
+              <dt>Turn</dt>
+              <dd>{{ current.current_turn }}</dd>
+            </div>
+            <div title="Newest durable event sequence recorded for this run">
+              <dt>Events</dt>
+              <dd>{{ current.event_sequence }}</dd>
+            </div>
           </dl>
           <div class="button-row compact">
-            <button class="btn btn-ghost btn-sm" type="button" (click)="checkpoint()"
-              [disabled]="!canCheckpoint() || action() !== null">Checkpoint</button>
-            <button class="btn btn-danger btn-sm" type="button" (click)="cancel()"
-              [disabled]="!canCancel() || action() !== null">Cancel</button>
-            <button class="btn btn-primary btn-sm" type="button" (click)="resume()"
-              [disabled]="!canResume() || action() !== null">Resume latest</button>
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              (click)="checkpoint()"
+              [disabled]="!canCheckpoint() || action() !== null"
+              title="Ask the worker to save recoverable state at its next safe boundary"
+            >
+              Checkpoint
+            </button>
+            <button
+              class="btn btn-danger btn-sm"
+              type="button"
+              (click)="cancel()"
+              [disabled]="!canCancel() || action() !== null"
+              title="Request cooperative cancellation of this run"
+            >
+              Cancel
+            </button>
+            <button
+              class="btn btn-primary btn-sm"
+              type="button"
+              (click)="resume()"
+              [disabled]="!canResume() || action() !== null"
+              title="Create a child run from the newest complete checkpoint"
+            >
+              Resume latest
+            </button>
           </div>
           @if (current.end_reason) {
             <p class="end-reason"><strong>Outcome:</strong> {{ current.end_reason }}</p>
           }
         </div>
       } @else {
-        <p class="empty">Submit an experiment or enter an existing run ID. You can close the browser and reconnect later.</p>
+        <p class="empty">
+          Submit an experiment or enter an existing run ID. You can close the browser and reconnect
+          later.
+        </p>
       }
     </article>
   </section>
@@ -124,29 +406,70 @@
     <section class="details-grid">
       <article class="panel provenance-panel">
         <div class="panel-title">
-          <div><h2>Resolved provenance</h2><p>Recorded from the executed run, not display defaults.</p></div>
+          <div title="Content hash of the frozen ExperimentSpec">
+            <h2>Resolved provenance</h2>
+            <p>Recorded from the executed run, not display defaults.</p>
+          </div>
         </div>
         <dl class="provenance">
-          <div><dt>Spec</dt><dd><code>{{ current.spec_hash }}</code></dd></div>
-          <div><dt>Code</dt><dd><code>{{ current.code.commit }}</code><br>{{ current.code.branch }} · dirty={{ current.code.dirty }}</dd></div>
-          <div><dt>Model</dt><dd>{{ current.resolved_model.provider }} / {{ current.resolved_model.model }}</dd></div>
-          <div><dt>Blueprint</dt><dd>{{ current.resolved_blueprint.topology }} · {{ current.resolved_blueprint.driver_agent }}<br><code>{{ current.resolved_blueprint.source.content_hash }}</code></dd></div>
-          <div><dt>Container</dt><dd>{{ current.container.sandbox }} · network={{ current.container.network_enabled }}<br><code>{{ current.container.image.content_hash }}</code></dd></div>
+          <div title="Exact repository commit and dirty-worktree state recorded at execution">
+            <dt>Spec</dt>
+            <dd>
+              <code>{{ current.spec_hash }}</code>
+            </dd>
+          </div>
+          <div title="Resolved provider and exact model identifier used by this run">
+            <dt>Code</dt>
+            <dd>
+              <code>{{ current.code.commit }}</code
+              ><br />{{ current.code.branch }} · dirty={{ current.code.dirty }}
+            </dd>
+          </div>
+          <div title="Resolved agent topology, driver, and blueprint content hash">
+            <dt>Model</dt>
+            <dd>{{ current.resolved_model.provider }} / {{ current.resolved_model.model }}</dd>
+          </div>
+          <div title="Sandbox, network policy, and immutable container image hash">
+            <dt>Blueprint</dt>
+            <dd>
+              {{ current.resolved_blueprint.topology }} ·
+              {{ current.resolved_blueprint.driver_agent }}<br /><code>{{
+                current.resolved_blueprint.source.content_hash
+              }}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Container</dt>
+            <dd>
+              {{ current.container.sandbox }} · network={{ current.container.network_enabled
+              }}<br /><code>{{ current.container.image.content_hash }}</code>
+            </dd>
+          </div>
           @if (current.resumed_from_run_id) {
-            <div><dt>Recovery</dt><dd>from <code>{{ current.resumed_from_run_id }}</code><br>checkpoint <code>{{ current.resume_checkpoint_id }}</code></dd></div>
+            <div>
+              <dt>Recovery</dt>
+              <dd>
+                from <code>{{ current.resumed_from_run_id }}</code
+                ><br />checkpoint <code>{{ current.resume_checkpoint_id }}</code>
+              </dd>
+            </div>
           }
         </dl>
       </article>
 
       <article class="panel events-panel">
         <div class="panel-title">
-          <div><h2>Durable events</h2><p>Cursor {{ cursor() }} · polling every 2 seconds</p></div>
+          <div>
+            <h2>Durable events</h2>
+            <p>Cursor {{ cursor() }} · polling every 2 seconds</p>
+          </div>
         </div>
         <ol class="event-list">
           @for (event of events(); track event.event_id) {
             <li>
               <span class="sequence">{{ event.sequence }}</span>
-              <div><strong>{{ event.event_type }}</strong> · turn {{ event.turn }} · {{ event.actor }}
+              <div title="Durable event {{ event.event_id }}">
+                <strong>{{ event.event_type }}</strong> · turn {{ event.turn }} · {{ event.actor }}
                 <p>{{ eventSummary(event) }}</p>
               </div>
             </li>
@@ -158,20 +481,40 @@
 
       <article class="panel artifacts-panel">
         <div class="panel-title">
-          <div><h2>Verified artifacts</h2><p>{{ artifacts().length }} linked artifact(s)</p></div>
-          <button class="btn btn-ghost btn-sm" type="button" (click)="verifyArtifacts()"
-            [disabled]="action() !== null">Verify all</button>
+          <div>
+            <h2>Verified artifacts</h2>
+            <p>{{ artifacts().length }} linked artifact(s)</p>
+          </div>
+          <button
+            class="btn btn-ghost btn-sm"
+            type="button"
+            (click)="verifyArtifacts()"
+            [disabled]="action() !== null"
+            title="Recheck artifact sizes, hashes, symlinks, and storage boundaries"
+          >
+            Verify all
+          </button>
         </div>
         @if (verifiedCount() !== null) {
-          <p class="verified">Verified {{ verifiedCount() }} artifact(s) against size, hash, symlink, and store boundaries.</p>
+          <p class="verified">
+            Verified {{ verifiedCount() }} artifact(s) against size, hash, symlink, and store
+            boundaries.
+          </p>
         }
         <ul class="artifact-list">
           @for (artifact of artifacts(); track artifact.artifact_id) {
             <li>
-              <div><strong>{{ artifact.filename }}</strong><br><span>{{ artifact.role }} · {{ formatBytes(artifact.size_bytes) }}</span></div>
-              <button class="btn btn-ghost btn-sm" type="button"
+              <div title="Artifact content hash: {{ artifact.content_hash }}">
+                <strong>{{ artifact.filename }}</strong
+                ><br /><span>{{ artifact.role }} · {{ formatBytes(artifact.size_bytes) }}</span>
+              </div>
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
                 (click)="downloadArtifact(artifact)"
-                [disabled]="!tokenConfigured() || action() !== null">
+                [disabled]="!tokenConfigured() || action() !== null"
+                title="Download this recorded artifact without changing the run"
+              >
                 {{ action() === 'download:' + artifact.artifact_id ? 'Downloading…' : 'Download' }}
               </button>
             </li>
@@ -185,7 +528,12 @@
 
   @if (result(); as output) {
     <section class="panel response-panel">
-      <div class="panel-title"><div><h2>Machine response</h2><p>Exact API response for inspection or reuse.</p></div></div>
+      <div class="panel-title">
+        <div>
+          <h2>Machine response</h2>
+          <p>Exact API response for inspection or reuse.</p>
+        </div>
+      </div>
       <pre>{{ output }}</pre>
     </section>
   }

@@ -111,7 +111,9 @@ This will trigger a series of prompts:
 2.  **Select a driver agent:** Choose which agent in the system will receive the first instruction.
 3.  **Select Dataset:** Pick the dataset you downloaded in Step 2.
 4.  **Choose a sandbox backend:** Select `docker` or `singularity`.
-5.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`, or `ollama`.
+5.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`,
+    `deepseek-thinking`, or `ollama`. `deepseek` is the quick DeepSeek V4 Flash
+    profile; `deepseek-thinking` is DeepSeek V4 Pro with thinking enabled.
 
 After configuration, the session will begin, and you can start giving instructions to your agent team\!
 

@@ -15,6 +15,12 @@ from dotenv import load_dotenv
 # Reuse existing CARIBOU infrastructure
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "caribou" / "src"))
 from caribou.core.io_helpers import extract_python_code
+from caribou.core.deepseek import (
+    DEEPSEEK_BACKEND_IDS,
+    create_deepseek_client,
+    deepseek_profile_for_backend,
+    is_deepseek_backend,
+)
 from caribou.core.sandbox_management import init_singularity_exec
 from caribou.execution.benchmark_runner import run_benchmark
 from caribou.auto_metrics.registry import find_metric_id_by_path
@@ -38,9 +44,14 @@ class OneShotRunner:
         elif backend == "claude":
             from caribou.core.anthropic_wrapper import AnthropicClient
             return AnthropicClient(api_key=os.getenv("ANTHROPIC_API_KEY")), "claude-3-sonnet-20240229"
-        elif backend == "deepseek":
-            return OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"),
-                         base_url="https://api.deepseek.com"), "deepseek-chat"
+        elif is_deepseek_backend(backend):
+            profile = deepseek_profile_for_backend(backend)
+            return (
+                create_deepseek_client(
+                    os.getenv("DEEPSEEK_API_KEY", ""), profile=profile
+                ),
+                profile.model,
+            )
         raise ValueError(f"Unknown LLM backend: {backend}")
 
     def _init_sandbox(self, dataset_path: Path, output_dir: Path):
@@ -256,7 +267,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--llm", required=True, choices=["chatgpt", "claude", "deepseek"])
+    parser.add_argument(
+        "--llm",
+        required=True,
+        choices=["chatgpt", "claude", *DEEPSEEK_BACKEND_IDS],
+    )
     parser.add_argument("--sandbox", default="singularity", choices=["singularity", "docker"])
     parser.add_argument("--prompt-path", required=True, type=Path)
     parser.add_argument("--benchmark-module", type=Path, default=None)

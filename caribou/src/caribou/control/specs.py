@@ -35,6 +35,15 @@ ADAPTER_PARAMETER = "caribou.execution_adapter"
 SMOKE_SECONDS_PARAMETER = "caribou.lifecycle_smoke_seconds"
 AGENT_SMOKE_DELAY_PARAMETER = "caribou.agent_smoke_delay_seconds"
 MODEL_MAX_OUTPUT_TOKENS_PARAMETER = "max_output_tokens"
+MODEL_THINKING_PARAMETER = "thinking"
+MODEL_REASONING_EFFORT_PARAMETER = "reasoning_effort"
+_SUPPORTED_AGENT_MODEL_PARAMETERS = frozenset(
+    {
+        MODEL_MAX_OUTPUT_TOKENS_PARAMETER,
+        MODEL_THINKING_PARAMETER,
+        MODEL_REASONING_EFFORT_PARAMETER,
+    }
+)
 AGENT_RETRYABLE_FAILURES = frozenset(
     {FailureCategory.provider, FailureCategory.timeout}
 )
@@ -103,11 +112,11 @@ def _smoke_seconds(parameters: dict[str, Any]) -> float:
 
 
 def _model_max_output_tokens(parameters: dict[str, Any]) -> int | None:
-    unsupported = sorted(set(parameters) - {MODEL_MAX_OUTPUT_TOKENS_PARAMETER})
+    unsupported = sorted(set(parameters) - _SUPPORTED_AGENT_MODEL_PARAMETERS)
     if unsupported:
         raise ControlError(
             "AGENT_MODEL_PARAMETERS_UNSUPPORTED",
-            "the initial real agent workload supports only max_output_tokens",
+            "the real agent workload received unsupported model parameters",
             exit_code=ExitCode.validation,
             details={"parameters": unsupported},
         )
@@ -124,6 +133,39 @@ def _model_max_output_tokens(parameters: dict[str, Any]) -> int | None:
     return raw
 
 
+def _model_deepseek_options(
+    parameters: dict[str, Any],
+) -> tuple[bool | None, str | None]:
+    """Validate and return frozen DeepSeek thinking controls."""
+
+    thinking = parameters.get(MODEL_THINKING_PARAMETER)
+    if thinking is not None and not isinstance(thinking, bool):
+        raise ControlError(
+            "AGENT_MODEL_PARAMETER_INVALID",
+            "thinking must be a boolean",
+            exit_code=ExitCode.validation,
+            details={"parameter": MODEL_THINKING_PARAMETER},
+        )
+    reasoning_effort = parameters.get(MODEL_REASONING_EFFORT_PARAMETER)
+    if reasoning_effort is not None and (
+        not isinstance(reasoning_effort, str) or reasoning_effort not in {"high", "max"}
+    ):
+        raise ControlError(
+            "AGENT_MODEL_PARAMETER_INVALID",
+            "reasoning_effort must be high or max",
+            exit_code=ExitCode.validation,
+            details={"parameter": MODEL_REASONING_EFFORT_PARAMETER},
+        )
+    if reasoning_effort is not None and thinking is not True:
+        raise ControlError(
+            "AGENT_MODEL_PARAMETER_INVALID",
+            "reasoning_effort requires thinking=true",
+            exit_code=ExitCode.validation,
+            details={"parameter": MODEL_REASONING_EFFORT_PARAMETER},
+        )
+    return thinking, reasoning_effort
+
+
 def _validate_agent_adapter(
     spec: ExperimentSpec, condition_index: int, adapter: str
 ) -> None:
@@ -134,12 +176,6 @@ def _validate_agent_adapter(
             "the initial agent workload requires exactly one frozen input",
             exit_code=ExitCode.validation,
             details={"input_count": len(spec.inputs)},
-        )
-    if spec.code.dirty:
-        raise ControlError(
-            "AGENT_CODE_DIRTY",
-            "agent workloads require a frozen clean code commit",
-            exit_code=ExitCode.validation,
         )
     if adapter == AGENT_PATH_SMOKE_ADAPTER:
         if condition.model.provider != "scripted" or (
@@ -167,6 +203,12 @@ def _validate_agent_adapter(
             )
         _agent_smoke_delay(dict(condition.parameters))
         return
+    if spec.code.dirty:
+        raise ControlError(
+            "AGENT_CODE_DIRTY",
+            "agent workloads require a frozen clean code commit",
+            exit_code=ExitCode.validation,
+        )
     if spec.execution.container.sandbox not in {
         SandboxKind.apptainer,
         SandboxKind.singularity,
@@ -198,7 +240,23 @@ def _validate_agent_adapter(
             "quantization, or context-length declarations",
             exit_code=ExitCode.validation,
         )
-    _model_max_output_tokens(dict(condition.model.parameters))
+    model_parameters = dict(condition.model.parameters)
+    _model_max_output_tokens(model_parameters)
+    thinking, reasoning_effort = _model_deepseek_options(model_parameters)
+    if condition.model.provider != "deepseek" and (
+        thinking is not None or reasoning_effort is not None
+    ):
+        raise ControlError(
+            "AGENT_MODEL_PARAMETERS_UNSUPPORTED",
+            "thinking controls are supported only by the DeepSeek provider",
+            exit_code=ExitCode.validation,
+            details={
+                "parameters": sorted(
+                    set(model_parameters)
+                    & {MODEL_THINKING_PARAMETER, MODEL_REASONING_EFFORT_PARAMETER}
+                )
+            },
+        )
     if condition.memory.strategy != MemoryStrategy.full:
         raise ControlError(
             "AGENT_MEMORY_UNSUPPORTED",

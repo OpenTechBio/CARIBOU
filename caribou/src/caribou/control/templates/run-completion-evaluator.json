@@ -1,0 +1,7 @@
+{
+  "schema_version": "caribou.preset_evaluator.v1",
+  "metric_key": "run_completion",
+  "description": "A diagnostic declaration evaluated from the durable run outcome and artifact verification records.",
+  "success_state": "succeeded",
+  "require_artifact_verification": true
+}

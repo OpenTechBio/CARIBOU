@@ -36,5 +36,10 @@ export const routes: Routes = [
     loadComponent: () =>
       import('./pages/code-samples/code-samples').then(m => m.CodeSamplesComponent),
   },
+  {
+    path: 'experiments/wizard',
+    loadComponent: () =>
+      import('./pages/experiments-wizard/wizard.component').then(m => m.WizardComponent),
+  },
   { path: '**', redirectTo: '' },
 ];

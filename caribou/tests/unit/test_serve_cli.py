@@ -7,12 +7,15 @@ import pytest
 import typer
 
 from caribou.cli.serve_cli import (
+    _announce_control_access_token,
     _backend_proxy_host,
     _display_host,
     _start_frontend_dev_server,
     _stop_process,
     _write_proxy_config,
+    serve,
 )
+from caribou.core.control_access import ControlAccessToken
 
 
 def test_backend_proxy_host_uses_loopback_for_bind_all_hosts():
@@ -90,3 +93,48 @@ def test_stop_process_terminates_then_kills_if_needed():
 
     process.terminate.assert_called_once()
     process.kill.assert_called_once()
+
+
+def test_serve_announcement_prints_exact_retrievable_token(capsys, tmp_path):
+    env_file = tmp_path / ".env"
+    _announce_control_access_token(
+        ControlAccessToken(
+            value="control-token-visible-at-startup",
+            source="generated",
+            env_file=env_file,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "control-token-visible-at-startup" in output
+    assert "caribou config get-control-token" in output
+    assert str(env_file) in output
+
+
+def test_serve_resolves_and_displays_control_token_before_uvicorn(capsys):
+    resolved = ControlAccessToken(
+        value="serve-control-token",
+        source="environment",
+    )
+    with (
+        patch("caribou.cli.serve_cli._ensure_frontend_built"),
+        patch(
+            "caribou.cli.serve_cli.resolve_control_access_token",
+            return_value=resolved,
+        ) as resolve,
+        patch("uvicorn.run") as uvicorn_run,
+    ):
+        serve(
+            host="127.0.0.1",
+            port=8765,
+            reload=False,
+            workers=1,
+            refresh=False,
+            frontend_port=4200,
+        )
+
+    resolve.assert_called_once()
+    uvicorn_run.assert_called_once()
+    output = capsys.readouterr().out
+    assert "serve-control-token" in output
+    assert "Experiment access token" in output

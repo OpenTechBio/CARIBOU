@@ -41,7 +41,12 @@ from caribou.server.session_persistence import (
     save_session,
     session_dir,
 )
-from caribou.server.session_setup import build_llm_client, build_sandbox, find_blueprint
+from caribou.server.session_setup import (
+    build_llm_client,
+    build_sandbox,
+    find_blueprint,
+    resolve_model_info,
+)
 from caribou.server.session_state import (
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
@@ -141,6 +146,7 @@ class SessionManager:
             user_input_queue=queue.Queue(),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            resolved_model=resolve_model_info(config),
         )
 
         async with self._lock:
@@ -149,8 +155,13 @@ class SessionManager:
 
         session.logger = _create_session_logger(session_id, output_dir.parent)
         session.logger.info(
-            "Session created | backend: %s | mode: %s | sandbox: %s | log: %s",
+            "Session created | backend: %s | model: %s | mode: %s | sandbox: %s | log: %s",
             config.llm_backend,
+            (
+                session.resolved_model.model
+                if session.resolved_model is not None
+                else "unresolved"
+            ),
             config.mode.value,
             config.sandbox_type.value,
             output_dir.parent / "session.log",
@@ -509,6 +520,11 @@ class SessionManager:
                 return
             session.llm_client = llm_client
             session.model_name = model_name
+            session.resolved_model = resolve_model_info(
+                session.config,
+                resolved_model_name=model_name,
+            )
+            self._save_session(session)
             if log:
                 log.info("LLM client ready | backend: %s | model: %s", session.config.llm_backend, model_name)
 

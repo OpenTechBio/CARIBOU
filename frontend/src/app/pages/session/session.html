@@ -376,6 +376,11 @@
         <div class="meta-list" *ngIf="session() as s">
           <span class="ml">Blueprint</span><span>{{ s.agent_system }}</span>
           <span class="ml">Backend</span><span>{{ s.llm_backend }}</span>
+          <span class="ml">Model</span><span>{{ s.resolved_model?.model || 'Unknown' }}</span>
+          @if (s.resolved_model?.parameters?.['thinking'] !== undefined) {
+            <span class="ml">Thinking</span>
+            <span>{{ s.resolved_model?.parameters?.['thinking'] ? 'Enabled' : 'Disabled' }}</span>
+          }
           <span class="ml">Sandbox</span><span>{{ s.sandbox_type }}</span>
           <span class="ml">Mode</span><span>{{ s.mode }}</span>
         </div>

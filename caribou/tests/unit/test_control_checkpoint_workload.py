@@ -119,7 +119,7 @@ def _checkpoint_source(
     monkeypatch.setattr(
         agent_workload,
         "_verify_code_identity",
-        lambda _expected_commit, _adapter: None,
+        lambda _expected_commit, _adapter, **_kwargs: None,
     )
     durable_recorder = agent_workload._event_recorder
     requested = False

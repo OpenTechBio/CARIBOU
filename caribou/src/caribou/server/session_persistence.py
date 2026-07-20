@@ -13,12 +13,13 @@ import queue
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict
 
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
     MessageRecord,
+    ResolvedModelInfo,
     SessionCreateRequest,
     SessionStatus,
 )
@@ -54,6 +55,11 @@ def save_session(
         data = {
             "id": session.id,
             "config": session.config.model_dump(),
+            "resolved_model": (
+                session.resolved_model.model_dump()
+                if session.resolved_model is not None
+                else None
+            ),
             "status": session.status.value,
             "current_agent": session.current_agent,
             "current_turn": session.current_turn,
@@ -84,6 +90,11 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
         try:
             data = json.loads(f.read_text())
             config = SessionCreateRequest(**data["config"])
+            resolved_model = (
+                ResolvedModelInfo(**data["resolved_model"])
+                if data.get("resolved_model")
+                else None
+            )
             raw_status = data.get("status", "stopped")
             # Sessions that were mid-run when the server died are now stopped
             if raw_status in ("running", "initializing"):
@@ -107,6 +118,8 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 user_input_queue=queue.Queue(),
                 created_at=datetime.fromisoformat(data["created_at"]),
                 updated_at=datetime.fromisoformat(data["updated_at"]),
+                model_name=(resolved_model.model if resolved_model is not None else ""),
+                resolved_model=resolved_model,
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):

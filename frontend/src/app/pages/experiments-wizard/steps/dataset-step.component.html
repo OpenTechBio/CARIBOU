@@ -1,0 +1,46 @@
+<div class="wizard-step dataset-step">
+  <div class="step-intro">
+    <span class="step-kicker">Input</span>
+    <h2>Choose your dataset</h2>
+    <p>
+      The selected file is recorded as the experiment input and cannot be changed after submission.
+    </p>
+  </div>
+
+  <div class="dataset-options">
+    @for (dataset of datasets; track dataset.path) {
+      <button
+        type="button"
+        class="dataset-card"
+        (click)="selectedDatasetChange.emit(dataset)"
+        [class.selected]="selectedDataset?.path === dataset.path"
+        [attr.aria-pressed]="selectedDataset?.path === dataset.path"
+        title="Use {{ dataset.filename }} as the frozen input for this experiment"
+      >
+        <span class="dataset-type" aria-hidden="true">H5</span>
+        <div class="dataset-info">
+          <h3>{{ dataset.filename }}</h3>
+          <p class="dataset-path" title="{{ dataset.path }}">{{ dataset.path }}</p>
+          <div class="dataset-meta">
+            <span>{{ formatSize(dataset.size_bytes) }}</span>
+            <span>AnnData</span>
+          </div>
+        </div>
+        <div
+          class="dataset-check"
+          [class.visible]="selectedDataset?.path === dataset.path"
+          aria-hidden="true"
+        >
+          ✓
+        </div>
+      </button>
+    } @empty {
+      <div class="no-datasets">
+        <strong>No datasets are available</strong>
+        <p>
+          Upload or register a dataset from the Sessions page, then return to create the experiment.
+        </p>
+      </div>
+    }
+  </div>
+</div>

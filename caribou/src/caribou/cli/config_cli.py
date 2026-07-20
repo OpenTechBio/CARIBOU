@@ -7,6 +7,7 @@ from typing import Optional
 
 # Import the centralized ENV_FILE path
 from caribou.config import ENV_FILE
+from caribou.core.control_access import resolve_control_access_token
 
 config_app = typer.Typer(
     name="config",
@@ -15,6 +16,37 @@ config_app = typer.Typer(
 )
 
 console = Console()
+
+
+@config_app.command("get-control-token")
+def get_control_token(
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="Print only the token, for copying or command substitution.",
+    ),
+) -> None:
+    """Show the persistent token used by the experiment web interface."""
+
+    resolved = resolve_control_access_token(create=True, env_file=ENV_FILE)
+    if resolved is None:  # Defensive: create=True always returns a token.
+        raise typer.Exit(1)
+    if raw:
+        typer.echo(resolved.value)
+        return
+
+    source = {
+        "environment": "CARIBOU_CONTROL_API_TOKEN in the current environment",
+        "caribou_env_file": f"CARIBOU environment file: {resolved.env_file}",
+        "generated": f"new token saved in: {resolved.env_file}",
+    }[resolved.source]
+    console.print("[bold]Experiment access token[/bold]")
+    console.print(resolved.value, markup=False)
+    console.print(f"[dim]Source: {source}[/dim]")
+    console.print(
+        "[yellow]Anyone with this token can operate experiments on this CARIBOU server. "
+        "Do not paste a model-provider API key here or share this output publicly.[/yellow]"
+    )
 
 
 @config_app.command("set-openai-key")

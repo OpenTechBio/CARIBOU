@@ -46,6 +46,7 @@ from .specs import (
     AGENT_PATH_SMOKE_ADAPTER,
     AGENT_SMOKE_DELAY_PARAMETER,
     CARIBOU_AGENT_ADAPTER,
+    _model_deepseek_options,
     _model_max_output_tokens,
 )
 from .store import ExperimentStore, SUPPORTED_RESUME_REQUIREMENTS
@@ -83,7 +84,12 @@ class _RestoredAgentCheckpoint:
     runner_state: AgentSessionCheckpointState
 
 
-def _verify_code_identity(expected_commit: str, adapter: str) -> None:
+def _verify_code_identity(
+    expected_commit: str,
+    adapter: str,
+    *,
+    expected_dirty: bool = False,
+) -> None:
     root_result = subprocess.run(
         [
             "git",
@@ -133,12 +139,19 @@ def _verify_code_identity(expected_commit: str, adapter: str) -> None:
         )
     actual = head_result.stdout.strip()
     dirty = bool(status_result.stdout.strip())
-    if actual != expected_commit or dirty:
+    dirty_mismatch = dirty != expected_dirty
+    dirty_not_allowed = dirty and adapter != AGENT_PATH_SMOKE_ADAPTER
+    if actual != expected_commit or dirty_mismatch or dirty_not_allowed:
         raise ControlError(
             "CODE_COMMIT_MISMATCH",
-            "the executing CARIBOU checkout does not match the frozen clean commit",
+            "the executing CARIBOU checkout does not match the frozen code identity",
             exit_code=ExitCode.integrity,
-            details={"expected": expected_commit, "actual": actual, "dirty": dirty},
+            details={
+                "expected": expected_commit,
+                "actual": actual,
+                "expected_dirty": expected_dirty,
+                "dirty": dirty,
+            },
         )
 
 
@@ -348,7 +361,10 @@ def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
     # Validate the frozen model request here as well as during preflight so a
     # direct worker invocation cannot silently discard unsupported parameters.
     _model_max_output_tokens(parameters)
+    thinking, reasoning_effort = _model_deepseek_options(parameters)
     if provider == "openai":
+        if thinking is not None or reasoning_effort is not None:
+            raise RuntimeError("DeepSeek thinking controls require provider=deepseek")
         from openai import OpenAI
 
         key = os.environ.get("OPENAI_API_KEY")
@@ -356,14 +372,15 @@ def _provider_client(provider: str, parameters: dict[str, Any]) -> object:
             raise RuntimeError("OPENAI_API_KEY is not configured")
         return OpenAI(api_key=key, max_retries=0)
     if provider == "deepseek":
-        from openai import OpenAI
+        from caribou.core.deepseek import create_deepseek_client
 
         key = os.environ.get("DEEPSEEK_API_KEY")
         if not key:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
-        return OpenAI(
-            api_key=key,
-            base_url="https://api.deepseek.com",
+        return create_deepseek_client(
+            key,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
             max_retries=0,
         )
     raise RuntimeError(f"unsupported provider: {provider}")
@@ -1322,7 +1339,11 @@ def execute_agent_workload(
     from caribou.agents.AgentSystem import AgentSystem
 
     run = store.run(run_id)
-    _verify_code_identity(run.code.commit, adapter)
+    _verify_code_identity(
+        run.code.commit,
+        adapter,
+        expected_dirty=run.code.dirty,
+    )
     restored = _load_restored_checkpoint(store, run)
     blueprint_path = _local_file(run.resolved_blueprint.source, role="blueprint")
     prompt_path = _local_file(run.resolved_prompt, role="prompt")
@@ -1451,6 +1472,7 @@ def execute_agent_workload(
             ),
             max_turns=run.resolved_stop_rules.maximum_turns,
             model_name=run.resolved_model.model,
+            model_parameters=dict(run.resolved_model.parameters),
             output_dir=output_dir,
             durable_run_id=run_id,
             should_cancel=lambda: store.cancel_requested(run_id),

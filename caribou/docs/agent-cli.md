@@ -101,23 +101,47 @@ The lifecycle smoke adapter validates only local submission, persistence,
 events, cancellation, and artifact handling. It does not invoke a model,
 container, biological analysis, or Slurm.
 
+The web experiment wizard is a human-facing adapter to this same contract. Its
+authenticated `GET /api/control/presets` endpoint discovers bounded pilot
+patterns, and `POST /api/control/presets/{preset_id}/resolve` freezes the selected
+dataset, code commit, blueprint, prompts, code samples, RAG corpus, container,
+model, resources, and evaluator declaration into an `ExperimentSpec`. Resolution
+does not submit work. The browser next calls the canonical plan endpoint and then
+the canonical idempotent submit endpoint with the returned plan hash. A dirty
+checkout is rejected, and the first resolution of a large container can take time
+while its content hash is computed. Presets are convenience inputs, not validated
+biological protocols or evidence of benchmark performance.
+
 The separately tested `agent_path_smoke` adapter crosses the real control
 service, detached worker, existing agent runner, blueprint delegation, command
 parser, event journal, and artifact store. Its model client and sandbox are
 deterministic test boundaries: it does not validate an external model,
 Apptainer/Singularity, biological correctness, or scheduler execution.
 
+The smoke adapter accepts a dirty development worktree only when the frozen code
+identity records `dirty: true`; its exact HEAD commit must still match. The real
+`caribou_agent` adapter continues to reject every dirty worktree.
+
 The initial `caribou_agent` adapter is implemented for a deliberately narrow
 real pilot. It requires a clean exact Git commit, one hash-pinned local input,
 a hash-pinned Apptainer/Singularity image, network-disabled generated code,
-full-history memory, no RAG or external blueprint tools, no ambient cache or
-custom mounts, and an external OpenAI or DeepSeek model identified
+full-history memory, a frozen corpus whenever the blueprint enables RAG, no
+external blueprint tools, no ambient cache or custom mounts, and an external
+OpenAI or DeepSeek model identified
 by exact model ID. Finite budget limits, model tuning fields, declared
 container-runtime versions, retry policies, and implicit CellTypist caches are
 rejected rather than ignored. Provider requests receive the remaining frozen
 session deadline. The experiment metric definitions remain preregistered
 metadata; this adapter does not execute their evaluator artifacts or enforce
 the declared local CPU, memory, and storage maxima.
+
+For DeepSeek V4, frozen model parameters may additionally contain `thinking`
+(boolean) and `reasoning_effort` (`high` or `max`; valid only when thinking is
+enabled). The preset resolver locks `deepseek-v4-flash` to quick mode and
+`deepseek-v4-pro` to thinking mode at high effort so the effective request mode
+is preserved alongside the exact model ID. Standard CLI session reports created
+with `--make-report` also record these values as `model` and
+`model_parameters`.
 
 When the worker remains alive through receipt persistence, every completed or
 failed OpenAI-compatible SDK attempt made by this adapter produces a

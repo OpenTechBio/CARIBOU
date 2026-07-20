@@ -1,0 +1,117 @@
+<div class="wizard-step confirm-step">
+  <div class="step-intro">
+    <span class="step-kicker">Final review</span>
+    <h2>Review the frozen plan</h2>
+    <p>
+      The server resolved and validated these choices. Check them carefully before starting compute
+      and model work.
+    </p>
+  </div>
+
+  <div class="summary-grid">
+    @if (selectedDataset; as dataset) {
+      <section class="summary-card">
+        <div class="card-heading">
+          <span class="card-number">01</span>
+          <h3>Data</h3>
+        </div>
+        <div class="summary-item">
+          <span class="label">File</span><strong class="value">{{ dataset.filename }}</strong>
+        </div>
+        <div class="summary-item">
+          <span class="label">Frozen path</span>
+          <code class="value" title="Exact input path recorded in the experiment specification">{{
+            dataset.path
+          }}</code>
+        </div>
+      </section>
+    }
+
+    @if (preset; as selected) {
+      <section class="summary-card">
+        <div class="card-heading">
+          <span class="card-number">02</span>
+          <h3>Analysis</h3>
+        </div>
+        <div class="summary-item">
+          <span class="label">Workflow</span><strong class="value">{{ selected.name }}</strong>
+        </div>
+        <p class="card-description">{{ selected.description }}</p>
+      </section>
+    }
+
+    <section class="summary-card execution-card">
+      <div class="card-heading">
+        <span class="card-number">03</span>
+        <h3>Execution and provenance</h3>
+      </div>
+      <dl class="resource-summary">
+        <div title="Execution adapter that will launch this run">
+          <dt>Executor</dt>
+          <dd>{{ executor }}</dd>
+        </div>
+        <div title="Server-defined resource bundle selected for this run">
+          <dt>Profile</dt>
+          <dd>{{ profile }}</dd>
+        </div>
+        <div title="CPU cores requested for each run">
+          <dt>CPU cores</dt>
+          <dd>{{ cpuCores }}</dd>
+        </div>
+        <div title="Maximum memory requested for each run">
+          <dt>Memory</dt>
+          <dd>{{ memoryGB }} GB</dd>
+        </div>
+        <div title="Hard upper bound on agent turns">
+          <dt>Max turns</dt>
+          <dd>{{ maxTurns }}</dd>
+        </div>
+        <div title="Exact provider and model identifier preserved in run provenance">
+          <dt>Model</dt>
+          <dd>
+            {{ provider }}<br /><code>{{ modelName }}</code>
+          </dd>
+        </div>
+        <div title="Operator or team responsible for this experiment">
+          <dt>Owner</dt>
+          <dd>{{ owner }}</dd>
+        </div>
+        <div title="Person or role expected to review the resulting evidence">
+          <dt>Reviewer</dt>
+          <dd>{{ reviewer }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="summary-card integrity-card">
+      <div class="card-heading">
+        <span class="card-number">04</span>
+        <h3>Integrity</h3>
+        <button
+          type="button"
+          class="help-tip"
+          appTooltip="These hashes prove exactly which specification and resolved plan were submitted"
+          aria-label="About experiment integrity hashes"
+        >
+          ?
+        </button>
+      </div>
+      <div class="hash-row">
+        <span>Specification hash</span>
+        <code title="Content hash of the complete frozen ExperimentSpec">{{ specHash }}</code>
+      </div>
+      <div class="hash-row">
+        <span>Plan hash</span>
+        <code title="Integrity hash of the server-resolved execution plan">{{ planHash }}</code>
+      </div>
+    </section>
+  </div>
+
+  <div class="submission-note">
+    <strong>Ready to submit?</strong>
+    <p>
+      Submission is idempotent and detachable. It may start external-model and compute work;
+      monetary and token budgets are recorded but are not yet enforced by this worker adapter.
+    </p>
+  </div>
+</div>
