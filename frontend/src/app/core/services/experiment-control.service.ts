@@ -44,15 +44,14 @@ export class ExperimentControlService {
   schema(): Observable<MachineResponse<{ name: string; schema: Record<string, unknown> }>> {
     return this.http.get<MachineResponse<{ name: string; schema: Record<string, unknown> }>>(
       'api/control/schema/experiment',
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
   presets(): Observable<MachineResponse<{ presets: PresetSummary[] }>> {
-    return this.http.get<MachineResponse<{ presets: PresetSummary[] }>>(
-      'api/control/presets',
-      { headers: this.authorizationHeaders() },
-    );
+    return this.http.get<MachineResponse<{ presets: PresetSummary[] }>>('api/control/presets', {
+      headers: this.controlHeaders(),
+    });
   }
 
   resolvePreset(
@@ -62,7 +61,7 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<PresetResolveData>>(
       `api/control/presets/${encodeURIComponent(presetId)}/resolve`,
       request,
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
@@ -70,7 +69,7 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<Record<string, unknown>>>(
       'api/control/experiments/validate',
       specification,
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
@@ -78,7 +77,7 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<Record<string, unknown>>>(
       'api/control/experiments/plan',
       specification,
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
@@ -94,20 +93,19 @@ export class ExperimentControlService {
         idempotency_key: idempotencyKey,
         expected_plan_hash: expectedPlanHash || null,
       },
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
   status(runId: string): Observable<MachineResponse<StatusData>> {
-    return this.http.get<MachineResponse<StatusData>>(
-      `api/control/runs/${runId}`,
-      { headers: this.authorizationHeaders() },
-    );
+    return this.http.get<MachineResponse<StatusData>>(`api/control/runs/${runId}`, {
+      headers: this.controlHeaders(),
+    });
   }
 
   events(runId: string, after: number): Observable<MachineResponse<EventsData>> {
     return this.http.get<MachineResponse<EventsData>>(`api/control/runs/${runId}/events`, {
-      headers: this.authorizationHeaders(),
+      headers: this.controlHeaders(),
       params: { after: String(after), limit: '1000' },
     });
   }
@@ -116,7 +114,7 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<CancelData>>(
       `api/control/runs/${runId}/cancel`,
       { reason },
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
@@ -128,14 +126,14 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<CheckpointData>>(
       `api/control/runs/${runId}/checkpoint`,
       { idempotency_key: idempotencyKey, reason },
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
   checkpoints(runId: string): Observable<MachineResponse<CheckpointsData>> {
     return this.http.get<MachineResponse<CheckpointsData>>(
       `api/control/runs/${runId}/checkpoints`,
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
@@ -147,37 +145,33 @@ export class ExperimentControlService {
     return this.http.post<MachineResponse<ResumeData>>(
       `api/control/runs/${runId}/resume`,
       { checkpoint_id: checkpointId, idempotency_key: idempotencyKey },
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
   artifacts(runId: string): Observable<MachineResponse<ArtifactsData>> {
-    return this.http.get<MachineResponse<ArtifactsData>>(
-      `api/control/runs/${runId}/artifacts`,
-      { headers: this.authorizationHeaders() },
-    );
+    return this.http.get<MachineResponse<ArtifactsData>>(`api/control/runs/${runId}/artifacts`, {
+      headers: this.controlHeaders(),
+    });
   }
 
   verifyArtifacts(runId: string): Observable<MachineResponse<VerifyData>> {
     return this.http.post<MachineResponse<VerifyData>>(
       `api/control/runs/${runId}/artifacts/verify`,
       {},
-      { headers: this.authorizationHeaders() },
+      { headers: this.controlHeaders() },
     );
   }
 
   downloadArtifact(runId: string, artifactId: string): Observable<Blob> {
-    return this.http.get(
-      `api/control/runs/${runId}/artifacts/${artifactId}/download`,
-      {
-        headers: this.authorizationHeaders(),
-        responseType: 'blob',
-      },
-    );
+    return this.http.get(`api/control/runs/${runId}/artifacts/${artifactId}/download`, {
+      headers: this.controlHeaders(),
+      responseType: 'blob',
+    });
   }
 
-  private authorizationHeaders(): HttpHeaders {
-    return new HttpHeaders({ Authorization: `Bearer ${this.accessToken()}` });
+  private controlHeaders(): HttpHeaders {
+    return new HttpHeaders({ 'X-Caribou-Control-Token': this.accessToken() });
   }
 
   private loadAccessToken(): string {

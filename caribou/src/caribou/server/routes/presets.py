@@ -28,8 +28,9 @@ class PresetResolveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     dataset_path: str = Field(min_length=1, max_length=4096)
-    model_provider: Literal["openai", "deepseek"]
+    model_provider: Literal["openai", "deepseek", "openrouter"]
     model_name: str = Field(min_length=1, max_length=256)
+    openrouter_endpoint: str | None = Field(default=None, min_length=1, max_length=256)
     profile: Literal["fast", "thorough"]
     max_turns: int | None = Field(default=None, ge=1, le=100)
     executor: Literal["local", "slurm"]
@@ -72,6 +73,7 @@ def resolve_preset(
             dataset_path=request.dataset_path,
             model_provider=request.model_provider,
             model_name=request.model_name,
+            openrouter_endpoint=request.openrouter_endpoint,
             profile=request.profile,
             max_turns=request.max_turns,
             executor=request.executor,

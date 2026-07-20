@@ -116,7 +116,7 @@ export interface SubmitData {
 
 export type PresetProfile = 'fast' | 'thorough';
 export type PresetExecutor = 'local' | 'slurm';
-export type PresetProvider = 'openai' | 'deepseek';
+export type PresetProvider = 'openai' | 'deepseek' | 'openrouter';
 
 export const DEEPSEEK_MODELS = [
   {
@@ -151,6 +151,7 @@ export interface PresetResolveRequest {
   dataset_path: string;
   model_provider: PresetProvider;
   model_name: string;
+  openrouter_endpoint?: string;
   profile: PresetProfile;
   max_turns: number;
   executor: PresetExecutor;

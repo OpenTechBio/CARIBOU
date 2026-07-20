@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class SessionStatus(str, Enum):
     initializing = "initializing"
     idle = "idle"
@@ -48,11 +49,13 @@ class ArtifactType(str, Enum):
 # Session
 # ---------------------------------------------------------------------------
 
+
 class SessionCreateRequest(BaseModel):
     mode: SessionMode
     run_mode: RunMode = RunMode.full_system
     agent_system: str
     llm_backend: str
+    model_name: Optional[str] = None
     ollama_model: Optional[str] = None
     sandbox_type: SandboxType = SandboxType.singularity
     dataset_path: str
@@ -133,6 +136,7 @@ class SessionResponse(BaseModel):
 # Config
 # ---------------------------------------------------------------------------
 
+
 class LLMBackend(BaseModel):
     id: str
     provider: str
@@ -157,6 +161,7 @@ class AgentBlueprint(BaseModel):
 # ---------------------------------------------------------------------------
 # Blueprint editor
 # ---------------------------------------------------------------------------
+
 
 class CommandConfig(BaseModel):
     target_agent: str
@@ -203,6 +208,7 @@ class OllamaModelsResponse(BaseModel):
 # Datasets
 # ---------------------------------------------------------------------------
 
+
 class DatasetRecord(BaseModel):
     filename: str
     path: str
@@ -217,6 +223,7 @@ class DatasetPathValidationRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # WebSocket messages (client → server)
 # ---------------------------------------------------------------------------
+
 
 class WSRunMessage(BaseModel):
     type: str = "run"
@@ -238,6 +245,7 @@ class WSStopMessage(BaseModel):
 # Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict }
 # Types: token | message_complete | agent_switch | code_submitted |
 #        code_result | artifact | status_change | metrics_result | error | pong
+
 
 def make_event(
     event_type: str,

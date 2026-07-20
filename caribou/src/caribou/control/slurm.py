@@ -202,10 +202,11 @@ def _render_script(store: ExperimentStore, run: Run) -> str:
         item for item in spec.conditions if item.condition_id == run.condition_id
     )
     adapter = condition.parameters.get(ADAPTER_PARAMETER)
-    if (
-        adapter == CARIBOU_AGENT_ADAPTER
-        and run.resolved_model.provider in {"openai", "deepseek"}
-    ):
+    if adapter == CARIBOU_AGENT_ADAPTER and run.resolved_model.provider in {
+        "openai",
+        "deepseek",
+        "openrouter",
+    }:
         credential_file = CARIBOU_HOME / ".env"
         try:
             credential_stat = credential_file.stat()
@@ -593,7 +594,10 @@ class SlurmExecutor:
                         exit_code=ExitCode.integrity,
                         details={"run_id": run_id},
                     )
-                if current.scheduler_job_id is None and current.state == RunState.queued:
+                if (
+                    current.scheduler_job_id is None
+                    and current.state == RunState.queued
+                ):
                     current, _ = store._bind_scheduler_job_unlocked(existing)
                 elif current.scheduler_job_id != existing.job_id:
                     raise ControlError(
@@ -748,9 +752,11 @@ class SlurmExecutor:
                         )
                     except Exception:
                         pass
-                elif current.state == RunState.queued and (
-                    handle is not None or not launch_error.retryable
-                ) and launch_error.code != "SLURM_LAUNCH_CLEANUP_FAILED":
+                elif (
+                    current.state == RunState.queued
+                    and (handle is not None or not launch_error.retryable)
+                    and launch_error.code != "SLURM_LAUNCH_CLEANUP_FAILED"
+                ):
                     try:
                         store._transition_run_unlocked(
                             run_id,
@@ -781,7 +787,9 @@ class SlurmExecutor:
             )
         return LaunchResult(handle=handle, launched=launched)
 
-    def _observe_squeue(self, handle: SlurmExecutionHandle) -> Optional[SchedulerObservation]:
+    def _observe_squeue(
+        self, handle: SlurmExecutionHandle
+    ) -> Optional[SchedulerObservation]:
         try:
             result = self._run(
                 [
@@ -841,9 +849,15 @@ class SlurmExecutor:
                 "--format=JobIDRaw,State,ExitCode,ElapsedRaw,AllocCPUS,ReqMem,MaxRSS,NodeList,Start,End,Partition",
             ]
         )
-        records = [line.split("|") for line in result.stdout.splitlines() if line.strip()]
+        records = [
+            line.split("|") for line in result.stdout.splitlines() if line.strip()
+        ]
         root = next(
-            (fields for fields in records if fields and fields[0].strip() == handle.job_id),
+            (
+                fields
+                for fields in records
+                if fields and fields[0].strip() == handle.job_id
+            ),
             None,
         )
         if root is None or len(root) < 11:

@@ -13,6 +13,7 @@ import {
   PresetSummary,
 } from '../../core/models/experiment-control.model';
 import { Dataset } from '../../core/models/session.model';
+import { ConfigService } from '../../core/services/config.service';
 import { DatasetService } from '../../core/services/dataset.service';
 import { ExperimentControlService } from '../../core/services/experiment-control.service';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
@@ -43,6 +44,7 @@ export class WizardComponent implements OnInit {
   private router = inject(Router);
   private control = inject(ExperimentControlService);
   private datasetService = inject(DatasetService);
+  configService = inject(ConfigService);
 
   presets = signal<PresetSummary[]>([]);
   datasets = signal<Dataset[]>([]);
@@ -53,6 +55,7 @@ export class WizardComponent implements OnInit {
   maxTurns = signal(10);
   provider = signal<PresetProvider>('openai');
   modelName = signal('gpt-4.1-2025-04-14');
+  openrouterEndpoint = signal('');
   executor = signal<PresetExecutor>('slurm');
   owner = signal('web-operator');
   reviewer = signal('operator-review-required');
@@ -140,7 +143,19 @@ export class WizardComponent implements OnInit {
       if (!DEEPSEEK_MODELS.some((model) => model.id === selectedModel)) {
         this.modelName.set(DEEPSEEK_MODELS[0].id);
       }
-    } else if (DEEPSEEK_MODELS.some((model) => model.id === this.modelName())) {
+    } else if (value === 'openrouter') {
+      this.openrouterEndpoint.set('');
+      this.configService.getOpenRouterModels().subscribe({
+        next: (catalogue) => {
+          const first = catalogue.models[0];
+          if (first) this.updateModelName(first.canonical_slug);
+        },
+        error: (error) => this.setError(error),
+      });
+    } else if (
+      DEEPSEEK_MODELS.some((model) => model.id === this.modelName()) ||
+      this.modelName().includes('/')
+    ) {
       this.modelName.set('gpt-4.1-2025-04-14');
     }
     this.invalidatePreparedSpec();
@@ -148,6 +163,14 @@ export class WizardComponent implements OnInit {
 
   updateModelName(value: string): void {
     this.modelName.set(value);
+    if (this.provider() === 'openrouter') {
+      this.openrouterEndpoint.set('');
+    }
+    this.invalidatePreparedSpec();
+  }
+
+  updateOpenRouterEndpoint(value: string): void {
+    this.openrouterEndpoint.set(value);
     this.invalidatePreparedSpec();
   }
 
@@ -258,10 +281,16 @@ export class WizardComponent implements OnInit {
       this.error.set('Model name, owner, and reviewer are required.');
       return;
     }
+    if (this.provider() === 'openrouter' && !this.openrouterEndpoint().trim()) {
+      this.error.set('Select an OpenRouter provider endpoint for this reproducible experiment.');
+      return;
+    }
     const request: PresetResolveRequest = {
       dataset_path: dataset.path,
       model_provider: this.provider(),
       model_name: this.modelName().trim(),
+      openrouter_endpoint:
+        this.provider() === 'openrouter' ? this.openrouterEndpoint().trim() : undefined,
       profile: this.profile(),
       max_turns: maxTurns,
       executor: this.executor(),

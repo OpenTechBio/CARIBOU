@@ -22,16 +22,25 @@
   <section class="sessions-section">
     <div class="sessions-toolbar" *ngIf="sessionSvc.sessions().length > 0">
       <div class="toolbar-left">
-        <h2>Sessions <span class="dim">({{ statusCounts().all }})</span></h2>
+        <h2>
+          Sessions <span class="dim">({{ statusCounts().all }})</span>
+        </h2>
       </div>
       <div class="toolbar-right">
-        <input class="toolbar-search" type="search"
+        <input
+          class="toolbar-search"
+          type="search"
           [value]="searchQuery()"
           (input)="searchQuery.set($any($event.target).value)"
-          placeholder="Search sessions…" aria-label="Search sessions" />
-        <select class="toolbar-select"
-          [ngModel]="statusFilter()" (ngModelChange)="statusFilter.set($event)"
-          aria-label="Filter by status">
+          placeholder="Search sessions…"
+          aria-label="Search sessions"
+        />
+        <select
+          class="toolbar-select"
+          [ngModel]="statusFilter()"
+          (ngModelChange)="statusFilter.set($event)"
+          aria-label="Filter by status"
+        >
           <option value="all">All ({{ statusCounts().all }})</option>
           <option value="running">Running ({{ statusCounts().running }})</option>
           <option value="idle">Idle ({{ statusCounts().idle }})</option>
@@ -39,19 +48,29 @@
           <option value="error">Errored ({{ statusCounts().error }})</option>
           <option value="initializing">Initializing ({{ statusCounts().initializing }})</option>
         </select>
-        <select class="toolbar-select"
-          [ngModel]="sortKey()" (ngModelChange)="sortKey.set($event)"
-          aria-label="Sort by">
+        <select
+          class="toolbar-select"
+          [ngModel]="sortKey()"
+          (ngModelChange)="sortKey.set($event)"
+          aria-label="Sort by"
+        >
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
           <option value="status">By status</option>
           <option value="turns">By turns</option>
         </select>
-        <button class="btn btn-ghost btn-sm" type="button" (click)="toggleSelectMode()"
+        <button
+          class="btn btn-ghost btn-sm"
+          type="button"
+          (click)="toggleSelectMode()"
           [class.active]="selectMode()"
-          aria-label="Toggle bulk-select mode">
-          @if (selectMode()) { <app-icon name="check" /> <span>Selecting</span> }
-          @else { <span>Select</span> }
+          aria-label="Toggle bulk-select mode"
+        >
+          @if (selectMode()) {
+            <app-icon name="check" /> <span>Selecting</span>
+          } @else {
+            <span>Select</span>
+          }
         </button>
       </div>
     </div>
@@ -59,10 +78,14 @@
     <!-- Bulk action bar -->
     @if (selectMode() && selected().size > 0) {
       <div class="bulk-bar" role="region" aria-label="Bulk actions">
-        <span><strong>{{ selected().size }}</strong> selected</span>
+        <span
+          ><strong>{{ selected().size }}</strong> selected</span
+        >
         <button class="btn btn-ghost btn-sm" type="button" (click)="selectAll()">Select all</button>
         <button class="btn btn-ghost btn-sm" type="button" (click)="clearSelection()">Clear</button>
-        <button class="btn btn-danger btn-sm" type="button" (click)="requestBulkDelete()">Delete selected</button>
+        <button class="btn btn-danger btn-sm" type="button" (click)="requestBulkDelete()">
+          Delete selected
+        </button>
       </div>
     }
 
@@ -73,7 +96,9 @@
         </div>
         <h3>Welcome to CARIBOU</h3>
         <p>Multi-agent bioinformatics analysis, streamed to your browser.</p>
-        <p class="empty-hint">Click <strong>New Session</strong> to pick a preset or configure a custom run.</p>
+        <p class="empty-hint">
+          Click <strong>New Session</strong> to pick a preset or configure a custom run.
+        </p>
       </div>
     }
 
@@ -85,30 +110,41 @@
 
     <div class="session-grid">
       @for (session of filteredSortedSessions(); track session.id) {
-        <div class="session-card"
+        <div
+          class="session-card"
           [class.selected]="isSelected(session.id)"
           [class.selectable]="selectMode()"
           (click)="openSession(session.id)"
-          [attr.aria-label]="'Session ' + session.id.slice(0,8) + ', status ' + session.status">
+          [attr.aria-label]="'Session ' + session.id.slice(0, 8) + ', status ' + session.status"
+        >
           @if (selectMode()) {
-            <input type="checkbox" class="card-select"
+            <input
+              type="checkbox"
+              class="card-select"
               [checked]="isSelected(session.id)"
               (click)="$event.stopPropagation(); toggleSelected(session.id)"
-              [attr.aria-label]="'Select session ' + session.id.slice(0,8)" />
+              [attr.aria-label]="'Select session ' + session.id.slice(0, 8)"
+            />
           }
           <div class="session-card-header">
             <app-status-indicator [status]="session.status" />
             <span class="session-id" [title]="session.id">{{ session.id.slice(0, 8) }}</span>
-            <button class="btn btn-ghost btn-sm icon-btn" type="button"
-              [attr.aria-label]="'Duplicate session ' + session.id.slice(0,8)"
+            <button
+              class="btn btn-ghost btn-sm icon-btn"
+              type="button"
+              [attr.aria-label]="'Duplicate session ' + session.id.slice(0, 8)"
               (click)="duplicateSession(session, $event)"
-              title="Duplicate — copy this session's config into a new session">
+              title="Duplicate — copy this session's config into a new session"
+            >
               <app-icon name="copy-plus" />
             </button>
-            <button class="btn btn-ghost btn-sm delete-btn" type="button"
-              [attr.aria-label]="'Delete session ' + session.id.slice(0,8)"
+            <button
+              class="btn btn-ghost btn-sm delete-btn"
+              type="button"
+              [attr.aria-label]="'Delete session ' + session.id.slice(0, 8)"
               (click)="requestDelete(session.id, $event)"
-              title="Delete this session and all its data">
+              title="Delete this session and all its data"
+            >
               <app-icon name="trash" />
             </button>
           </div>
@@ -120,7 +156,10 @@
             <span class="label">Model</span>
             <span>{{ session.resolved_model?.model || 'resolving…' }}</span>
             <span class="label">Turn</span>
-            <span>{{ session.current_turn }}{{ session.max_turns ? ' / ' + session.max_turns : '' }}</span>
+            <span
+              >{{ session.current_turn
+              }}{{ session.max_turns ? ' / ' + session.max_turns : '' }}</span
+            >
             <span class="label">Agent</span>
             <span class="agent-name">{{ session.current_agent || '—' }}</span>
           </div>
@@ -136,7 +175,13 @@
 
 <!-- Delete confirmation dialog -->
 @if (pendingDeleteId()) {
-  <div class="overlay" (click)="cancelDelete()" role="dialog" aria-modal="true" aria-label="Delete session">
+  <div
+    class="overlay"
+    (click)="cancelDelete()"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Delete session"
+  >
     <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
       <div class="confirm-icon" aria-hidden="true">
         <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
@@ -145,10 +190,14 @@
       <p class="confirm-detail">
         <code>{{ pendingDeleteId()?.slice(0, 8) }}</code>
         @if (pendingDeleteSession; as s) {
-          &nbsp;·&nbsp;{{ s.agent_system }}&nbsp;·&nbsp;{{ s.resolved_model?.model || s.llm_backend }}
+          &nbsp;·&nbsp;{{ s.agent_system }}&nbsp;·&nbsp;{{
+            s.resolved_model?.model || s.llm_backend
+          }}
         }
       </p>
-      <p class="confirm-warning">This will permanently remove the session and all its messages. This cannot be undone.</p>
+      <p class="confirm-warning">
+        This will permanently remove the session and all its messages. This cannot be undone.
+      </p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" (click)="cancelDelete()">Cancel</button>
         <button class="btn btn-danger" (click)="confirmDelete()">Delete</button>
@@ -159,19 +208,27 @@
 
 <!-- Bulk delete confirmation -->
 @if (pendingBulkDelete()) {
-  <div class="overlay" (click)="cancelBulkDelete()" role="dialog" aria-modal="true"
-       aria-label="Bulk delete sessions">
+  <div
+    class="overlay"
+    (click)="cancelBulkDelete()"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Bulk delete sessions"
+  >
     <div class="dialog confirm-dialog" (click)="$event.stopPropagation()">
       <div class="confirm-icon" aria-hidden="true">
         <app-icon name="trash" [size]="32" [strokeWidth]="1.75" />
       </div>
       <h3>Delete {{ selected().size }} sessions?</h3>
       <p class="confirm-warning">
-        This will permanently remove {{ selected().size }} sessions and all their data. This cannot be undone.
+        This will permanently remove {{ selected().size }} sessions and all their data. This cannot
+        be undone.
       </p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" (click)="cancelBulkDelete()">Cancel</button>
-        <button class="btn btn-danger" (click)="confirmBulkDelete()">Delete {{ selected().size }}</button>
+        <button class="btn btn-danger" (click)="confirmBulkDelete()">
+          Delete {{ selected().size }}
+        </button>
       </div>
     </div>
   </div>
@@ -179,9 +236,21 @@
 
 <!-- Create session dialog: preset -> form -> confirm -->
 @if (showCreateDialog()) {
-  <div class="overlay" (click)="cancelCreate()" role="dialog" aria-modal="true" aria-label="New session">
+  <div
+    class="overlay"
+    (click)="cancelCreate()"
+    role="dialog"
+    aria-modal="true"
+    aria-label="New session"
+  >
     <div class="dialog wizard" (click)="$event.stopPropagation()">
-      <div class="wizard-steps" role="progressbar" [attr.aria-valuenow]="wizardStep() === 'preset' ? 1 : wizardStep() === 'form' ? 2 : 3" aria-valuemin="1" aria-valuemax="3">
+      <div
+        class="wizard-steps"
+        role="progressbar"
+        [attr.aria-valuenow]="wizardStep() === 'preset' ? 1 : wizardStep() === 'form' ? 2 : 3"
+        aria-valuemin="1"
+        aria-valuemax="3"
+      >
         <span [class.active]="wizardStep() === 'preset'">1 · Preset</span>
         <span class="wizard-sep" aria-hidden="true">
           <app-icon name="chevron-right" [size]="14" />
@@ -203,12 +272,15 @@
         <p class="wizard-subtitle">Pick a preset to skip most of the config, or choose Custom.</p>
         <div class="preset-grid" role="radiogroup" aria-label="Presets">
           @for (p of presets; track p.id) {
-            <button type="button" class="preset-card"
+            <button
+              type="button"
+              class="preset-card"
               [class.selected]="selectedPreset() === p.id"
               [attr.aria-pressed]="selectedPreset() === p.id"
               role="radio"
               [attr.aria-checked]="selectedPreset() === p.id"
-              (click)="choosePreset(p.id)">
+              (click)="choosePreset(p.id)"
+            >
               <span class="preset-icon" aria-hidden="true">
                 <app-icon [name]="p.icon" [size]="28" [strokeWidth]="1.6" />
               </span>
@@ -239,7 +311,14 @@
           <label>LLM Backend</label>
           <select [ngModel]="form.llm_backend" (ngModelChange)="onBackendChange($event)">
             @for (be of availableBackends(); track be.id) {
-              <option [value]="be.id">{{ be.display_name }}{{ be.id === 'ollama' && be.status ? ' · ' + be.status : '' }}</option>
+              <option [value]="be.id">
+                {{ be.display_name
+                }}{{
+                  (be.id === 'ollama' || be.id === 'openrouter') && be.status
+                    ? ' · ' + be.status
+                    : ''
+                }}
+              </option>
             }
           </select>
 
@@ -256,21 +335,73 @@
                 <input type="text" [(ngModel)]="form.ollama_model" placeholder="llama3" />
               }
               @if (selectedOllamaStatus(); as o) {
-                <p class="ollama-note" [class.ok]="o.status === 'ready'" [class.warn]="o.status !== 'ready'">
+                <p
+                  class="ollama-note"
+                  [class.ok]="o.status === 'ready'"
+                  [class.warn]="o.status !== 'ready'"
+                >
                   {{ o.message }}
                   @if (o.suggested_fix) {
                     <code>{{ o.suggested_fix }}</code>
                   }
                 </p>
                 @if (o.status === 'not_running') {
-                  <button type="button" class="btn btn-ghost btn-sm ollama-start-btn"
-                    (click)="startOllama()" [disabled]="startingOllama()">
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm ollama-start-btn"
+                    (click)="startOllama()"
+                    [disabled]="startingOllama()"
+                  >
                     {{ startingOllama() ? 'Starting Ollama…' : 'Start Ollama' }}
                   </button>
                 }
                 @if (ollamaStartError()) {
                   <p class="path-error">{{ ollamaStartError() }}</p>
                 }
+              }
+            </div>
+          }
+
+          @if (form.llm_backend === 'openrouter') {
+            <label>OpenRouter model</label>
+            <div class="ollama-picker">
+              @if (selectedBackend()?.available === false) {
+                <p class="ollama-note warn">
+                  {{ selectedBackend()?.message }} {{ selectedBackend()?.suggested_fix }}
+                  <a routerLink="/settings">Open Settings</a>
+                </p>
+              }
+              <select [(ngModel)]="form.model_name" [disabled]="loadingOpenRouter()">
+                @for (
+                  model of configSvc.openRouterCatalogue()?.models || [];
+                  track model.canonical_slug
+                ) {
+                  <option [value]="model.canonical_slug">
+                    {{ model.name }} · {{ model.canonical_slug }}
+                  </option>
+                }
+              </select>
+              <p class="ollama-note">
+                Account-filtered catalogue · zero retention · provider data collection denied.
+                <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer"
+                  >Browse full catalogue</a
+                >
+              </p>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm ollama-start-btn"
+                (click)="loadOpenRouterModels(true)"
+                [disabled]="loadingOpenRouter()"
+              >
+                {{ loadingOpenRouter() ? 'Loading…' : 'Refresh catalogue' }}
+              </button>
+              @if (configSvc.openRouterCatalogue()?.stale) {
+                <p class="path-error">
+                  Showing the last successful catalogue because refresh failed.
+                </p>
+              }
+              @if (openRouterError()) {
+                <p class="path-error">{{ openRouterError() }}</p>
               }
             </div>
           }
@@ -296,25 +427,45 @@
           <label>Dataset</label>
           <div class="dataset-picker">
             <div class="source-tabs" role="tablist">
-              <button type="button" role="tab" class="source-tab"
+              <button
+                type="button"
+                role="tab"
+                class="source-tab"
                 [class.active]="datasetSource() === 'existing'"
                 [attr.aria-selected]="datasetSource() === 'existing'"
-                (click)="onDatasetSourceChange('existing')">Existing</button>
-              <button type="button" role="tab" class="source-tab"
+                (click)="onDatasetSourceChange('existing')"
+              >
+                Existing
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="source-tab"
                 [class.active]="datasetSource() === 'upload'"
                 [attr.aria-selected]="datasetSource() === 'upload'"
-                (click)="onDatasetSourceChange('upload')">Upload</button>
-              <button type="button" role="tab" class="source-tab"
+                (click)="onDatasetSourceChange('upload')"
+              >
+                Upload
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="source-tab"
                 [class.active]="datasetSource() === 'hpc'"
                 [attr.aria-selected]="datasetSource() === 'hpc'"
-                (click)="onDatasetSourceChange('hpc')">HPC path</button>
+                (click)="onDatasetSourceChange('hpc')"
+              >
+                HPC path
+              </button>
             </div>
 
             @if (datasetSource() === 'existing') {
               <select [(ngModel)]="form.dataset_path">
                 <option value="">— select dataset —</option>
                 @for (ds of datasets(); track ds.path) {
-                  <option [value]="ds.path">{{ ds.filename }} ({{ formatSize(ds.size_bytes) }})</option>
+                  <option [value]="ds.path">
+                    {{ ds.filename }} ({{ formatSize(ds.size_bytes) }})
+                  </option>
                 }
               </select>
             }
@@ -329,15 +480,24 @@
             @if (datasetSource() === 'hpc') {
               <div class="hpc-path">
                 <div class="hpc-input-row">
-                  <input type="text" [value]="hpcDatasetPath()"
+                  <input
+                    type="text"
+                    [value]="hpcDatasetPath()"
                     (input)="onHpcPathInput($any($event.target).value)"
-                    placeholder="/data1/project/dataset.h5ad" />
-                  <button type="button" class="btn btn-ghost btn-sm" (click)="validateHpcPath()"
-                    [disabled]="hpcValidating()">
+                    placeholder="/data1/project/dataset.h5ad"
+                  />
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    (click)="validateHpcPath()"
+                    [disabled]="hpcValidating()"
+                  >
                     {{ hpcValidating() ? 'Checking…' : 'Validate' }}
                   </button>
                 </div>
-                <p class="path-note">Paste an exact absolute path visible to this CARIBOU server.</p>
+                <p class="path-note">
+                  Paste an exact absolute path visible to this CARIBOU server.
+                </p>
                 @if (hpcDataset(); as ds) {
                   <p class="path-valid">{{ ds.filename }} · {{ formatSize(ds.size_bytes) }}</p>
                 }
@@ -349,8 +509,11 @@
           </div>
 
           <label>Initial Prompt</label>
-          <textarea [(ngModel)]="form.initial_prompt" rows="4"
-            placeholder="Describe the analysis task…"></textarea>
+          <textarea
+            [(ngModel)]="form.initial_prompt"
+            rows="4"
+            placeholder="Describe the analysis task…"
+          ></textarea>
         </div>
 
         <div class="dialog-actions">
@@ -371,12 +534,19 @@
         <h2>Review &amp; create</h2>
         <p class="wizard-subtitle">Confirm your setup — one-click back to change anything.</p>
         <dl class="confirm-summary">
-          <dt>Blueprint</dt><dd>{{ form.agent_system }}</dd>
+          <dt>Blueprint</dt>
+          <dd>{{ form.agent_system }}</dd>
           <dt>LLM backend</dt>
-          <dd>{{ form.llm_backend }}{{ form.ollama_model ? ' · ' + form.ollama_model : '' }}</dd>
-          <dt>Sandbox</dt><dd>{{ form.sandbox_type }}</dd>
+          <dd>
+            {{ form.llm_backend }}{{ form.ollama_model ? ' · ' + form.ollama_model : ''
+            }}{{ form.model_name ? ' · ' + form.model_name : '' }}
+          </dd>
+          <dt>Sandbox</dt>
+          <dd>{{ form.sandbox_type }}</dd>
           <dt>Mode</dt>
-          <dd>{{ form.mode }}{{ form.mode === 'auto' ? ' · ' + form.max_turns + ' turns' : '' }}</dd>
+          <dd>
+            {{ form.mode }}{{ form.mode === 'auto' ? ' · ' + form.max_turns + ' turns' : '' }}
+          </dd>
           <dt>Dataset</dt>
           <dd class="mono">
             {{ form.dataset_path || '—' }}

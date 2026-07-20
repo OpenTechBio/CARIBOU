@@ -14,9 +14,21 @@ import shutil
 
 from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
 from caribou.core.deepseek import DEEPSEEK_PROFILES
+from caribou.core.openrouter import (
+    OPENROUTER_CATALOG_URL,
+    OpenRouterError,
+    get_openrouter_catalogue,
+    get_openrouter_endpoints,
+)
 from caribou.server.models import (
-    AgentBlueprint, AgentConfig, BlueprintContent, CommandConfig,
-    LLMBackend, OllamaModelsResponse, SaveBlueprintRequest, ServerStatus,
+    AgentBlueprint,
+    AgentConfig,
+    BlueprintContent,
+    CommandConfig,
+    LLMBackend,
+    OllamaModelsResponse,
+    SaveBlueprintRequest,
+    ServerStatus,
 )
 from caribou.server.ollama_service import (
     DEFAULT_OLLAMA_MODEL,
@@ -30,8 +42,21 @@ from caribou.server.session_manager import session_manager, _SESSIONS_DIR
 router = APIRouter(prefix="/api", tags=["config"])
 
 _BACKENDS = [
-    LLMBackend(id="chatgpt", provider="openai", display_name="GPT-4o (OpenAI)", available=False),
-    LLMBackend(id="claude", provider="anthropic", display_name="Claude Sonnet (Anthropic)", available=False),
+    LLMBackend(
+        id="chatgpt", provider="openai", display_name="GPT-4o (OpenAI)", available=False
+    ),
+    LLMBackend(
+        id="claude",
+        provider="anthropic",
+        display_name="Claude Sonnet (Anthropic)",
+        available=False,
+    ),
+    LLMBackend(
+        id="openrouter",
+        provider="openrouter",
+        display_name="OpenRouter",
+        available=False,
+    ),
     *[
         LLMBackend(
             id=profile.backend_id,
@@ -43,12 +68,15 @@ _BACKENDS = [
         )
         for profile in DEEPSEEK_PROFILES
     ],
-    LLMBackend(id="ollama", provider="ollama", display_name="Ollama (local)", available=False),
+    LLMBackend(
+        id="ollama", provider="ollama", display_name="Ollama (local)", available=False
+    ),
 ]
 
 _KEY_MAP = {
     "chatgpt": "OPENAI_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "deepseek-thinking": "DEEPSEEK_API_KEY",
     "ollama": None,
@@ -59,10 +87,13 @@ _KEY_MAP = {
 async def get_status() -> ServerStatus:
     return ServerStatus(
         sandbox_type=_detect_sandbox(),
-        active_sessions=len([
-            s for s in session_manager.list_sessions()
-            if s.status.value in ("initializing", "idle", "running")
-        ]),
+        active_sessions=len(
+            [
+                s
+                for s in session_manager.list_sessions()
+                if s.status.value in ("initializing", "idle", "running")
+            ]
+        ),
     )
 
 
@@ -75,15 +106,29 @@ async def get_backends() -> List[LLMBackend]:
         if b.id == "ollama":
             ollama = probe_ollama(os.environ.get("OLLAMA_HOST"))
             available = ollama.status in {"ready", "not_running"}
-            result.append(b.copy(update={
-                "available": available,
-                "status": ollama.status,
-                "message": ollama.message,
-                "suggested_fix": ollama.suggested_fix,
-            }))
+            result.append(
+                b.copy(
+                    update={
+                        "available": available,
+                        "status": ollama.status,
+                        "message": ollama.message,
+                        "suggested_fix": ollama.suggested_fix,
+                    }
+                )
+            )
         else:
             available = bool(os.environ.get(key_name)) if key_name else True
-            result.append(b.copy(update={"available": available}))
+            update: dict[str, object] = {"available": available}
+            if b.id == "openrouter" and not available:
+                update.update(
+                    {
+                        "status": "not_configured",
+                        "message": "OpenRouter API key is not configured.",
+                        "suggested_fix": "Add OPENROUTER_API_KEY in Settings or run "
+                        "'caribou config set-openrouter-key'.",
+                    }
+                )
+            result.append(b.copy(update=update))
     return result
 
 
@@ -94,7 +139,10 @@ async def get_blueprints() -> List[AgentBlueprint]:
 
     blueprints = []
     seen_names: set = set()
-    for search_dir, is_pkg in ((DEFAULT_AGENT_DIR, False), (Path(PACKAGE_AGENTS_DIR), True)):
+    for search_dir, is_pkg in (
+        (DEFAULT_AGENT_DIR, False),
+        (Path(PACKAGE_AGENTS_DIR), True),
+    ):
         p = Path(search_dir)
         if not p.exists():
             continue
@@ -104,14 +152,16 @@ async def get_blueprints() -> List[AgentBlueprint]:
             seen_names.add(json_file.stem)
             try:
                 sys = AgentSystem.load_from_json(str(json_file))
-                blueprints.append(AgentBlueprint(
-                    name=json_file.stem,
-                    description=getattr(sys, "description", json_file.stem),
-                    agents=list(sys.agents.keys()),
-                    has_rag=any(a.is_rag_enabled for a in sys.agents.values()),
-                    path=str(json_file),
-                    is_package_default=is_pkg,
-                ))
+                blueprints.append(
+                    AgentBlueprint(
+                        name=json_file.stem,
+                        description=getattr(sys, "description", json_file.stem),
+                        agents=list(sys.agents.keys()),
+                        has_rag=any(a.is_rag_enabled for a in sys.agents.values()),
+                        path=str(json_file),
+                        is_package_default=is_pkg,
+                    )
+                )
             except Exception:
                 pass
     return blueprints
@@ -132,6 +182,7 @@ class UpdateSettingsRequest(BaseModel):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_model: Optional[str] = None
 
@@ -151,9 +202,10 @@ async def get_settings() -> ServerSettings:
         uploads_dir=str(CARIBOU_HOME / "server_uploads"),
         env_file=str(ENV_FILE),
         api_keys={
-            "OPENAI_API_KEY":    _mask(os.environ.get("OPENAI_API_KEY", "")),
+            "OPENAI_API_KEY": _mask(os.environ.get("OPENAI_API_KEY", "")),
             "ANTHROPIC_API_KEY": _mask(os.environ.get("ANTHROPIC_API_KEY", "")),
-            "DEEPSEEK_API_KEY":  _mask(os.environ.get("DEEPSEEK_API_KEY", "")),
+            "DEEPSEEK_API_KEY": _mask(os.environ.get("DEEPSEEK_API_KEY", "")),
+            "OPENROUTER_API_KEY": _mask(os.environ.get("OPENROUTER_API_KEY", "")),
         },
         ollama_host=normalize_host(os.environ.get("OLLAMA_HOST")),
         ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
@@ -176,6 +228,9 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
     if body.deepseek_api_key is not None:
         set_key(str(ENV_FILE), "DEEPSEEK_API_KEY", body.deepseek_api_key)
         updated.append("DEEPSEEK_API_KEY")
+    if body.openrouter_api_key is not None:
+        set_key(str(ENV_FILE), "OPENROUTER_API_KEY", body.openrouter_api_key)
+        updated.append("OPENROUTER_API_KEY")
     if body.ollama_host is not None:
         set_key(str(ENV_FILE), "OLLAMA_HOST", normalize_host(body.ollama_host))
         updated.append("OLLAMA_HOST")
@@ -194,6 +249,39 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
 
     load_dotenv(dotenv_path=ENV_FILE, override=True)
     return {"updated": updated}
+
+
+@router.get("/config/openrouter/models")
+async def get_openrouter_models(refresh: bool = False) -> dict[str, object]:
+    """Proxy the account-filtered catalogue without exposing its API key."""
+
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        raise HTTPException(503, "OPENROUTER_API_KEY is not configured")
+    try:
+        return get_openrouter_catalogue(key, refresh=refresh).as_dict()
+    except OpenRouterError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.get("/config/openrouter/endpoints")
+async def get_openrouter_model_endpoints(model_id: str) -> dict[str, object]:
+    """Return selectable upstream endpoints for one canonical model."""
+
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        raise HTTPException(503, "OPENROUTER_API_KEY is not configured")
+    try:
+        endpoints = get_openrouter_endpoints(key, model_id)
+    except OpenRouterError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {
+        "model_id": model_id,
+        "endpoints": [endpoint.as_dict() for endpoint in endpoints],
+        "catalog_url": OPENROUTER_CATALOG_URL,
+    }
 
 
 @router.get("/config/ollama/models", response_model=OllamaModelsResponse)
@@ -246,8 +334,10 @@ async def start_ollama_server() -> OllamaModelsResponse:
 # Blueprint CRUD helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_package_agents_dir() -> Path:
     from caribou.cli.run_cli import PACKAGE_AGENTS_DIR
+
     return Path(PACKAGE_AGENTS_DIR)
 
 
@@ -306,7 +396,10 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
             "prompt": agent.prompt,
             "rag": {"enabled": agent.rag_enabled},
             "neighbors": {
-                cmd_name: {"target_agent": cmd.target_agent, "description": cmd.description}
+                cmd_name: {
+                    "target_agent": cmd.target_agent,
+                    "description": cmd.description,
+                }
                 for cmd_name, cmd in agent.neighbors.items()
             },
             **({"code_samples": agent.code_samples} if agent.code_samples else {}),
@@ -316,7 +409,12 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
 
 def _validate_blueprint(req: SaveBlueprintRequest) -> None:
     """Raise HTTPException 422 on structural validation failure."""
-    if not req.name or "/" in req.name or "\\" in req.name or req.name.endswith(".json"):
+    if (
+        not req.name
+        or "/" in req.name
+        or "\\" in req.name
+        or req.name.endswith(".json")
+    ):
         raise HTTPException(422, "Invalid blueprint name.")
     if not req.agents:
         raise HTTPException(422, "Blueprint must have at least one agent.")
@@ -351,6 +449,7 @@ def _atomic_write(path: Path, data: dict) -> None:
 # Blueprint CRUD endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/config/blueprints/{name}", response_model=BlueprintContent)
 async def get_blueprint(name: str) -> BlueprintContent:
     return _load_blueprint_content(name)
@@ -369,12 +468,16 @@ async def create_blueprint(req: SaveBlueprintRequest) -> BlueprintContent:
 @router.put("/config/blueprints/{name}", response_model=BlueprintContent)
 async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintContent:
     if _is_package_default(name):
-        raise HTTPException(403, f"Blueprint '{name}' is a package default and cannot be modified.")
+        raise HTTPException(
+            403, f"Blueprint '{name}' is a package default and cannot be modified."
+        )
     user_path = DEFAULT_AGENT_DIR / f"{name}.json"
     if not user_path.exists():
         raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
     _validate_blueprint(req)
-    req = SaveBlueprintRequest(name=name, global_policy=req.global_policy, agents=req.agents)
+    req = SaveBlueprintRequest(
+        name=name, global_policy=req.global_policy, agents=req.agents
+    )
     _atomic_write(user_path, _to_disk_dict(req))
     return _load_blueprint_content(name)
 
@@ -382,7 +485,9 @@ async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintCon
 @router.delete("/config/blueprints/{name}", status_code=204)
 async def delete_blueprint(name: str) -> None:
     if _is_package_default(name):
-        raise HTTPException(403, f"Blueprint '{name}' is a package default and cannot be deleted.")
+        raise HTTPException(
+            403, f"Blueprint '{name}' is a package default and cannot be deleted."
+        )
     user_path = DEFAULT_AGENT_DIR / f"{name}.json"
     if not user_path.exists():
         raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
@@ -390,7 +495,9 @@ async def delete_blueprint(name: str) -> None:
 
 
 _USER_CODE_SAMPLES_DIR = CARIBOU_HOME / "code_samples"
-_PACKAGE_CODE_SAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "code_samples"
+_PACKAGE_CODE_SAMPLES_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "code_samples"
+)
 
 
 class ImportCodeSampleRequest(BaseModel):
@@ -424,7 +531,9 @@ class UpdateCodeSampleRequest(BaseModel):
 
 
 def _is_builtin_sample(filename: str) -> bool:
-    return (_PACKAGE_CODE_SAMPLES_DIR / filename).exists() and not (_USER_CODE_SAMPLES_DIR / filename).exists()
+    return (_PACKAGE_CODE_SAMPLES_DIR / filename).exists() and not (
+        _USER_CODE_SAMPLES_DIR / filename
+    ).exists()
 
 
 @router.post("/config/code-samples/import", response_model=ImportCodeSampleResponse)
@@ -440,7 +549,10 @@ async def import_code_sample(req: ImportCodeSampleRequest) -> ImportCodeSampleRe
     _USER_CODE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     dest = _USER_CODE_SAMPLES_DIR / src.name
     if dest.exists():
-        raise HTTPException(409, f"A code sample named '{src.name}' already exists. Rename the source file or remove the existing sample.")
+        raise HTTPException(
+            409,
+            f"A code sample named '{src.name}' already exists. Rename the source file or remove the existing sample.",
+        )
 
     shutil.copy2(src, dest)
     return ImportCodeSampleResponse(filename=src.name, destination=str(dest))
@@ -473,11 +585,15 @@ async def list_code_samples() -> List[CodeSampleInfo]:
 async def get_code_sample(filename: str) -> CodeSampleContent:
     user_path = _USER_CODE_SAMPLES_DIR / filename
     if user_path.exists():
-        return CodeSampleContent(filename=filename, content=user_path.read_text(), is_builtin=False)
+        return CodeSampleContent(
+            filename=filename, content=user_path.read_text(), is_builtin=False
+        )
 
     pkg_path = _PACKAGE_CODE_SAMPLES_DIR / filename
     if pkg_path.exists():
-        return CodeSampleContent(filename=filename, content=pkg_path.read_text(), is_builtin=True)
+        return CodeSampleContent(
+            filename=filename, content=pkg_path.read_text(), is_builtin=True
+        )
 
     raise HTTPException(404, f"Code sample '{filename}' not found.")
 
@@ -488,16 +604,25 @@ async def create_code_sample(req: CreateCodeSampleRequest) -> CodeSampleContent:
         raise HTTPException(422, "Invalid filename.")
     dest = _USER_CODE_SAMPLES_DIR / req.filename
     if dest.exists():
-        raise HTTPException(409, f"A code sample named '{req.filename}' already exists.")
+        raise HTTPException(
+            409, f"A code sample named '{req.filename}' already exists."
+        )
     _USER_CODE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     dest.write_text(req.content)
-    return CodeSampleContent(filename=req.filename, content=req.content, is_builtin=False)
+    return CodeSampleContent(
+        filename=req.filename, content=req.content, is_builtin=False
+    )
 
 
 @router.put("/config/code-samples/{filename}", response_model=CodeSampleContent)
-async def update_code_sample(filename: str, req: UpdateCodeSampleRequest) -> CodeSampleContent:
+async def update_code_sample(
+    filename: str, req: UpdateCodeSampleRequest
+) -> CodeSampleContent:
     if _is_builtin_sample(filename):
-        raise HTTPException(403, f"'{filename}' is a built-in sample and cannot be modified. Clone it first.")
+        raise HTTPException(
+            403,
+            f"'{filename}' is a built-in sample and cannot be modified. Clone it first.",
+        )
     dest = _USER_CODE_SAMPLES_DIR / filename
     if not dest.exists():
         raise HTTPException(404, f"Code sample '{filename}' not found.")
@@ -508,7 +633,9 @@ async def update_code_sample(filename: str, req: UpdateCodeSampleRequest) -> Cod
 @router.delete("/config/code-samples/{filename}", status_code=204)
 async def delete_code_sample(filename: str) -> None:
     if _is_builtin_sample(filename):
-        raise HTTPException(403, f"'{filename}' is a built-in sample and cannot be deleted.")
+        raise HTTPException(
+            403, f"'{filename}' is a built-in sample and cannot be deleted."
+        )
     dest = _USER_CODE_SAMPLES_DIR / filename
     if not dest.exists():
         raise HTTPException(404, f"Code sample '{filename}' not found.")

@@ -1,6 +1,4 @@
-import {
-  Component, OnInit, inject, signal, computed
-} from '@angular/core';
+import { Component, OnInit, inject, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { Router } from '@angular/router';
@@ -72,7 +70,14 @@ const PRESETS: QuickStartPreset[] = [
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, StatusIndicatorComponent, IconComponent, TooltipDirective],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    StatusIndicatorComponent,
+    IconComponent,
+    TooltipDirective,
+  ],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })
@@ -87,6 +92,8 @@ export class DashboardComponent implements OnInit {
   showCreateDialog = signal(false);
   creating = signal(false);
   createError = signal<string | null>(null);
+  loadingOpenRouter = signal(false);
+  openRouterError = signal<string | null>(null);
   pendingDeleteId = signal<string | null>(null);
   pendingBulkDelete = signal(false);
   datasetSource = signal<DatasetSource>('existing');
@@ -110,7 +117,7 @@ export class DashboardComponent implements OnInit {
   selectMode = signal(false);
 
   get pendingDeleteSession() {
-    return this.sessionSvc.sessions().find(s => s.id === this.pendingDeleteId());
+    return this.sessionSvc.sessions().find((s) => s.id === this.pendingDeleteId());
   }
 
   form: SessionCreateRequest = {
@@ -118,6 +125,7 @@ export class DashboardComponent implements OnInit {
     run_mode: 'full_system',
     agent_system: '',
     llm_backend: '',
+    model_name: '',
     ollama_model: '',
     sandbox_type: 'singularity',
     dataset_path: '',
@@ -126,20 +134,21 @@ export class DashboardComponent implements OnInit {
   };
 
   availableBackends = computed(() =>
-    this.configSvc.backends().filter(b => b.available || b.id === 'ollama')
+    this.configSvc
+      .backends()
+      .filter((b) => b.available || b.id === 'ollama' || b.id === 'openrouter'),
   );
 
-  selectedBackend = computed(() =>
-    this.configSvc.backends().find(b => b.id === this.form.llm_backend) ?? null
+  selectedBackend = computed(
+    () => this.configSvc.backends().find((b) => b.id === this.form.llm_backend) ?? null,
   );
 
   selectedOllamaStatus = computed(() =>
-    this.form.llm_backend === 'ollama' ? this.configSvc.ollamaModels() : null
+    this.form.llm_backend === 'ollama' ? this.configSvc.ollamaModels() : null,
   );
 
   selectedDatasetInfo = computed(() => {
-    return this.datasets().find(d => d.path === this.form.dataset_path)
-        ?? this.hpcDataset();
+    return this.datasets().find((d) => d.path === this.form.dataset_path) ?? this.hpcDataset();
   });
 
   filteredSortedSessions = computed(() => {
@@ -147,14 +156,15 @@ export class DashboardComponent implements OnInit {
     const status = this.statusFilter();
     const sort = this.sortKey();
     let items = this.sessionSvc.sessions().slice();
-    if (status !== 'all') items = items.filter(s => s.status === status);
+    if (status !== 'all') items = items.filter((s) => s.status === status);
     if (q) {
-      items = items.filter(s =>
-        s.id.toLowerCase().includes(q) ||
-        s.agent_system.toLowerCase().includes(q) ||
-        s.llm_backend.toLowerCase().includes(q) ||
-        (s.resolved_model?.model ?? '').toLowerCase().includes(q) ||
-        (s.current_agent ?? '').toLowerCase().includes(q)
+      items = items.filter(
+        (s) =>
+          s.id.toLowerCase().includes(q) ||
+          s.agent_system.toLowerCase().includes(q) ||
+          s.llm_backend.toLowerCase().includes(q) ||
+          (s.resolved_model?.model ?? '').toLowerCase().includes(q) ||
+          (s.current_agent ?? '').toLowerCase().includes(q),
       );
     }
     switch (sort) {
@@ -165,7 +175,7 @@ export class DashboardComponent implements OnInit {
         items.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
         break;
       case 'status':
-        items.sort((a, b) => (a.status).localeCompare(b.status));
+        items.sort((a, b) => a.status.localeCompare(b.status));
         break;
       case 'turns':
         items.sort((a, b) => b.current_turn - a.current_turn);
@@ -176,7 +186,12 @@ export class DashboardComponent implements OnInit {
 
   statusCounts = computed(() => {
     const counts: Record<StatusFilter, number> = {
-      all: 0, running: 0, idle: 0, stopped: 0, error: 0, initializing: 0,
+      all: 0,
+      running: 0,
+      idle: 0,
+      stopped: 0,
+      error: 0,
+      initializing: 0,
     };
     for (const s of this.sessionSvc.sessions()) {
       counts.all++;
@@ -188,14 +203,17 @@ export class DashboardComponent implements OnInit {
   ngOnInit(): void {
     this.sessionSvc.loadSessions().subscribe();
     this.configSvc.loadAll().subscribe(() => this.applyDefaults());
-    this.datasetSvc.getDatasets().subscribe(d => this.datasets.set(d));
+    this.datasetSvc.getDatasets().subscribe((d) => this.datasets.set(d));
   }
 
   private applyDefaults(): void {
-    const bp = this.configSvc.blueprints().find(b => b.name === DEFAULT_AGENT_SYSTEM)
-      ?? this.configSvc.blueprints()[0];
+    const bp =
+      this.configSvc.blueprints().find((b) => b.name === DEFAULT_AGENT_SYSTEM) ??
+      this.configSvc.blueprints()[0];
     if (bp && !this.form.agent_system) this.form.agent_system = bp.name;
-    const be = this.availableBackends()[0];
+    const be =
+      this.availableBackends().find((backend) => backend.available) ??
+      this.availableBackends().find((backend) => backend.id === 'ollama');
     if (be && !this.form.llm_backend) this.form.llm_backend = be.id;
     this.applyOllamaDefaultModel();
   }
@@ -213,7 +231,7 @@ export class DashboardComponent implements OnInit {
 
   choosePreset(id: string): void {
     this.selectedPreset.set(id);
-    const preset = PRESETS.find(p => p.id === id);
+    const preset = PRESETS.find((p) => p.id === id);
     if (!preset) return;
     // Apply preset values on top of defaults
     this.applyDefaults();
@@ -222,13 +240,17 @@ export class DashboardComponent implements OnInit {
     if (preset.values.agent_system) this.form.agent_system = preset.values.agent_system;
     if (preset.values.sandbox_type) this.form.sandbox_type = preset.values.sandbox_type;
     if (preset.values.max_turns) this.form.max_turns = preset.values.max_turns;
-    if (preset.values.initial_prompt !== undefined) this.form.initial_prompt = preset.values.initial_prompt;
+    if (preset.values.initial_prompt !== undefined)
+      this.form.initial_prompt = preset.values.initial_prompt;
     this.wizardStep.set('form');
   }
 
   goToConfirm(): void {
     const err = this.validateForm();
-    if (err) { this.createError.set(err); return; }
+    if (err) {
+      this.createError.set(err);
+      return;
+    }
     this.createError.set(null);
     this.wizardStep.set('confirm');
   }
@@ -246,9 +268,19 @@ export class DashboardComponent implements OnInit {
       if (ollama?.status === 'not_installed' || ollama?.status === 'unreachable') {
         return ollama.suggested_fix ?? ollama.message ?? 'Ollama is not reachable.';
       }
-      this.form.ollama_model = this.form.ollama_model || (ollama?.models.length ? ollama.default_model : undefined);
+      this.form.ollama_model =
+        this.form.ollama_model || (ollama?.models.length ? ollama.default_model : undefined);
     } else {
       this.form.ollama_model = undefined;
+    }
+    if (this.form.llm_backend === 'openrouter' && this.selectedBackend()?.available === false) {
+      return (
+        this.selectedBackend()?.suggested_fix ??
+        'Configure an OpenRouter API key in Settings before creating this session.'
+      );
+    }
+    if (this.form.llm_backend === 'openrouter' && !this.form.model_name) {
+      return 'Select an OpenRouter model before creating a session.';
     }
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       return 'Validate the HPC dataset path before creating a session.';
@@ -261,7 +293,11 @@ export class DashboardComponent implements OnInit {
 
   submitCreate(): void {
     const err = this.validateForm();
-    if (err) { this.createError.set(err); this.wizardStep.set('form'); return; }
+    if (err) {
+      this.createError.set(err);
+      this.wizardStep.set('form');
+      return;
+    }
     const request: SessionCreateRequest = {
       ...this.form,
       max_turns: this.form.mode === 'auto' ? this.form.max_turns : undefined,
@@ -291,7 +327,30 @@ export class DashboardComponent implements OnInit {
         next: () => this.applyOllamaDefaultModel(),
         error: () => this.applyOllamaDefaultModel(),
       });
+    } else if (backend === 'openrouter') {
+      if (this.selectedBackend()?.available) {
+        this.loadOpenRouterModels();
+      } else {
+        this.openRouterError.set(null);
+      }
     }
+  }
+
+  loadOpenRouterModels(refresh = false): void {
+    this.loadingOpenRouter.set(true);
+    this.openRouterError.set(null);
+    this.configSvc.getOpenRouterModels(refresh).subscribe({
+      next: (catalogue) => {
+        this.loadingOpenRouter.set(false);
+        if (!this.form.model_name && catalogue.models.length) {
+          this.form.model_name = catalogue.models[0].canonical_slug;
+        }
+      },
+      error: (err) => {
+        this.loadingOpenRouter.set(false);
+        this.openRouterError.set(err?.error?.detail ?? 'Unable to load OpenRouter models.');
+      },
+    });
   }
 
   startOllama(): void {
@@ -306,7 +365,10 @@ export class DashboardComponent implements OnInit {
         this.startingOllama.set(false);
         const detail = err?.error?.detail;
         this.ollamaStartError.set(
-          detail?.suggested_fix ?? detail?.message ?? err?.error?.detail ?? 'Unable to start Ollama.'
+          detail?.suggested_fix ??
+            detail?.message ??
+            err?.error?.detail ??
+            'Unable to start Ollama.',
         );
       },
     });
@@ -317,11 +379,14 @@ export class DashboardComponent implements OnInit {
     const ollama = this.configSvc.ollamaModels();
     if (!ollama) return;
     if (this.form.ollama_model && ollama.models.includes(this.form.ollama_model)) return;
-    this.form.ollama_model = ollama.models.length ? (ollama.default_model || ollama.models[0]) : '';
+    this.form.ollama_model = ollama.models.length ? ollama.default_model || ollama.models[0] : '';
   }
 
   openSession(id: string): void {
-    if (this.selectMode()) { this.toggleSelected(id); return; }
+    if (this.selectMode()) {
+      this.toggleSelected(id);
+      return;
+    }
     this.router.navigate(['/session', id]);
   }
 
@@ -346,6 +411,7 @@ export class DashboardComponent implements OnInit {
     this.applyDefaults();
     this.form.agent_system = s.agent_system;
     this.form.llm_backend = s.llm_backend;
+    this.form.model_name = s.resolved_model?.model ?? '';
     this.form.sandbox_type = s.sandbox_type;
     this.form.mode = s.mode;
     this.form.run_mode = s.run_mode;
@@ -365,14 +431,15 @@ export class DashboardComponent implements OnInit {
   }
 
   toggleSelectMode(): void {
-    this.selectMode.update(v => !v);
+    this.selectMode.update((v) => !v);
     if (!this.selectMode()) this.selected.set(new Set());
   }
 
   toggleSelected(id: string): void {
-    this.selected.update(set => {
+    this.selected.update((set) => {
       const next = new Set(set);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
@@ -382,7 +449,7 @@ export class DashboardComponent implements OnInit {
   }
 
   selectAll(): void {
-    this.selected.set(new Set(this.filteredSortedSessions().map(s => s.id)));
+    this.selected.set(new Set(this.filteredSortedSessions().map((s) => s.id)));
   }
 
   clearSelection(): void {
@@ -396,7 +463,7 @@ export class DashboardComponent implements OnInit {
 
   confirmBulkDelete(): void {
     const ids = Array.from(this.selected());
-    ids.forEach(id => this.sessionSvc.deleteSession(id).subscribe());
+    ids.forEach((id) => this.sessionSvc.deleteSession(id).subscribe());
     this.selected.set(new Set());
     this.pendingBulkDelete.set(false);
     this.toasts.show({
@@ -414,9 +481,9 @@ export class DashboardComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-    this.datasetSvc.uploadDataset(file).subscribe(ev => {
+    this.datasetSvc.uploadDataset(file).subscribe((ev) => {
       if (ev.dataset) {
-        this.datasets.update(d => [...d, ev.dataset!]);
+        this.datasets.update((d) => [...d, ev.dataset!]);
         this.form.dataset_path = ev.dataset!.path;
         this.datasetSource.set('existing');
       }

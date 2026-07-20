@@ -87,6 +87,23 @@ alias. Web session records persist the exact model ID and effective mode, and
 CLI runs using `--make-report` write both `model` and `model_parameters` into
 the session report.
 
+OpenRouter is available as a first-class provider through its account-filtered
+model catalogue:
+
+```bash
+caribou config set-openrouter-key "sk-or-..."
+caribou config list-openrouter-models
+caribou config list-openrouter-models --json
+caribou run interactive --llm openrouter --model anthropic/claude-sonnet-4
+```
+
+The web UI provides searchable model selection and links to the full
+[OpenRouter catalogue](https://openrouter.ai/models). Interactive sessions use
+OpenRouter's normal provider routing with zero retention and provider data
+collection denied. Reproducible experiments additionally freeze one explicit
+upstream endpoint, disable fallback routing, and persist the canonical model,
+routing policy, returned provider, token usage, and provider-reported cost.
+
 ---
 
 ## Web Frontend
@@ -120,6 +137,9 @@ caribou config get-control-token
 
 Treat this value as a deployment secret: anyone who has it can operate durable
 experiments on that CARIBOU server. It is not a model-provider API key.
+The browser sends it in the proxy-safe `X-Caribou-Control-Token` header so it
+does not collide with Open OnDemand's own `Authorization` handling. Direct API
+clients may continue using `Authorization: Bearer <token>` for compatibility.
 
 FastAPI serves both the REST/WebSocket API and the Angular static bundle. The server auto-detects the Open OnDemand node-proxy path pattern and strips it transparently — no extra flags needed.
 

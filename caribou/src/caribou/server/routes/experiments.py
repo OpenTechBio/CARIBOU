@@ -29,8 +29,12 @@ from caribou.domain.serialization import model_hash
 
 def require_control_access(
     authorization: str | None = Header(default=None),
+    x_caribou_control_token: str | None = Header(
+        default=None,
+        alias="X-Caribou-Control-Token",
+    ),
 ) -> None:
-    """Require an operator-supplied bearer token for every control-plane route."""
+    """Require the CARIBOU token without colliding with proxy authentication."""
 
     resolved = resolve_control_access_token(create=False)
     if resolved is None:
@@ -44,10 +48,13 @@ def require_control_access(
             status_code=503,
             detail=error_response("control.authorize", error),
         )
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.casefold() != "bearer" or not supplied or not secrets.compare_digest(
-        supplied, resolved.value
-    ):
+    supplied = (
+        x_caribou_control_token if isinstance(x_caribou_control_token, str) else None
+    )
+    if supplied is None:
+        scheme, _, legacy_token = (authorization or "").partition(" ")
+        supplied = legacy_token if scheme.casefold() == "bearer" else ""
+    if not supplied or not secrets.compare_digest(supplied, resolved.value):
         error = ControlError(
             "CONTROL_API_UNAUTHORIZED",
             "a valid experiment-control bearer token is required",
@@ -56,7 +63,6 @@ def require_control_access(
         raise HTTPException(
             status_code=401,
             detail=error_response("control.authorize", error),
-            headers={"WWW-Authenticate": "Bearer"},
         )
 
 
@@ -78,7 +84,9 @@ class ExperimentSubmissionRequest(_RequestModel):
 
 
 class RunCancellationRequest(_RequestModel):
-    reason: str = Field(default="cancel requested by web", min_length=1, max_length=1000)
+    reason: str = Field(
+        default="cancel requested by web", min_length=1, max_length=1000
+    )
 
 
 class CheckpointCreationRequest(_RequestModel):
@@ -321,8 +329,7 @@ def run_status(
             data={"run": run.model_dump(mode="json"), "cursor": run.event_sequence},
             links={
                 "events": (
-                    f"/api/control/runs/{run.run_id}/events"
-                    f"?after={run.event_sequence}"
+                    f"/api/control/runs/{run.run_id}/events?after={run.event_sequence}"
                 ),
                 "artifacts": f"/api/control/runs/{run.run_id}/artifacts",
             },

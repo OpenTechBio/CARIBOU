@@ -41,11 +41,15 @@ export class SettingsComponent implements OnInit {
   openaiKey = signal('');
   anthropicKey = signal('');
   deepseekKey = signal('');
+  openrouterKey = signal('');
   ollamaHost = signal('');
   ollamaModel = signal('');
 
   showKeys: Record<string, boolean> = {
-    openai: false, anthropic: false, deepseek: false,
+    openai: false,
+    anthropic: false,
+    deepseek: false,
+    openrouter: false,
   };
 
   ngOnInit(): void {
@@ -72,6 +76,7 @@ export class SettingsComponent implements OnInit {
     if (this.openaiKey()) body['openai_api_key'] = this.openaiKey();
     if (this.anthropicKey()) body['anthropic_api_key'] = this.anthropicKey();
     if (this.deepseekKey()) body['deepseek_api_key'] = this.deepseekKey();
+    if (this.openrouterKey()) body['openrouter_api_key'] = this.openrouterKey();
     if (this.ollamaHost() !== this.settings()?.ollama_host) {
       body['ollama_host'] = this.ollamaHost();
     }
@@ -91,9 +96,10 @@ export class SettingsComponent implements OnInit {
         this.openaiKey.set('');
         this.anthropicKey.set('');
         this.deepseekKey.set('');
+        this.openrouterKey.set('');
         this.saveResult.set({ ok: true, message: `Saved: ${r.updated.join(', ')}` });
         // Reload settings to show updated masks
-        this.http.get<ServerSettings>('api/settings').subscribe(s => {
+        this.http.get<ServerSettings>('api/settings').subscribe((s) => {
           this.settings.set(s);
           this.ollamaHost.set(s.ollama_host);
           this.ollamaModel.set(s.ollama_model);

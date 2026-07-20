@@ -65,7 +65,7 @@ This guide will walk you through setting up your API key, downloading a dataset,
 
 ### Step 1: Configure Your API Key
 
-First, tell CARIBOU about your OpenAI, Anthropic (Claude), or DeepSeek API key. This is a one-time setup.
+First, tell CARIBOU about your OpenAI, Anthropic (Claude), DeepSeek, or OpenRouter API key. This is a one-time setup.
 
 ```bash
 caribou config set-openai-key "sk-YourSecretKeyGoesHere"
@@ -81,6 +81,13 @@ or
   
 ```bash
 caribou config set-anthropic-key "sk-ant-YourSecretKeyGoesHere"
+```
+
+or
+
+```bash
+caribou config set-openrouter-key "sk-or-YourSecretKeyGoesHere"
+caribou config list-openrouter-models
 ```
 
 

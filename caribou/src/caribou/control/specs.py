@@ -37,11 +37,19 @@ AGENT_SMOKE_DELAY_PARAMETER = "caribou.agent_smoke_delay_seconds"
 MODEL_MAX_OUTPUT_TOKENS_PARAMETER = "max_output_tokens"
 MODEL_THINKING_PARAMETER = "thinking"
 MODEL_REASONING_EFFORT_PARAMETER = "reasoning_effort"
+OPENROUTER_ENDPOINT_PARAMETER = "openrouter_endpoint"
+OPENROUTER_ALLOW_FALLBACKS_PARAMETER = "openrouter_allow_fallbacks"
+OPENROUTER_ZDR_PARAMETER = "openrouter_zdr"
+OPENROUTER_DATA_COLLECTION_PARAMETER = "openrouter_data_collection"
 _SUPPORTED_AGENT_MODEL_PARAMETERS = frozenset(
     {
         MODEL_MAX_OUTPUT_TOKENS_PARAMETER,
         MODEL_THINKING_PARAMETER,
         MODEL_REASONING_EFFORT_PARAMETER,
+        OPENROUTER_ENDPOINT_PARAMETER,
+        OPENROUTER_ALLOW_FALLBACKS_PARAMETER,
+        OPENROUTER_ZDR_PARAMETER,
+        OPENROUTER_DATA_COLLECTION_PARAMETER,
     }
 )
 AGENT_RETRYABLE_FAILURES = frozenset(
@@ -166,6 +174,33 @@ def _model_deepseek_options(
     return thinking, reasoning_effort
 
 
+def _model_openrouter_options(parameters: dict[str, Any]) -> str | None:
+    endpoint = parameters.get(OPENROUTER_ENDPOINT_PARAMETER)
+    routing_values = {
+        OPENROUTER_ALLOW_FALLBACKS_PARAMETER: False,
+        OPENROUTER_ZDR_PARAMETER: True,
+        OPENROUTER_DATA_COLLECTION_PARAMETER: "deny",
+    }
+    present = endpoint is not None or any(key in parameters for key in routing_values)
+    if not present:
+        return None
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise ControlError(
+            "AGENT_MODEL_PARAMETER_INVALID",
+            "OpenRouter experiments require an explicit provider endpoint",
+            exit_code=ExitCode.validation,
+        )
+    for key, expected in routing_values.items():
+        if parameters.get(key) != expected:
+            raise ControlError(
+                "AGENT_MODEL_PARAMETER_INVALID",
+                f"{key} must be frozen as {expected!r}",
+                exit_code=ExitCode.validation,
+                details={"parameter": key},
+            )
+    return endpoint.strip()
+
+
 def _validate_agent_adapter(
     spec: ExperimentSpec, condition_index: int, adapter: str
 ) -> None:
@@ -219,14 +254,14 @@ def _validate_agent_adapter(
             exit_code=ExitCode.validation,
             details={"sandbox": spec.execution.container.sandbox.value},
         )
-    if condition.model.provider not in {"openai", "deepseek"}:
+    if condition.model.provider not in {"openai", "deepseek", "openrouter"}:
         raise ControlError(
             "AGENT_PROVIDER_UNSUPPORTED",
             "the initial real agent workload requires an explicitly supported provider",
             exit_code=ExitCode.validation,
             details={
                 "provider": condition.model.provider,
-                "supported": ["deepseek", "openai"],
+                "supported": ["deepseek", "openai", "openrouter"],
             },
         )
     if (
@@ -243,6 +278,7 @@ def _validate_agent_adapter(
     model_parameters = dict(condition.model.parameters)
     _model_max_output_tokens(model_parameters)
     thinking, reasoning_effort = _model_deepseek_options(model_parameters)
+    openrouter_endpoint = _model_openrouter_options(model_parameters)
     if condition.model.provider != "deepseek" and (
         thinking is not None or reasoning_effort is not None
     ):
@@ -256,6 +292,32 @@ def _validate_agent_adapter(
                     & {MODEL_THINKING_PARAMETER, MODEL_REASONING_EFFORT_PARAMETER}
                 )
             },
+        )
+    if condition.model.provider == "openrouter":
+        from caribou.core.openrouter import (
+            OpenRouterError,
+            validate_openrouter_model_id,
+        )
+
+        try:
+            validate_openrouter_model_id(condition.model.model, strict=True)
+        except OpenRouterError as exc:
+            raise ControlError(
+                "AGENT_OPENROUTER_MODEL_INVALID",
+                str(exc),
+                exit_code=ExitCode.validation,
+            ) from exc
+        if openrouter_endpoint is None:
+            raise ControlError(
+                "AGENT_OPENROUTER_ROUTING_REQUIRED",
+                "OpenRouter experiments require frozen strict routing",
+                exit_code=ExitCode.validation,
+            )
+    elif openrouter_endpoint is not None:
+        raise ControlError(
+            "AGENT_MODEL_PARAMETERS_UNSUPPORTED",
+            "OpenRouter routing controls require provider=openrouter",
+            exit_code=ExitCode.validation,
         )
     if condition.memory.strategy != MemoryStrategy.full:
         raise ControlError(

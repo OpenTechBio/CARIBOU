@@ -1,6 +1,7 @@
 # caribou/cli/config_cli.py
 import os
 import re
+import json
 import typer
 from rich.console import Console
 from typing import Optional
@@ -8,6 +9,7 @@ from typing import Optional
 # Import the centralized ENV_FILE path
 from caribou.config import ENV_FILE
 from caribou.core.control_access import resolve_control_access_token
+from dotenv import load_dotenv, set_key
 
 config_app = typer.Typer(
     name="config",
@@ -16,6 +18,14 @@ config_app = typer.Typer(
 )
 
 console = Console()
+
+
+def _save_provider_key(name: str, value: str) -> None:
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not ENV_FILE.exists():
+        ENV_FILE.touch(mode=0o600)
+    set_key(str(ENV_FILE), name, value)
+    os.chmod(ENV_FILE, 0o600)
 
 
 @config_app.command("get-control-token")
@@ -169,3 +179,53 @@ def set_anthropic_key(
     console.print(
         f"[bold green]✅ Anthropic API key has been set successfully in:[/bold green] {ENV_FILE}"
     )
+
+
+@config_app.command("set-openrouter-key")
+def set_openrouter_key(
+    api_key: str = typer.Argument(..., help="Your OpenRouter API key (sk-or-...)"),
+) -> None:
+    """Save the OpenRouter inference API key in CARIBOU's private environment file."""
+
+    if not api_key.startswith("sk-or-"):
+        console.print(
+            "[yellow]Warning: key does not look like a standard OpenRouter key "
+            "(expected sk-or-...).[/yellow]"
+        )
+    _save_provider_key("OPENROUTER_API_KEY", api_key)
+    console.print(
+        f"[bold green]✅ OpenRouter API key saved in:[/bold green] {ENV_FILE}"
+    )
+
+
+@config_app.command("list-openrouter-models")
+def list_openrouter_models(
+    json_output: bool = typer.Option(
+        False, "--json", help="Print one machine-readable JSON object."
+    ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Bypass the five-minute cache."
+    ),
+) -> None:
+    """List models allowed by the configured OpenRouter account."""
+
+    from caribou.core.openrouter import OpenRouterError, get_openrouter_catalogue
+
+    load_dotenv(dotenv_path=ENV_FILE, override=False)
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        console.print("[red]OPENROUTER_API_KEY is not configured.[/red]", stderr=True)
+        raise typer.Exit(1)
+    try:
+        catalogue = get_openrouter_catalogue(key, refresh=refresh)
+    except OpenRouterError as exc:
+        console.print(f"[red]{exc}[/red]", stderr=True)
+        raise typer.Exit(1) from exc
+    payload = catalogue.as_dict()
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+    stale = " [stale cache]" if catalogue.stale else ""
+    console.print(f"[bold]OpenRouter models[/bold]{stale}")
+    for model in catalogue.models:
+        console.print(f"{model.canonical_slug}\t{model.name}", markup=False)
