@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evaluate CARIBOU Biology"
+  short_description: "Assess biological validity and silent errors"
+  default_prompt: "Use $evaluate-caribou-biology to evaluate the biological validity of these CARIBOU analyses."

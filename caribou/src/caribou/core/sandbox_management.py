@@ -2,6 +2,9 @@
 import time
 import os
 import shutil
+import hashlib
+import selectors
+import threading
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 
@@ -14,6 +17,15 @@ from caribou.sandbox.benchmarking_sandbox_management import (
     IMAGE_TAG as _SANDBOX_IMAGE,
     API_PORT_HOST as _API_PORT,
 )
+
+
+class SandboxReplUnavailableError(RuntimeError):
+    """Raised when exec_code is called against a REPL already invalidated
+    by a prior timeout or cancellation. A narrow subclass of RuntimeError
+    so callers can recover from exactly this case without also catching
+    unrelated RuntimeErrors (e.g. an unimplemented-backend NotImplementedError,
+    which is itself a RuntimeError subclass, or a genuine sandbox-contract
+    violation) that should still propagate as real bugs."""
 
 
 def _nvidia_gpu_available() -> bool:
@@ -59,68 +71,229 @@ def init_docker(script_dir:str, subprocess, console, force_refresh:bool=False):
 
 
 
-def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console, force_refresh: bool = False):
+def _normalise_sha256(value: str) -> str:
+    digest = value.removeprefix("sha256:").lower()
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise ValueError("sif_sha256 must be a 64-character SHA-256 digest")
+    return digest
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def init_singularity_exec(
+    script_dir: str,
+    sanbox_data_path,
+    subprocess,
+    console,
+    force_refresh: bool = False,
+    *,
+    sif_path: str | Path | None = None,
+    sif_sha256: str | None = None,
+    no_pull: bool = False,
+    readiness_timeout: float = 30.0,
+    gpu_enabled: bool | None = None,
+    celltypist_cache_enabled: bool = True,
+):
+    """Configure the REPL, optionally using an existing hash-pinned SIF."""
     import caribou.sandbox.benchmarking_sandbox_management_singularity as sing
+
+    if readiness_timeout <= 0:
+        raise ValueError("readiness_timeout must be greater than zero")
+    if sif_path is not None and sif_sha256 is None:
+        raise ValueError("an explicit sif_path requires sif_sha256")
+
+    default_sif_path = Path(sing.SIF_PATH).expanduser().resolve()
+    SIF_PATH = Path(sif_path).expanduser().resolve() if sif_path else default_sif_path
+    expected_sha256 = _normalise_sha256(sif_sha256) if sif_sha256 else None
+
+    if force_refresh and no_pull:
+        raise ValueError("force_refresh and no_pull cannot be used together")
+    if force_refresh and SIF_PATH != default_sif_path:
+        raise ValueError("force_refresh is only supported for the legacy bundled SIF path")
 
     # optional force‑refresh
     if force_refresh:
         console.print("[yellow]Forcing Singularity sandbox refresh…[/yellow]")
-        if sing.SIF_PATH.exists():
-            sing.SIF_PATH.unlink()
+        if SIF_PATH.exists():
+            SIF_PATH.unlink()
             console.print(
-                f"[green]Deleted {sing.SIF_PATH.name} – it will be re‑downloaded on next start.[/green]"
+                f"[green]Deleted {SIF_PATH.name} – it will be re‑downloaded on next start.[/green]"
             )
 
-    SIF_PATH = sing.SIF_PATH
-    SING_BIN = sing.SING_BIN
     SENTINEL = "<<<EOF>>>"
 
     # Shared CellTypist model cache — persists across all runs so models are
     # downloaded once and reused.  Bind-mounted to /workspace/celltypist_models.
     _celltypist_host_path: Path = CARIBOU_HOME / "celltypist_models"
 
+    def ensure_sif() -> bool:
+        if no_pull:
+            if not SIF_PATH.is_file():
+                console.print(f"[red]Pinned SIF is unavailable in no-pull mode: {SIF_PATH}[/red]")
+                return False
+        elif SIF_PATH == default_sif_path:
+            if not sing.pull_sif_if_needed():
+                return False
+        elif not SIF_PATH.is_file():
+            console.print(f"[red]Explicit SIF path does not exist: {SIF_PATH}[/red]")
+            return False
+
+        if expected_sha256 is not None:
+            actual_sha256 = _sha256(SIF_PATH)
+            if actual_sha256 != expected_sha256:
+                console.print(
+                    "[red]SIF SHA-256 mismatch; refusing to start. "
+                    f"Expected {expected_sha256}, got {actual_sha256}.[/red]"
+                )
+                return False
+        return True
+
     class _SingExecBackend:
         """Launch one long‑lived REPL inside the SIF and stream code to it."""
+
+        image_path = SIF_PATH
+        image_sha256 = expected_sha256
+        image_no_pull = no_pull
 
         def __init__(self):
             self._binds: List[str] = []
             self._proc = None
             self._host_output_path: Optional[Path] = None
+            self._stdout_buffer = bytearray()
 
         def set_data(self, all_resources: List[Tuple[Path, str]], host_output_path: Path):
             """Configures all necessary bind mounts, including the output directory."""
             binds = []
             for host_path, container_path in all_resources:
-                binds.extend(["--bind", f"{host_path.resolve()}:{container_path}"])
+                binds.extend(
+                    ["--bind", f"{host_path.resolve()}:{container_path}:ro"]
+                )
 
+            host_output_path.mkdir(parents=True, exist_ok=True)
             binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
 
-            # Shared CellTypist model cache (persistent across runs)
-            _celltypist_host_path.mkdir(parents=True, exist_ok=True)
-            binds.extend(["--bind", f"{_celltypist_host_path.resolve()}:/workspace/celltypist_models"])
+            if celltypist_cache_enabled:
+                # Legacy interactive surfaces retain their shared CellTypist cache.
+                # Evidence-grade control-plane workloads disable this implicit mount.
+                _celltypist_host_path.mkdir(parents=True, exist_ok=True)
+                binds.extend(
+                    [
+                        "--bind",
+                        f"{_celltypist_host_path.resolve()}:/workspace/celltypist_models",
+                    ]
+                )
 
             self._binds = binds
             self._host_output_path = host_output_path
-            # Ensure cache dir exists on host for container writes
-            (host_output_path / ".cache").mkdir(parents=True, exist_ok=True)
+
+        def _read_process_line(
+            self,
+            deadline: float,
+            cancel_event: threading.Event | None = None,
+        ) -> Tuple[Optional[str], str]:
+            """Read one response line without an unbounded ``readline`` call."""
+            proc = self._proc
+            if proc is None or proc.stdout is None:
+                return None, "eof"
+
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout, selectors.EVENT_READ)
+                while True:
+                    newline = self._stdout_buffer.find(b"\n")
+                    if newline >= 0:
+                        raw_line = bytes(self._stdout_buffer[:newline])
+                        del self._stdout_buffer[: newline + 1]
+                        return raw_line.decode("utf-8", errors="replace"), "line"
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None, "cancelled"
+
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None, "timeout"
+
+                    process_exited = proc.poll() is not None
+                    events = selector.select(0 if process_exited else min(remaining, 0.1))
+                    if not events:
+                        if process_exited:
+                            if self._stdout_buffer:
+                                raw_line = bytes(self._stdout_buffer)
+                                self._stdout_buffer.clear()
+                                return raw_line.decode("utf-8", errors="replace"), "line"
+                            return None, "eof"
+                        continue
+
+                    chunk = os.read(proc.stdout.fileno(), 64 * 1024)
+                    if not chunk:
+                        if self._stdout_buffer:
+                            raw_line = bytes(self._stdout_buffer)
+                            self._stdout_buffer.clear()
+                            return raw_line.decode("utf-8", errors="replace"), "line"
+                        return None, "eof"
+                    self._stdout_buffer.extend(chunk)
+
+        def _invalidate_repl(self):
+            """Terminate, reap, and forget the REPL so late results cannot leak."""
+            proc = self._proc
+            self._proc = None
+            self._stdout_buffer.clear()
+            if proc is None:
+                return
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
 
         # ------------------------------------------------------------------
         # Container lifecycle
         # ------------------------------------------------------------------
         def start_container(self):
             if self._proc:
-                return True  # already running
-            if not sing.pull_sif_if_needed():
+                if self._proc.poll() is None:
+                    return True  # already running
+                self._invalidate_repl()
+            if not ensure_sif():
                 return False
 
             # Build command, conditionally including --nv if GPU is available
             cmd = [
-                SING_BIN,
+                sing.require_sing_bin(),
                 "exec",
             ]
 
-            # Only add --nv flag if NVIDIA GPU is available
-            if _nvidia_gpu_available():
+            gpu_available = _nvidia_gpu_available()
+            if gpu_enabled is True and not gpu_available:
+                console.print(
+                    "[red]GPU execution was requested but no NVIDIA GPU is accessible.[/red]"
+                )
+                return False
+            use_gpu = gpu_available if gpu_enabled is None else gpu_enabled
+            if use_gpu:
                 cmd.append("--nv")
                 console.print("[dim]GPU detected, enabling NVIDIA support[/dim]")
             else:
@@ -129,6 +302,9 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             cmd.extend([
                 "--containall",
                 "--cleanenv",
+                "--net",
+                "--network",
+                "none",
                 *self._binds,
                 str(SIF_PATH),
                 "python",
@@ -136,92 +312,127 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 "--repl",
             ])
 
+            retired_overrides = {
+                "APPTAINERENV_MAMBA_NO_BANNER",
+                "APPTAINERENV_MAMBA_NO_LOW_SPEED_LIMIT",
+                "APPTAINERENV_MAMBA_ROOT_PREFIX",
+                "APPTAINERENV_XDG_CACHE_HOME",
+                "SINGULARITYENV_MAMBA_NO_BANNER",
+                "SINGULARITYENV_MAMBA_NO_LOW_SPEED_LIMIT",
+                "SINGULARITYENV_MAMBA_ROOT_PREFIX",
+                "SINGULARITYENV_XDG_CACHE_HOME",
+            }
+            child_env = {key: value for key, value in os.environ.items() if key not in retired_overrides}
+            child_env.update({
+                # This SIF remains a legacy fixture, independent of the host Conda prefix.
+                "SINGULARITYENV_PATH": "/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SINGULARITYENV_PYTHONUNBUFFERED": "1",
+            })
+            if celltypist_cache_enabled:
+                child_env.update(
+                    {
+                        "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/celltypist_models",
+                        "SINGULARITYENV_CELLTYPIST_HOME": "/workspace/celltypist_models",
+                        "SINGULARITYENV_CELLTYPIST_FOLDER": "/workspace/celltypist_models",
+                    }
+                )
+
             self._proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env={
-                    **os.environ,
-                    # Set PATH to ensure Python and conda environment are accessible
-                    "SINGULARITYENV_PATH": "/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "SINGULARITYENV_XDG_CACHE_HOME": "/workspace/outputs/.cache",
-                    "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/celltypist_models",
-                    # Suppress micromamba warnings and messages
-                    "SINGULARITYENV_MAMBA_NO_BANNER": "1",
-                    "SINGULARITYENV_MAMBA_ROOT_PREFIX": "/workspace/outputs/.mamba",
-                    "SINGULARITYENV_PYTHONUNBUFFERED": "1",
-                    "SINGULARITYENV_MAMBA_NO_LOW_SPEED_LIMIT": "1",
-                },
-                text=True,
-                bufsize=1,  # line buffered
+                # Merge diagnostics so an unread stderr pipe cannot deadlock the REPL.
+                stderr=subprocess.STDOUT,
+                env=child_env,
+                text=False,
+                bufsize=0,
             )
-            # Wait for the REPL banner
-            ready_line = self._proc.stdout.readline().strip()
-            if ready_line != "__REPL_READY__":
-                # Capture stderr for better error diagnostics
-                stderr_output = ""
-                try:
-                    # Non-blocking read of available stderr
-                    import select
-                    if select.select([self._proc.stderr], [], [], 0.5)[0]:
-                        stderr_output = self._proc.stderr.read()
-                except Exception:
-                    pass
-
+            self._stdout_buffer.clear()
+            ready_line, reason = self._read_process_line(time.monotonic() + readiness_timeout)
+            if reason != "line" or ready_line is None or ready_line.strip() != "__REPL_READY__":
                 console.print(
-                    f"[red]REPL failed to start. Got: {ready_line}[/red]"
+                    f"[red]REPL failed to start. Reason: {reason}; got: {ready_line or ''}[/red]"
                 )
-                if stderr_output:
-                    console.print(f"[red]Stderr: {stderr_output}[/red]")
-                self.stop_container()
+                self._invalidate_repl()
                 return False
             return True
 
         def stop_container(self):
-            if not self._proc:
-                return True
-            try:
-                if self._proc.stdin:
-                    self._proc.stdin.close()
-                self._proc.terminate()
-                self._proc.wait(timeout=5)
-            except Exception:
-                self._proc.kill()
-            self._proc = None
+            self._invalidate_repl()
             return True
 
         # ------------------------------------------------------------------
         # Code execution
         # ------------------------------------------------------------------
-        def exec_code(self, code: str, timeout: int = 600) -> Dict:
+        def exec_code(
+            self,
+            code: str,
+            timeout: float = 600,
+            cancel_event: threading.Event | None = None,
+        ) -> Dict:
+            """Execute code; timeout/cancel invalidates the stateful REPL."""
+            if timeout <= 0:
+                raise ValueError("timeout must be greater than zero")
             if not self._proc:
-                raise RuntimeError("REPL not running")
+                raise SandboxReplUnavailableError("REPL not running")
             assert self._proc.stdin and self._proc.stdout
 
-            # Send code block + sentinel
-            self._proc.stdin.write(code)
-            if not code.endswith("\n"):
-                self._proc.stdin.write("\n")
-            self._proc.stdin.write(SENTINEL + "\n")
-            self._proc.stdin.flush()
+            if cancel_event is not None and cancel_event.is_set():
+                self._invalidate_repl()
+                return {
+                    "status": "cancelled",
+                    "stdout": "",
+                    "stderr": "Execution cancelled; REPL invalidated.",
+                    "images": [],
+                }
 
-            # Read exactly one JSON line
-            start_time = time.time()
+            # Send code block + sentinel as bytes so reads can use selectors safely.
+            try:
+                self._proc.stdin.write(code.encode("utf-8"))
+                if not code.endswith("\n"):
+                    self._proc.stdin.write(b"\n")
+                self._proc.stdin.write((SENTINEL + "\n").encode("utf-8"))
+                self._proc.stdin.flush()
+            except Exception as error:
+                self._invalidate_repl()
+                return {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": f"Failed to send code to REPL: {error}",
+                    "images": [],
+                }
+
+            deadline = time.monotonic() + timeout
             while True:
-                if time.time() - start_time > timeout:
+                line, reason = self._read_process_line(deadline, cancel_event)
+                if reason in {"timeout", "cancelled", "eof"}:
+                    self._invalidate_repl()
+                    if reason == "timeout":
+                        return {
+                            "status": "timeout",
+                            "stdout": "",
+                            "stderr": "Execution timed out; REPL invalidated.",
+                            "images": [],
+                        }
+                    if reason == "cancelled":
+                        return {
+                            "status": "cancelled",
+                            "stdout": "",
+                            "stderr": "Execution cancelled; REPL invalidated.",
+                            "images": [],
+                        }
                     return {
-                        "status": "timeout",
+                        "status": "error",
                         "stdout": "",
-                        "stderr": "Execution timed out in REPL.",
+                        "stderr": "REPL exited before returning a result.",
                         "images": [],
                     }
-                line = self._proc.stdout.readline()
-                if not line:
-                    continue
-                line = line.strip()
+
+                assert line is not None
                 try:
-                    return json.loads(line)
+                    result = json.loads(line)
+                    if isinstance(result, dict):
+                        return result
                 except json.JSONDecodeError:
                     # Non‑JSON noise; continue reading
                     continue

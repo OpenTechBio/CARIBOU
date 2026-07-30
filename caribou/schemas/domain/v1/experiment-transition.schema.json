@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "ExperimentState": {
+      "enum": [
+        "draft",
+        "validated",
+        "planned",
+        "active",
+        "aggregating",
+        "completed",
+        "cancelled",
+        "failed",
+        "rejected"
+      ],
+      "title": "ExperimentState",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/experiment-transition.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "minLength": 1,
+      "title": "Actor",
+      "type": "string"
+    },
+    "event_id": {
+      "pattern": "^evt_[0-9a-f]{32}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "from_state": {
+      "$ref": "#/$defs/ExperimentState"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "caribou.experiment_transition.v1",
+      "default": "caribou.experiment_transition.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "to_state": {
+      "$ref": "#/$defs/ExperimentState"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "sequence",
+    "from_state",
+    "to_state",
+    "reason",
+    "actor"
+  ],
+  "title": "ExperimentTransitionRecord",
+  "type": "object"
+}

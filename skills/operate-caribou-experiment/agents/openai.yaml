@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate CARIBOU Experiment"
+  short_description: "Run and monitor CARIBOU experiments"
+  default_prompt: "Use $operate-caribou-experiment to validate, run, monitor, and collect this CARIBOU experiment."

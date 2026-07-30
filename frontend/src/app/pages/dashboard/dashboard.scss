@@ -258,6 +258,13 @@
   }
 
   textarea { resize: vertical; min-height: 88px; }
+
+  .field-note {
+    grid-column: 2;
+    margin: -0.5rem 0 0 0;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+  }
 }
 
 .dataset-picker {

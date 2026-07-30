@@ -1,0 +1,54 @@
+<div class="wizard-step preset-step">
+  <div class="step-intro">
+    <span class="step-kicker">Analysis</span>
+    <h2>Choose an analysis workflow</h2>
+    <p>
+      Workflows are supported starting configurations. Your final choices are expanded into a
+      complete, frozen experiment specification.
+    </p>
+  </div>
+
+  <div class="preset-grid">
+    @for (preset of presets; track preset.id) {
+      <button
+        type="button"
+        class="preset-card"
+        (click)="selectedPresetChange.emit(preset.id)"
+        [class.selected]="selectedPreset === preset.id"
+        [attr.aria-pressed]="selectedPreset === preset.id"
+        title="Select {{ preset.name }} and configure its resources on the next step"
+      >
+        <div class="preset-heading">
+          <span class="workflow-index">{{ ($index + 1).toString().padStart(2, '0') }}</span>
+          <span class="workflow-badge">Supported workflow</span>
+        </div>
+        <div class="preset-info">
+          <h3>{{ preset.name }}</h3>
+          <p class="preset-description">{{ preset.description }}</p>
+          <div class="workflow-facts">
+            <div>
+              <span>Default profile</span>
+              <strong>{{ preset.default_profile }}</strong>
+            </div>
+            <div>
+              <span>Default turns</span>
+              <strong>{{ preset.default_max_turns }}</strong>
+            </div>
+            <div>
+              <span>Maximum turns</span>
+              <strong>{{ preset.maximum_max_turns }}</strong>
+            </div>
+          </div>
+        </div>
+        <div class="preset-check" [class.visible]="selectedPreset === preset.id" aria-hidden="true">
+          ✓
+        </div>
+      </button>
+    } @empty {
+      <div class="no-workflows">
+        <strong>No guided workflows are available</strong>
+        <p>The connected server did not return any supported experiment workflows.</p>
+      </div>
+    }
+  </div>
+</div>

@@ -27,14 +27,17 @@ dependencies = [
   "fastapi>=0.111.0",
   "uvicorn[standard]>=0.29.0",
   "python-multipart>=0.0.9",
-  "aiofiles>=23.0.0"
+  "aiofiles>=23.0.0",
+  "pydantic>=2.7,<3",
+  "PyYAML>=6.0"
 ]
 
 # If you want a command like `caribou …`
 [project.scripts]
 caribou = "caribou.cli.main:main"
 
-# Optional extras (install with: pip install .[dev])
+# Packaging metadata for developer tools. The supported HPC development setup
+# is the shared Conda prefix defined by environment.control-plane.yml.
 [project.optional-dependencies]
 dev = [
   "pytest",

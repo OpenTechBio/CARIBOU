@@ -4,9 +4,8 @@ from __future__ import annotations
 import os
 import textwrap
 from pathlib import Path
-from typing import List, Tuple, Optional, cast, Dict, Any
+from typing import TYPE_CHECKING, List, Tuple, Optional, cast, Dict, Any
 import subprocess
-import json
 from datetime import datetime
 
 import typer
@@ -14,7 +13,22 @@ from rich.console import Console
 from rich.prompt import Prompt, IntPrompt
 from dotenv import load_dotenv
 
-from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME, DEFAULT_BLUEPRINT_NAME
+from caribou.config import (
+    DEFAULT_AGENT_DIR,
+    ENV_FILE,
+    CARIBOU_HOME,
+    DEFAULT_BLUEPRINT_NAME,
+)
+from caribou.core.deepseek import (
+    DEEPSEEK_BACKEND_IDS,
+    create_deepseek_client,
+    deepseek_profile_for_backend,
+    is_deepseek_backend,
+)
+
+if TYPE_CHECKING:
+    from caribou.agents.AgentSystem import AgentSystem
+    from caribou.execution.runner import SandboxManager
 
 # --------------------------------------------------------------------------------------
 # Constants & Package Paths
@@ -28,6 +42,17 @@ PACKAGE_CODE_SAMPLES_DIR = PACKAGE_ROOT / "code_samples"
 
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"
+LLM_BACKEND_CHOICES = [
+    "chatgpt",
+    "claude",
+    "ollama",
+    "openrouter",
+    *DEEPSEEK_BACKEND_IDS,
+]
+LLM_BACKEND_HELP = (
+    "LLM backend: 'chatgpt', 'claude', 'ollama', 'deepseek' (V4 Flash quick), "
+    "'openrouter', or 'deepseek-thinking' (V4 Pro thinking)."
+)
 
 # --------------------------------------------------------------------------------------
 # Typer App
@@ -43,10 +68,12 @@ run_app = typer.Typer(
 # Context Object
 # --------------------------------------------------------------------------------------
 
+
 class AppContext:
     """
     Mutable context shared across subcommands. Built once and attached to ctx.obj.
     """
+
     def __init__(self) -> None:
         self.console: Console = Console()
         self.agent_system: "AgentSystem" | None = None
@@ -55,6 +82,7 @@ class AppContext:
         self.sandbox_manager: "SandboxManager" | None = None
         self.llm_client: object | None = None
         self.model_name: str | None = None
+        self.model_parameters: Dict[str, object] = {}
         self.initial_history: List[dict] | None = None
         self.dataset_path: Path | None = None
         self.reference_dataset_path: Optional[Path] = None
@@ -66,9 +94,11 @@ class AppContext:
         self.make_report: bool = False
         self.agent_report_memory: bool = False
 
+
 # --------------------------------------------------------------------------------------
 # Prompt Helpers
 # --------------------------------------------------------------------------------------
+
 
 def _prompt_for_driver(console: Console, system: "AgentSystem") -> str:
     """Prompt to select a driver agent from the loaded system."""
@@ -76,7 +106,10 @@ def _prompt_for_driver(console: Console, system: "AgentSystem") -> str:
     agents = list(system.agents.keys())
     if not agents:
         raise typer.BadParameter("No agents found in the loaded AgentSystem.")
-    return Prompt.ask("Enter the name of the driver agent", choices=agents, default=agents[0])
+    return Prompt.ask(
+        "Enter the name of the driver agent", choices=agents, default=agents[0]
+    )
+
 
 def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
     """
@@ -110,6 +143,7 @@ def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
         return None
     return metrics[choice_idx].id
 
+
 # --------------------------------------------------------------------------------------
 # Core Runner
 # --------------------------------------------------------------------------------------
@@ -126,26 +160,33 @@ def _setup_and_run_session(
     """
     from caribou.execution.runner import run_agent_session, SandboxManager
     from caribou.agents.AgentSystem import AgentSystem
-    from caribou.core.io_helpers import save_chat_history_as_json, save_chat_history_as_notebook
+    from caribou.core.io_helpers import (
+        save_chat_history_as_json,
+        save_chat_history_as_notebook,
+    )
     import shutil
 
     sandbox_manager = cast(SandboxManager, context.sandbox_manager)
     console = context.console
-    
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     if context.output_dir:
         host_output_path = context.output_dir
-        host_output_path.mkdir(parents=True, exist_ok=True) # Ensure it exists
-        console.print(f"Session outputs will be saved to specified directory: [cyan]{host_output_path}[/cyan]")
+        host_output_path.mkdir(parents=True, exist_ok=True)  # Ensure it exists
+        console.print(
+            f"Session outputs will be saved to specified directory: [cyan]{host_output_path}[/cyan]"
+        )
     else:
         # Default behavior: create a timestamped temporary directory
         temp_output_dir = CARIBOU_HOME / "runs" / "session_outputs"
         host_output_path = temp_output_dir / f"run_{timestamp}"
         host_output_path.mkdir(parents=True, exist_ok=True)
-        console.print(f"Session outputs will be staged in temporary directory: [cyan]{host_output_path}[/cyan]")
+        console.print(
+            f"Session outputs will be staged in temporary directory: [cyan]{host_output_path}[/cyan]"
+        )
 
     console.print("[cyan]Starting sandbox...[/cyan]")
-    
+
     details = context.sandbox_details
     dataset_path = cast(Path, context.dataset_path)
 
@@ -156,7 +197,7 @@ def _setup_and_run_session(
     if not sandbox_manager.start_container():
         console.print("[bold red]Failed to start sandbox container.[/bold red]")
         raise typer.Exit(1)
-    
+
     try:
         if not details.get("is_exec_mode"):
             copy_cmd = details["copy_cmd"]
@@ -168,7 +209,9 @@ def _setup_and_run_session(
         run_agent_session(
             console=console,
             agent_system=cast(AgentSystem, context.agent_system),
-            driver_agent=cast(AgentSystem, context.agent_system).get_agent(cast(str, context.driver_agent_name)),
+            driver_agent=cast(AgentSystem, context.agent_system).get_agent(
+                cast(str, context.driver_agent_name)
+            ),
             analysis_context=cast(str, context.analysis_context),
             llm_client=cast(object, context.llm_client),
             sandbox_manager=sandbox_manager,
@@ -177,6 +220,7 @@ def _setup_and_run_session(
             max_turns=max_turns,
             benchmark_modules=benchmark_modules,
             model_name=cast(str, context.model_name),
+            model_parameters=context.model_parameters,
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
             make_report=context.make_report,
@@ -192,7 +236,9 @@ def _setup_and_run_session(
             try:
                 output_files_info = sandbox_manager.list_output_files() or []
             except Exception as e:
-                console.print(f"[yellow]Warning: Could not list output files: {e}[/yellow]")
+                console.print(
+                    f"[yellow]Warning: Could not list output files: {e}[/yellow]"
+                )
 
         # Fallback for exec-mode when outputs already live on host
         if not output_files_info and is_exec_mode and host_output_path.exists():
@@ -205,13 +251,18 @@ def _setup_and_run_session(
         if output_files_info:
             if auto_save_mode:
                 if is_exec_mode:
-                    console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                    console.print(
+                        f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}"
+                    )
                 else:
                     files_to_copy = [f["name"] for f in output_files_info]
-                    sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
+                    sandbox_manager.retrieve_output_files(
+                        host_output_path, files_to_copy
+                    )
             else:
                 console.print("\n[bold]Review generated files:[/bold]")
                 from rich.table import Table
+
                 table = Table(title="Generated Output Files")
                 table.add_column("Index", style="cyan")
                 table.add_column("Filename")
@@ -221,20 +272,36 @@ def _setup_and_run_session(
                 console.print(table)
 
                 if is_exec_mode:
-                    keep = Prompt.ask(
-                        f"\nDo you want to keep the output directory and its contents?",
-                        choices=["y", "n"],
-                        default="y",
-                    ).lower() == "y"
+                    keep = (
+                        Prompt.ask(
+                            "\nDo you want to keep the output directory and its contents?",
+                            choices=["y", "n"],
+                            default="y",
+                        ).lower()
+                        == "y"
+                    )
                     if not keep and not auto_save_mode:
                         shutil.rmtree(host_output_path, ignore_errors=True)
-                        console.print(f"[dim]Removed temporary output directory.[/dim]")
+                        console.print("[dim]Removed temporary output directory.[/dim]")
                     else:
-                        console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                        console.print(
+                            f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}"
+                        )
                 else:
-                    if Prompt.ask("\n[bold]Do you want to save these files?[/bold]", choices=["y", "n"], default="y").lower() == "y":
-                        files_to_copy = [f["name"] for f in output_files_info if "name" in f]
-                        sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
+                    if (
+                        Prompt.ask(
+                            "\n[bold]Do you want to save these files?[/bold]",
+                            choices=["y", "n"],
+                            default="y",
+                        ).lower()
+                        == "y"
+                    ):
+                        files_to_copy = [
+                            f["name"] for f in output_files_info if "name" in f
+                        ]
+                        sandbox_manager.retrieve_output_files(
+                            host_output_path, files_to_copy
+                        )
                     else:
                         console.print("Generated files will be discarded.")
                         shutil.rmtree(host_output_path, ignore_errors=True)
@@ -246,23 +313,42 @@ def _setup_and_run_session(
         console.print("[cyan]Stopping sandbox...[/cyan]")
         sandbox_manager.stop_container()
 
-        save_chat = auto_save_mode or \
-                    (not is_auto and Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == "y")
+        save_chat = auto_save_mode or (
+            not is_auto
+            and Prompt.ask(
+                "\n[bold]Do you want to save the chat history?[/bold]",
+                choices=["y", "n"],
+                default="y",
+            ).lower()
+            == "y"
+        )
 
         if save_chat:
-            log_dir = host_output_path if auto_save_mode else (CARIBOU_HOME / "runs" / "chat_logs")
-            log_dir.mkdir(parents=True, exist_ok=True) # Ensure log dir exists, especially if output_dir was used
+            log_dir = (
+                host_output_path
+                if auto_save_mode
+                else (CARIBOU_HOME / "runs" / "chat_logs")
+            )
+            log_dir.mkdir(
+                parents=True, exist_ok=True
+            )  # Ensure log dir exists, especially if output_dir was used
 
             if auto_save_mode:
                 # Default to notebook format when using --output-dir
                 save_format = "notebook"
                 file_extension = ".ipynb"
                 save_path = log_dir / f"chat_log_{timestamp}{file_extension}"
-            else: # Interactive prompt for format and location
-                save_format = Prompt.ask("Save chat log format", choices=["json", "notebook"], default="notebook")
+            else:  # Interactive prompt for format and location
+                save_format = Prompt.ask(
+                    "Save chat log format",
+                    choices=["json", "notebook"],
+                    default="notebook",
+                )
                 file_extension = ".ipynb" if save_format == "notebook" else ".json"
                 default_path = log_dir / f"interactive_chat_{timestamp}{file_extension}"
-                save_path_str = Prompt.ask("Enter the save path for the chat log", default=str(default_path))
+                save_path_str = Prompt.ask(
+                    "Enter the save path for the chat log", default=str(default_path)
+                )
                 save_path = Path(save_path_str).expanduser()
 
             if save_format == "notebook":
@@ -270,9 +356,11 @@ def _setup_and_run_session(
             else:
                 save_chat_history_as_json(console, history, save_path)
 
+
 # --------------------------------------------------------------------------------------
 # Initialization (shared for callback and subcommands)
 # --------------------------------------------------------------------------------------
+
 
 def initialize_context(
     context: AppContext,
@@ -283,11 +371,12 @@ def initialize_context(
     reference_dataset: Optional[Path],
     resources_dir: Optional[Path],
     llm_backend: Optional[str],
+    model_name: Optional[str],
     ollama_host: str,
     sandbox: Optional[str],
     force_refresh: bool,
     compress_memory: bool,
-    output_dir: Optional[Path], # <-- ADDED
+    output_dir: Optional[Path],  # <-- ADDED
     make_report: bool,
     agent_report_memory: bool,
 ) -> None:
@@ -305,13 +394,20 @@ def initialize_context(
 
     console = context.console
     context.compress_memory = compress_memory
-    context.output_dir = output_dir # <-- Store output dir
+    context.output_dir = output_dir  # <-- Store output dir
     context.make_report = bool(make_report)
     context.agent_report_memory = bool(agent_report_memory)
 
     # ---- Agent System Blueprint ----
     if blueprint is None:
-        blueprint = prompt_for_file(console, DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR, ".json", "Agent System Blueprint", default_name=DEFAULT_BLUEPRINT_NAME)
+        blueprint = prompt_for_file(
+            console,
+            DEFAULT_AGENT_DIR,
+            PACKAGE_AGENTS_DIR,
+            ".json",
+            "Agent System Blueprint",
+            default_name=DEFAULT_BLUEPRINT_NAME,
+        )
     context.agent_system = AgentSystem.load_from_json(str(blueprint))
 
     # ---- Driver Agent ----
@@ -323,17 +419,42 @@ def initialize_context(
 
     # ---- Datasets ----
     if dataset is None:
-        dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Primary Dataset")
+        dataset = prompt_for_file(
+            console,
+            get_datasets_dir(),
+            PACKAGE_DATASETS_DIR,
+            ".h5ad",
+            "Primary Dataset",
+        )
     context.dataset_path = dataset
 
-    if reference_dataset is None and output_dir is None: # Only prompt if not in auto-save mode
-        if Prompt.ask("Do you want to add a reference dataset?", choices=["y", "n"], default="n").lower() == "y":
-            reference_dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Reference Dataset")
+    if (
+        reference_dataset is None and output_dir is None
+    ):  # Only prompt if not in auto-save mode
+        if (
+            Prompt.ask(
+                "Do you want to add a reference dataset?",
+                choices=["y", "n"],
+                default="n",
+            ).lower()
+            == "y"
+        ):
+            reference_dataset = prompt_for_file(
+                console,
+                get_datasets_dir(),
+                PACKAGE_DATASETS_DIR,
+                ".h5ad",
+                "Reference Dataset",
+            )
     context.reference_dataset_path = reference_dataset
 
     # ---- Sandbox Backend ----
     if sandbox is None:
-        sandbox = Prompt.ask("Choose a sandbox backend", choices=["docker", "singularity"], default="docker")
+        sandbox = Prompt.ask(
+            "Choose a sandbox backend",
+            choices=["docker", "singularity"],
+            default="docker",
+        )
 
     console.print(f"[cyan]Initializing sandbox backend: {sandbox}[/cyan]")
     script_dir = Path(__file__).resolve().parent
@@ -344,8 +465,14 @@ def initialize_context(
         )
         is_exec_mode = False
     elif sandbox == "singularity":
-        manager_class, handle, copy_cmd, exec_endpoint, status_endpoint = init_singularity_exec(
-            script_dir, SANDBOX_DATA_PATH, subprocess, console, force_refresh=force_refresh
+        manager_class, handle, copy_cmd, exec_endpoint, status_endpoint = (
+            init_singularity_exec(
+                script_dir,
+                SANDBOX_DATA_PATH,
+                subprocess,
+                console,
+                force_refresh=force_refresh,
+            )
         )
         is_exec_mode = True
     else:
@@ -362,43 +489,91 @@ def initialize_context(
 
     # ---- LLM Backend ----
     if llm_backend is None:
-        llm_backend = Prompt.ask("Choose an LLM backend", choices=["chatgpt", "claude", "ollama", "deepseek"], default="chatgpt")
+        llm_backend = Prompt.ask(
+            "Choose an LLM backend",
+            choices=LLM_BACKEND_CHOICES,
+            default="chatgpt",
+        )
 
     console.print(f"[cyan]Initializing LLM backend: {llm_backend}[/cyan]")
+    context.model_parameters = {}
 
     if llm_backend == "chatgpt":
         if not os.getenv("OPENAI_API_KEY"):
-            console.print("[bold red]Error: OPENAI_API_KEY not set. Use 'caribou config set-openai-key'.[/bold red]")
+            console.print(
+                "[bold red]Error: OPENAI_API_KEY not set. Use 'caribou config set-openai-key'.[/bold red]"
+            )
             raise typer.Exit(1)
         context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         context.model_name = "gpt-5.2"
     elif llm_backend == "claude":
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if not anthropic_key:
-            console.print("[bold red]Error: ANTHROPIC_API_KEY not set. Use 'caribou config set-anthropic-key'.[/bold red]")
+            console.print(
+                "[bold red]Error: ANTHROPIC_API_KEY not set. Use 'caribou config set-anthropic-key'.[/bold red]"
+            )
             raise typer.Exit(1)
         from caribou.core.anthropic_wrapper import AnthropicClient
+
         context.llm_client = AnthropicClient(api_key=anthropic_key)
         context.model_name = "claude-sonnet-4-5-20250929"
-    elif llm_backend == "deepseek":
+    elif is_deepseek_backend(llm_backend):
         if not os.getenv("DEEPSEEK_API_KEY"):
-            console.print("[bold red]Error: DEEPSEEK_API_KEY not set. Use 'caribou config set-deepseek-key'.[/bold red]")
+            console.print(
+                "[bold red]Error: DEEPSEEK_API_KEY not set. Use 'caribou config set-deepseek-key'.[/bold red]"
+            )
             raise typer.Exit(1)
-        context.llm_client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
-        context.model_name = "deepseek-chat"
+        profile = deepseek_profile_for_backend(llm_backend)
+        context.llm_client = create_deepseek_client(
+            cast(str, os.getenv("DEEPSEEK_API_KEY")),
+            profile=profile,
+        )
+        context.model_name = profile.model
+        context.model_parameters = profile.model_parameters()
+    elif llm_backend == "openrouter":
+        from caribou.core.openrouter import (
+            create_openrouter_client,
+            validate_openrouter_model_id,
+        )
+
+        key = os.getenv("OPENROUTER_API_KEY")
+        if not key:
+            console.print(
+                "[bold red]Error: OPENROUTER_API_KEY not set. Use "
+                "'caribou config set-openrouter-key'.[/bold red]"
+            )
+            raise typer.Exit(1)
+        if not model_name:
+            model_name = Prompt.ask(
+                "Enter an exact OpenRouter model slug (author/model)"
+            )
+        context.model_name = validate_openrouter_model_id(model_name, strict=False)
+        context.llm_client = create_openrouter_client(key)
+        context.model_parameters = {
+            "routing": "flexible",
+            "zdr": True,
+            "data_collection": "deny",
+        }
     elif llm_backend == "ollama":
         if ollama_host == "http://localhost:11434" and output_dir is None:
-            ollama_host = Prompt.ask("Enter the Ollama base URL", default="http://localhost:11434")
+            ollama_host = Prompt.ask(
+                "Enter the Ollama base URL", default="http://localhost:11434"
+            )
         from caribou.core.ollama_wrapper import OllamaClient
+
         context.llm_client = OllamaClient(host=ollama_host)
         context.model_name = "llama3"
     else:
         raise typer.BadParameter(f"Unknown LLM backend '{llm_backend}'.")
 
     # ---- Additional Resources ----
-    context.resources = collect_resources(console, resources_dir) if resources_dir else []
+    context.resources = (
+        collect_resources(console, resources_dir) if resources_dir else []
+    )
     if context.reference_dataset_path:
-        context.resources.append((context.reference_dataset_path, SANDBOX_REF_DATA_PATH))
+        context.resources.append(
+            (context.reference_dataset_path, SANDBOX_REF_DATA_PATH)
+        )
 
     # ---- Analysis Context & Initial History ----
     analysis_context_str = f"Primary dataset path: **{SANDBOX_DATA_PATH}**\n"
@@ -406,66 +581,141 @@ def initialize_context(
         analysis_context_str += f"Reference dataset path: **{SANDBOX_REF_DATA_PATH}**\n"
     analysis_context_str += "\n**IMPORTANT**: Please save all generated output files (plots, .h5ad, .csv) to the `/workspace/outputs/` directory."
     context.analysis_context = textwrap.dedent(analysis_context_str)
-    
+
     driver = context.agent_system.get_agent(context.driver_agent_name)
     # Global policy is already provided as a separate system message; avoid duplicating it in the agent prompt.
-    system_prompt = (driver.get_full_prompt(None) + "\n\n" + context.analysis_context)
+    system_prompt = driver.get_full_prompt(None) + "\n\n" + context.analysis_context
     context.initial_history = [
-        {"role": "system", "content": f"**GLOBAL POLICY**: {context.agent_system.global_policy}\n"},
+        {
+            "role": "system",
+            "content": f"**GLOBAL POLICY**: {context.agent_system.global_policy}\n",
+        },
         {"role": "system", "content": system_prompt},
     ]
+
 
 # --------------------------------------------------------------------------------------
 # Helpers to merge options
 # --------------------------------------------------------------------------------------
+
 
 def _merge(parent: Dict[str, Any], **child: Any) -> Dict[str, Any]:
     """Merge options, child takes precedence if not None."""
     merged = dict(parent)
     for k, v in child.items():
         if v is not None:
-            if isinstance(v, bool) and not v: 
+            if isinstance(v, bool) and not v:
                 if k not in parent or parent[k] is False:
                     merged[k] = v
             else:
                 merged[k] = v
     return merged
 
+
 def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
     """Pick only the shared options for initialize_context."""
     keys = [
-        "blueprint", "driver_agent", "dataset", "reference_dataset",
-        "resources_dir", "llm_backend", "ollama_host", "sandbox",
-        "force_refresh", "compress_memory", "output_dir", "make_report", "agent_report_memory",
+        "blueprint",
+        "driver_agent",
+        "dataset",
+        "reference_dataset",
+        "resources_dir",
+        "llm_backend",
+        "model_name",
+        "ollama_host",
+        "sandbox",
+        "force_refresh",
+        "compress_memory",
+        "output_dir",
+        "make_report",
+        "agent_report_memory",
     ]
     out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
     out["compress_memory"] = bool(out.get("compress_memory", False))
     out["make_report"] = bool(out.get("make_report", False))
     out["agent_report_memory"] = bool(out.get("agent_report_memory", False))
-    if out.get("ollama_host") is None: out["ollama_host"] = "http://localhost:11434"
+    if out.get("ollama_host") is None:
+        out["ollama_host"] = "http://localhost:11434"
     return out
+
 
 # --------------------------------------------------------------------------------------
 # Callback
 # --------------------------------------------------------------------------------------
 
+
 @run_app.callback(invoke_without_command=True)
 def main_run_callback(
     ctx: typer.Context,
-    blueprint: Optional[Path] = typer.Option(None, "--blueprint", "-bp", help="Path to the agent system JSON blueprint.", readable=True),
-    driver_agent: Optional[str] = typer.Option(None, "--driver-agent", "-d", help="Name of the agent to start with."),
-    dataset: Optional[Path] = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
-    reference_dataset: Optional[Path] = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
-    resources_dir: Optional[Path] = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: Optional[str] = typer.Option(None, "--llm", help="LLM backend: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
-    ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
-    sandbox: Optional[str] = typer.Option(None, "--sandbox", help="Sandbox backend: 'docker' or 'singularity'."),
-    force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
-    compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
-    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
-    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
+    blueprint: Optional[Path] = typer.Option(
+        None,
+        "--blueprint",
+        "-bp",
+        help="Path to the agent system JSON blueprint.",
+        readable=True,
+    ),
+    driver_agent: Optional[str] = typer.Option(
+        None, "--driver-agent", "-d", help="Name of the agent to start with."
+    ),
+    dataset: Optional[Path] = typer.Option(
+        None,
+        "--dataset",
+        "-ds",
+        help="Path to the primary dataset file (.h5ad).",
+        readable=True,
+    ),
+    reference_dataset: Optional[Path] = typer.Option(
+        None,
+        "--reference-dataset",
+        "-ref",
+        help="Path to an optional reference dataset file (.h5ad).",
+        readable=True,
+    ),
+    resources_dir: Optional[Path] = typer.Option(
+        None,
+        "--resources",
+        help="Path to a directory of resource files to mount.",
+        exists=True,
+        file_okay=False,
+    ),
+    llm_backend: Optional[str] = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
+    model_name: Optional[str] = typer.Option(
+        None, "--model", help="Exact provider model identifier."
+    ),
+    ollama_host: str = typer.Option(
+        "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
+    ),
+    sandbox: Optional[str] = typer.Option(
+        None, "--sandbox", help="Sandbox backend: 'docker' or 'singularity'."
+    ),
+    force_refresh: bool = typer.Option(
+        False,
+        "--force-refresh",
+        help="Force refresh/rebuild of the sandbox environment.",
+    ),
+    compress_memory: bool = typer.Option(
+        False,
+        "--compress-memory",
+        help="Enable episodic summarization to manage long-term context.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to save ALL outputs (files and logs) non-interactively.",
+        file_okay=False,
+        writable=True,
+        resolve_path=True,
+    ),
+    make_report: bool = typer.Option(
+        False, "--make-report", help="Save a session report with runtime statistics."
+    ),
+    agent_report_memory: bool = typer.Option(
+        False,
+        "--agent-report-memory",
+        help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
 ) -> None:
     """
     Captures top-level flags and defaults to interactive mode if no subcommand.
@@ -492,7 +742,9 @@ def main_run_callback(
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
     benchmark_id = _prompt_for_benchmark_metric(console)
     history = list(app_context.initial_history or [])
-    history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
+    history.append(
+        {"role": "user", "content": "Beginning interactive session. What is the plan?"}
+    )
     _setup_and_run_session(
         context=app_context,
         history=history,
@@ -501,27 +753,84 @@ def main_run_callback(
         benchmark_modules=[benchmark_id] if benchmark_id else None,
     )
 
+
 # --------------------------------------------------------------------------------------
 # Subcommands
 # --------------------------------------------------------------------------------------
+
 
 @run_app.command("interactive")
 def run_interactive(
     ctx: typer.Context,
     # duplicate the shared options to allow flags AFTER the subcommand
-    blueprint: Path = typer.Option(None, "--blueprint", "-bp", help="Path to the agent system JSON blueprint.", readable=True),
-    driver_agent: str = typer.Option(None, "--driver-agent", "-d", help="Name of the agent to start with."),
-    dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
-    reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
-    resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
-    ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
-    sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
-    force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
-    compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
-    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
-    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
+    blueprint: Path = typer.Option(
+        None,
+        "--blueprint",
+        "-bp",
+        help="Path to the agent system JSON blueprint.",
+        readable=True,
+    ),
+    driver_agent: str = typer.Option(
+        None, "--driver-agent", "-d", help="Name of the agent to start with."
+    ),
+    dataset: Path = typer.Option(
+        None,
+        "--dataset",
+        "-ds",
+        help="Path to the primary dataset file (.h5ad).",
+        readable=True,
+    ),
+    reference_dataset: Path = typer.Option(
+        None,
+        "--reference-dataset",
+        "-ref",
+        help="Path to an optional reference dataset file (.h5ad).",
+        readable=True,
+    ),
+    resources_dir: Path = typer.Option(
+        None,
+        "--resources",
+        help="Path to a directory of resource files to mount.",
+        exists=True,
+        file_okay=False,
+    ),
+    llm_backend: str = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
+    model_name: str = typer.Option(
+        None, "--model", help="Exact provider model identifier."
+    ),
+    ollama_host: str = typer.Option(
+        "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
+    ),
+    sandbox: str = typer.Option(
+        None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."
+    ),
+    force_refresh: bool = typer.Option(
+        False,
+        "--force-refresh",
+        help="Force refresh/rebuild of the sandbox environment.",
+    ),
+    compress_memory: bool = typer.Option(
+        False,
+        "--compress-memory",
+        help="Enable episodic summarization to manage long-term context.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to save ALL outputs (files and logs) non-interactively.",
+        file_okay=False,
+        writable=True,
+        resolve_path=True,
+    ),
+    make_report: bool = typer.Option(
+        False, "--make-report", help="Save a session report with runtime statistics."
+    ),
+    agent_report_memory: bool = typer.Option(
+        False,
+        "--agent-report-memory",
+        help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
 ) -> None:
     """
     Run the agent system in a manual, interactive chat session.
@@ -541,7 +850,9 @@ def run_interactive(
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
     benchmark_id = _prompt_for_benchmark_metric(console)
     history = list(context.initial_history or [])
-    history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
+    history.append(
+        {"role": "user", "content": "Beginning interactive session. What is the plan?"}
+    )
     _setup_and_run_session(
         context=context,
         history=history,
@@ -550,23 +861,77 @@ def run_interactive(
         benchmark_modules=[benchmark_id] if benchmark_id else None,
     )
 
+
 @run_app.command("auto")
 def run_auto(
     ctx: typer.Context,
     # shared options so flags AFTER subcommand work
-    blueprint: Path = typer.Option(None, "--blueprint", "-bp", help="Path to the agent system JSON blueprint.", readable=True),
-    driver_agent: str = typer.Option(None, "--driver-agent", "-d", help="Name of the agent to start with."),
-    dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
-    reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
-    resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'claude', 'ollama', or 'deepseek'."),
-    ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
-    sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
-    force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
-    compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
-    prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="Initial prompt for the auto run."),
-    turns: Optional[int] = typer.Option(None, "--turns", "-t", help="Number of turns to run automatically."),
+    blueprint: Path = typer.Option(
+        None,
+        "--blueprint",
+        "-bp",
+        help="Path to the agent system JSON blueprint.",
+        readable=True,
+    ),
+    driver_agent: str = typer.Option(
+        None, "--driver-agent", "-d", help="Name of the agent to start with."
+    ),
+    dataset: Path = typer.Option(
+        None,
+        "--dataset",
+        "-ds",
+        help="Path to the primary dataset file (.h5ad).",
+        readable=True,
+    ),
+    reference_dataset: Path = typer.Option(
+        None,
+        "--reference-dataset",
+        "-ref",
+        help="Path to an optional reference dataset file (.h5ad).",
+        readable=True,
+    ),
+    resources_dir: Path = typer.Option(
+        None,
+        "--resources",
+        help="Path to a directory of resource files to mount.",
+        exists=True,
+        file_okay=False,
+    ),
+    llm_backend: str = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
+    model_name: str = typer.Option(
+        None, "--model", help="Exact provider model identifier."
+    ),
+    ollama_host: str = typer.Option(
+        "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
+    ),
+    sandbox: str = typer.Option(
+        None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."
+    ),
+    force_refresh: bool = typer.Option(
+        False,
+        "--force-refresh",
+        help="Force refresh/rebuild of the sandbox environment.",
+    ),
+    compress_memory: bool = typer.Option(
+        False,
+        "--compress-memory",
+        help="Enable episodic summarization to manage long-term context.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to save ALL outputs (files and logs) non-interactively.",
+        file_okay=False,
+        writable=True,
+        resolve_path=True,
+    ),
+    prompt: Optional[str] = typer.Option(
+        None, "--prompt", "-p", help="Initial prompt for the auto run."
+    ),
+    turns: Optional[int] = typer.Option(
+        None, "--turns", "-t", help="Number of turns to run automatically."
+    ),
     benchmark_module: Optional[Path] = typer.Option(
         None,
         "--benchmark-module",
@@ -580,8 +945,14 @@ def run_auto(
         "-bm",
         help="Registered metric id to run (e.g. qc_benchmark).",
     ),
-    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
-    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
+    make_report: bool = typer.Option(
+        False, "--make-report", help="Save a session report with runtime statistics."
+    ),
+    agent_report_memory: bool = typer.Option(
+        False,
+        "--agent-report-memory",
+        help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
 ) -> None:
     """
     Run the agent system automatically for a set number of turns.
@@ -598,21 +969,27 @@ def run_auto(
     initialize_context(context, **merged)
 
     console = context.console
-    
+
     if context.output_dir is None:
         if prompt is None:
-            prompt = Prompt.ask("Enter the initial prompt", default="Analyze this dataset.")
+            prompt = Prompt.ask(
+                "Enter the initial prompt", default="Analyze this dataset."
+            )
         if turns is None:
             turns = IntPrompt.ask("Enter the number of turns", default=3)
         if benchmark_id is None and benchmark_module is None:
             benchmark_id = _prompt_for_benchmark_metric(console)
     else:  # If output_dir IS set, require prompt and turns via flags
         if prompt is None:
-            console.print("[bold red]Error: --prompt is required when using --output-dir for automated runs.[/bold red]")
+            console.print(
+                "[bold red]Error: --prompt is required when using --output-dir for automated runs.[/bold red]"
+            )
             raise typer.Exit(1)
         if turns is None:
-            turns = 3 # Default turns if not specified in pure auto mode
-            console.print(f"[yellow]--turns not specified, defaulting to {turns}.[/yellow]")
+            turns = 3  # Default turns if not specified in pure auto mode
+            console.print(
+                f"[yellow]--turns not specified, defaulting to {turns}.[/yellow]"
+            )
 
     if benchmark_id is None and benchmark_module is not None:
         from caribou.auto_metrics.registry import find_metric_id_by_path
@@ -623,7 +1000,9 @@ def run_auto(
                 f"No registered metric found for module path: {benchmark_module}"
             )
 
-    console.print(f"\n[bold green]🚀 Starting Automated Mode for {turns} turns...[/bold green]")
+    console.print(
+        f"\n[bold green]🚀 Starting Automated Mode for {turns} turns...[/bold green]"
+    )
 
     history = list(context.initial_history or [])
     history.append({"role": "user", "content": str(prompt)})

@@ -32,17 +32,16 @@ tests/
 
 ## Prerequisites
 
-Install test dependencies:
+Create or update one shared Conda control-plane environment:
 
 ```bash
-pip install pytest pytest-cov
+export CARIBOU_CONDA_PREFIX=/path/on/shared-software/caribou
+export PYTHONNOUSERSITE=1
+conda env update --prefix "$CARIBOU_CONDA_PREFIX" \
+  --file caribou/environment.control-plane.yml
 ```
 
-Or install all CARIBOU dependencies (includes test deps):
-
-```bash
-pip install -r requirements.txt
-```
+Do not create a repository-local `venv` or one environment per experiment.
 
 ## Running Tests
 
@@ -58,7 +57,7 @@ cd caribou/tests
 Or using pytest directly from project root:
 
 ```bash
-pytest caribou/tests/
+CARIBOU_CONDA_PREFIX="$CARIBOU_CONDA_PREFIX" caribou/tests/run_tests.sh
 ```
 
 ### Specific Test Categories
@@ -67,25 +66,25 @@ pytest caribou/tests/
 ```bash
 ./run_tests.sh --unit
 # or
-pytest caribou/tests/unit/
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/
 ```
 
 **Integration tests only:**
 ```bash
 ./run_tests.sh --integration
 # or
-pytest caribou/tests/integration/
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/integration/
 ```
 
 **Specific test file:**
 ```bash
-pytest caribou/tests/unit/test_anthropic_wrapper.py
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/test_anthropic_wrapper.py
 ```
 
 **Specific test class or function:**
 ```bash
-pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection
-pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection::test_detect_simple_delegation
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection::test_detect_simple_delegation
 ```
 
 ### Test Options
@@ -94,31 +93,31 @@ pytest caribou/tests/unit/test_message_utils.py::TestDelegationDetection::test_d
 ```bash
 ./run_tests.sh --verbose
 # or
-pytest caribou/tests/ -v
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ -v
 ```
 
 **Show print statements:**
 ```bash
-pytest caribou/tests/ -s
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ -s
 ```
 
 **Run with coverage:**
 ```bash
 ./run_tests.sh --coverage
 # or
-pytest caribou/tests/ --cov=caribou --cov-report=html --cov-report=term
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ --cov=caribou --cov-report=html --cov-report=term
 ```
 
 Coverage report will be in `htmlcov/index.html`
 
 **Stop on first failure:**
 ```bash
-pytest caribou/tests/ -x
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ -x
 ```
 
 **Run only failed tests from last run:**
 ```bash
-pytest caribou/tests/ --lf
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest caribou/tests/ --lf
 ```
 
 ## Test Coverage
@@ -248,28 +247,28 @@ def test_api_call(mock_anthropic):
 To run tests in CI/CD:
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-pip install pytest pytest-cov
+# Create/update the CI Conda prefix
+conda env update --prefix "$CARIBOU_CONDA_PREFIX" \
+  --file caribou/environment.control-plane.yml
 
 # Run tests with coverage
-pytest caribou/tests/ --cov=caribou --cov-report=xml --cov-report=term
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest \
+  caribou/tests/ --cov=caribou --cov-report=xml --cov-report=term
 
 # Fail if coverage is below threshold (optional)
-pytest caribou/tests/ --cov=caribou --cov-fail-under=80
+conda run --prefix "$CARIBOU_CONDA_PREFIX" python -m pytest \
+  caribou/tests/ --cov=caribou --cov-fail-under=80
 ```
 
 ## Troubleshooting
 
 ### Import Errors
 
-Make sure CARIBOU is installed or the path is set:
+Run from the repository root; tests add `caribou/src` automatically. For direct
+module execution, set the source path explicitly:
 
 ```bash
-# From project root
-pip install -e .
-# or
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+export PYTHONPATH="$(pwd)/caribou/src${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
 ### Tests Hanging

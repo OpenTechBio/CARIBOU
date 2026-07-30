@@ -8,7 +8,6 @@ import pytest
 import json
 import tempfile
 from pathlib import Path
-from typing import Dict
 from unittest.mock import Mock, patch
 
 from caribou.agents.AgentSystem import Agent, AgentSystem, Command
@@ -427,6 +426,28 @@ class TestAgentSystemLoadFromJSON:
             finally:
                 Path(temp_config_path).unlink()
 
+    def test_load_rejects_code_sample_path_escape(self):
+        config = {
+            "global_policy": "Global",
+            "agents": {
+                "coder": {
+                    "prompt": "Coder prompt",
+                    "neighbors": {},
+                    "code_samples": ["/etc/hostname"],
+                    "rag": {"enabled": False},
+                }
+            },
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config, f)
+            temp_config_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="path-safe filenames"):
+                AgentSystem.load_from_json(temp_config_path)
+        finally:
+            Path(temp_config_path).unlink()
+
 
 class TestExtractPossibleActions:
     """Test extracting possible actions from agents."""
@@ -527,7 +548,7 @@ class TestApplyAgentSwitch:
 
     def test_apply_agent_switch_with_memory_manager(self, mock_llm_client):
         """Test agent switch with memory manager."""
-        client = mock_llm_client()
+        mock_llm_client()
         memory_manager = Mock()
 
         new_agent = Agent(

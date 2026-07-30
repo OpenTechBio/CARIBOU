@@ -1,5 +1,9 @@
 notes/
 .env
+.venv/
+venv/
+.conda/
+conda-envs/
 __pycache__/
 .DS_store
 outputs/

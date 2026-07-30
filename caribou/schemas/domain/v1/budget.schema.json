@@ -1,0 +1,269 @@
+{
+  "$defs": {
+    "BudgetAllocation": {
+      "additionalProperties": false,
+      "properties": {
+        "api_calls": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cached_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cost": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "gpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "memory_byte_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "storage_bytes": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "wall_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        }
+      },
+      "required": [
+        "api_calls",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "cost",
+        "cpu_seconds",
+        "gpu_seconds",
+        "memory_byte_seconds",
+        "storage_bytes",
+        "wall_seconds",
+        "concurrency"
+      ],
+      "title": "BudgetAllocation",
+      "type": "object"
+    },
+    "BudgetBreach": {
+      "additionalProperties": false,
+      "properties": {
+        "counter": {
+          "enum": [
+            "api_calls",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "cost",
+            "cpu_seconds",
+            "gpu_seconds",
+            "memory_byte_seconds",
+            "storage_bytes",
+            "wall_seconds",
+            "concurrency"
+          ],
+          "title": "Counter",
+          "type": "string"
+        },
+        "detail": {
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Limit"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Observed"
+        }
+      },
+      "required": [
+        "counter",
+        "limit",
+        "observed",
+        "detail"
+      ],
+      "title": "BudgetBreach",
+      "type": "object"
+    },
+    "BudgetCounter": {
+      "additionalProperties": false,
+      "properties": {
+        "consumed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Consumed"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "reserved": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Reserved"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "title": "BudgetCounter",
+      "type": "object"
+    },
+    "BudgetStatus": {
+      "enum": [
+        "within_limit",
+        "exceeded",
+        "rejected"
+      ],
+      "title": "BudgetStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/budget.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allocation": {
+      "$ref": "#/$defs/BudgetAllocation"
+    },
+    "breaches": {
+      "items": {
+        "$ref": "#/$defs/BudgetBreach"
+      },
+      "title": "Breaches",
+      "type": "array"
+    },
+    "budget_record_id": {
+      "pattern": "^budget_[0-9a-f]{32}$",
+      "title": "Budget Record Id",
+      "type": "string"
+    },
+    "event_id": {
+      "anyOf": [
+        {
+          "pattern": "^evt_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Event Id"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "pattern": "^run_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "schema_version": {
+      "const": "caribou.budget.v1",
+      "default": "caribou.budget.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "estimate",
+        "measured",
+        "reconciled"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/BudgetStatus"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "allocation",
+    "status",
+    "source"
+  ],
+  "title": "BudgetRecord",
+  "type": "object"
+}

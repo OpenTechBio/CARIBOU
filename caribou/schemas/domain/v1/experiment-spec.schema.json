@@ -1,0 +1,1053 @@
+{
+  "$defs": {
+    "BlueprintSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "code_sample_hashes": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Code Sample Hashes",
+          "type": "object"
+        },
+        "driver_agent": {
+          "minLength": 1,
+          "title": "Driver Agent",
+          "type": "string"
+        },
+        "global_policy_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Global Policy Hash",
+          "type": "string"
+        },
+        "prompt_hashes": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Prompt Hashes",
+          "type": "object"
+        },
+        "rag_corpus": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolSpec"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "topology": {
+          "$ref": "#/$defs/TopologyKind"
+        },
+        "topology_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Topology Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "topology",
+        "driver_agent",
+        "global_policy_hash",
+        "topology_hash",
+        "prompt_hashes"
+      ],
+      "title": "BlueprintSpec",
+      "type": "object"
+    },
+    "BudgetAllocation": {
+      "additionalProperties": false,
+      "properties": {
+        "api_calls": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cached_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cost": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "gpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "memory_byte_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "storage_bytes": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "wall_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        }
+      },
+      "required": [
+        "api_calls",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "cost",
+        "cpu_seconds",
+        "gpu_seconds",
+        "memory_byte_seconds",
+        "storage_bytes",
+        "wall_seconds",
+        "concurrency"
+      ],
+      "title": "BudgetAllocation",
+      "type": "object"
+    },
+    "BudgetCounter": {
+      "additionalProperties": false,
+      "properties": {
+        "consumed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Consumed"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "reserved": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Reserved"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "title": "BudgetCounter",
+      "type": "object"
+    },
+    "CodeIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string"
+        },
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "dirty": {
+          "default": false,
+          "title": "Dirty",
+          "type": "boolean"
+        },
+        "repository": {
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "commit"
+      ],
+      "title": "CodeIdentity",
+      "type": "object"
+    },
+    "ConditionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "blueprint": {
+          "$ref": "#/$defs/BlueprintSpec"
+        },
+        "condition_id": {
+          "minLength": 1,
+          "title": "Condition Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "memory": {
+          "$ref": "#/$defs/MemorySpec"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelSpec"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "prompt": {
+          "$ref": "#/$defs/ContentReference"
+        }
+      },
+      "required": [
+        "condition_id",
+        "label",
+        "blueprint",
+        "model",
+        "prompt"
+      ],
+      "title": "ConditionSpec",
+      "type": "object"
+    },
+    "ContainerSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_mounts": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Bind Mounts",
+          "type": "object"
+        },
+        "force_refresh": {
+          "default": false,
+          "title": "Force Refresh",
+          "type": "boolean"
+        },
+        "gpu_enabled": {
+          "default": false,
+          "title": "Gpu Enabled",
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "network_enabled": {
+          "default": false,
+          "title": "Network Enabled",
+          "type": "boolean"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxKind"
+        }
+      },
+      "required": [
+        "sandbox",
+        "image"
+      ],
+      "title": "ContainerSpec",
+      "type": "object"
+    },
+    "ContentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "accession": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accession"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "uri",
+        "content_hash"
+      ],
+      "title": "ContentReference",
+      "type": "object"
+    },
+    "ExecutionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerSpec"
+        },
+        "executor": {
+          "$ref": "#/$defs/ExecutorKind"
+        },
+        "output_root": {
+          "minLength": 1,
+          "title": "Output Root",
+          "type": "string"
+        },
+        "partition": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Partition"
+        },
+        "qos": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Qos"
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceRequest"
+        }
+      },
+      "required": [
+        "executor",
+        "resources",
+        "container",
+        "output_root"
+      ],
+      "title": "ExecutionSpec",
+      "type": "object"
+    },
+    "ExecutorKind": {
+      "enum": [
+        "local",
+        "slurm"
+      ],
+      "title": "ExecutorKind",
+      "type": "string"
+    },
+    "FailureCategory": {
+      "enum": [
+        "validation",
+        "permission",
+        "budget",
+        "provider",
+        "scheduler",
+        "container",
+        "execution",
+        "metric",
+        "persistence",
+        "cancellation",
+        "scientific",
+        "timeout",
+        "internal"
+      ],
+      "title": "FailureCategory",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "MemorySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_size": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Size"
+        },
+        "strategy": {
+          "$ref": "#/$defs/MemoryStrategy",
+          "default": "full"
+        },
+        "summarization_threshold": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summarization Threshold"
+        },
+        "summarizer_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "working_history_size": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working History Size"
+        }
+      },
+      "title": "MemorySpec",
+      "type": "object"
+    },
+    "MemoryStrategy": {
+      "enum": [
+        "full",
+        "episodic",
+        "agent_report",
+        "none"
+      ],
+      "title": "MemoryStrategy",
+      "type": "string"
+    },
+    "MetricDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_rule": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptance Rule"
+        },
+        "denominator_definition": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Denominator Definition"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "minimize",
+                "maximize",
+                "target"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Direction"
+        },
+        "evaluator": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "metric_key": {
+          "minLength": 1,
+          "title": "Metric Key",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/MetricRole"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "metric_key",
+        "name",
+        "role",
+        "evaluator"
+      ],
+      "title": "MetricDefinition",
+      "type": "object"
+    },
+    "MetricRole": {
+      "enum": [
+        "primary",
+        "secondary",
+        "exploratory",
+        "diagnostic"
+      ],
+      "title": "MetricRole",
+      "type": "string"
+    },
+    "ModelSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context_length": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Length"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "provider": {
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "quantization": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quantization"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "ModelSpec",
+      "type": "object"
+    },
+    "ResourceRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu_cores": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Cpu Cores",
+          "type": "integer"
+        },
+        "gpu_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Gpu Count",
+          "type": "integer"
+        },
+        "memory_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "scratch_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Scratch Bytes",
+          "type": "integer"
+        },
+        "storage_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Storage Bytes",
+          "type": "integer"
+        },
+        "wall_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Wall Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "memory_bytes",
+        "wall_seconds"
+      ],
+      "title": "ResourceRequest",
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "base_delay_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Base Delay Seconds",
+          "type": "number"
+        },
+        "maximum_attempts": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Maximum Attempts",
+          "type": "integer"
+        },
+        "maximum_delay_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Maximum Delay Seconds",
+          "type": "number"
+        },
+        "retryable_categories": {
+          "items": {
+            "$ref": "#/$defs/FailureCategory"
+          },
+          "title": "Retryable Categories",
+          "type": "array"
+        }
+      },
+      "title": "RetryPolicy",
+      "type": "object"
+    },
+    "SandboxKind": {
+      "enum": [
+        "docker",
+        "apptainer",
+        "singularity",
+        "offline"
+      ],
+      "title": "SandboxKind",
+      "type": "string"
+    },
+    "StopRules": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_consecutive_execution_failures": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Consecutive Execution Failures",
+          "type": "integer"
+        },
+        "maximum_consecutive_no_action": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Consecutive No Action",
+          "type": "integer"
+        },
+        "maximum_turns": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Turns",
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maximum_turns",
+        "timeout_seconds",
+        "maximum_consecutive_execution_failures",
+        "maximum_consecutive_no_action"
+      ],
+      "title": "StopRules",
+      "type": "object"
+    },
+    "StudyClass": {
+      "enum": [
+        "exploratory",
+        "pilot",
+        "confirmatory"
+      ],
+      "title": "StudyClass",
+      "type": "string"
+    },
+    "ToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Hash"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ToolSpec",
+      "type": "object"
+    },
+    "TopologyKind": {
+      "enum": [
+        "one_shot",
+        "single_agent",
+        "multi_agent"
+      ],
+      "title": "TopologyKind",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/experiment-spec.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "$ref": "#/$defs/BudgetAllocation"
+    },
+    "code": {
+      "$ref": "#/$defs/CodeIdentity"
+    },
+    "conditions": {
+      "items": {
+        "$ref": "#/$defs/ConditionSpec"
+      },
+      "title": "Conditions",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "exclusions": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Exclusions",
+      "type": "array"
+    },
+    "execution": {
+      "$ref": "#/$defs/ExecutionSpec"
+    },
+    "hypothesis": {
+      "minLength": 1,
+      "title": "Hypothesis",
+      "type": "string"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/$defs/ContentReference"
+      },
+      "title": "Inputs",
+      "type": "array"
+    },
+    "metrics": {
+      "items": {
+        "$ref": "#/$defs/MetricDefinition"
+      },
+      "title": "Metrics",
+      "type": "array"
+    },
+    "negative_interpretation": {
+      "minLength": 1,
+      "title": "Negative Interpretation",
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "randomization": {
+      "minLength": 1,
+      "title": "Randomization",
+      "type": "string"
+    },
+    "repetitions": {
+      "exclusiveMinimum": 0,
+      "title": "Repetitions",
+      "type": "integer"
+    },
+    "reviewers": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Reviewers",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "caribou.experiment_spec.v1",
+      "default": "caribou.experiment_spec.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "spec_id": {
+      "pattern": "^spec_[0-9a-f]{32}$",
+      "title": "Spec Id",
+      "type": "string"
+    },
+    "spec_version": {
+      "default": 1,
+      "exclusiveMinimum": 0,
+      "title": "Spec Version",
+      "type": "integer"
+    },
+    "stop_rules": {
+      "$ref": "#/$defs/StopRules"
+    },
+    "study_class": {
+      "$ref": "#/$defs/StudyClass"
+    },
+    "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "study_class",
+    "question",
+    "hypothesis",
+    "negative_interpretation",
+    "owner",
+    "reviewers",
+    "code",
+    "inputs",
+    "conditions",
+    "repetitions",
+    "execution",
+    "budget",
+    "metrics",
+    "stop_rules",
+    "randomization"
+  ],
+  "title": "ExperimentSpec",
+  "type": "object"
+}

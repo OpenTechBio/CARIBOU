@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate CARIBOU System"
+  short_description: "Test parity, recovery, security, and HPC"
+  default_prompt: "Use $validate-caribou-system to design and execute proportionate validation for this CARIBOU capability."

@@ -76,6 +76,8 @@ def run_session_sync(
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
+    memory_manager: Any = None,
+    report_memory: Any = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
@@ -149,11 +151,16 @@ def run_session_sync(
     action_space.set_possible_actions(_extract_possible_actions(driver_agent))
     action_init_msg = action_space.to_message()
     history.append({"role": "system", "content": action_init_msg})
+    if memory_manager is not None:
+        memory_manager.add_message("system", action_init_msg)
 
     current_agent = driver_agent
     turns_completed = 0
     consecutive_failures = 0
     consecutive_no_action = 0
+
+    # Report-memory tracking: which history index belongs to the current agent
+    current_agent_history_start = len(history)
 
     def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
         """Wait for one interactive message; return false if the session stops."""
@@ -174,6 +181,8 @@ def run_session_sync(
                 if logger:
                     logger.info("User message received | turn: %s | length: %s chars", turn, len(user_msg))
                 history.append({"role": "user", "content": user_msg})
+                if memory_manager is not None:
+                    memory_manager.add_message("user", user_msg)
                 next_turn = turns_completed + 1
                 _emit("message_complete", {
                     "message": {
@@ -210,14 +219,30 @@ def run_session_sync(
             }, turn=turn)
 
             # --- Build cleaned context ---
-            cleaned_context = []
-            for msg in history:
-                m = msg.copy()
-                if isinstance(m.get("content"), str):
-                    m["content"] = m["content"].rstrip()
-                cleaned_context.append(m)
+            if report_memory is not None:
+                working_history = history[current_agent_history_start:]
+                cleaned_context = report_memory.build_context(working_history)
+                if logger:
+                    logger.info(
+                        "Turn %s | agent: %s | context_length: %s (report_memory)",
+                        turn, current_agent.name, len(cleaned_context),
+                    )
+            elif memory_manager is not None:
+                cleaned_context = memory_manager.get_context()
+                if logger:
+                    logger.info(
+                        "Turn %s | agent: %s | context_length: %s (episodic)",
+                        turn, current_agent.name, len(cleaned_context),
+                    )
+            else:
+                cleaned_context = []
+                for msg in history:
+                    m = msg.copy()
+                    if isinstance(m.get("content"), str):
+                        m["content"] = m["content"].rstrip()
+                    cleaned_context.append(m)
 
-            if logger:
+            if logger and (memory_manager is None and report_memory is None):
                 logger.info(
                     "Turn %s | agent: %s | messages_in_context: %s",
                     turn,
@@ -276,6 +301,8 @@ def run_session_sync(
                 continue
 
             history.append({"role": "assistant", "content": msg})
+            if memory_manager is not None:
+                memory_manager.add_message("assistant", msg)
             turns_completed += 1
 
             _emit("message_complete", {
@@ -315,12 +342,16 @@ def run_session_sync(
                     docs = rag_client.query(query_str)
                     if docs:
                         history.append({"role": "system", "content": docs})
+                        if memory_manager is not None:
+                            memory_manager.add_message("system", docs)
                 except Exception as rag_exc:  # noqa: BLE001 — surface, don't swallow
                     err = (
                         f"[SYSTEM] RAG query for '{query_str}' failed: {rag_exc}. "
                         f"Proceed without retrieved context."
                     )
                     history.append({"role": "system", "content": err})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", err)
                     _emit("error", {
                         "code": "RAG_ERROR",
                         "message": str(rag_exc),
@@ -352,11 +383,38 @@ def run_session_sync(
                         "role": "assistant",
                         "content": f"Routing to **{target_name}** (command `{cmd}`)"
                     })
+                    if memory_manager is not None:
+                        memory_manager.add_message(
+                            "assistant",
+                            f"Routing to **{target_name}** (command `{cmd}`)",
+                        )
+                    # Generate handoff report for the departing agent
+                    if report_memory is not None:
+                        from caribou.execution.report_generation import (
+                            _generate_agent_report,
+                        )
+                        agent_slice = history[current_agent_history_start:]
+                        agent_report = _generate_agent_report(
+                            console,
+                            llm_client=llm_client,
+                            model_name=model_name,
+                            agent_name=current_agent.name,
+                            history_slice=agent_slice,
+                        )
+                        if agent_report:
+                            report_memory.add_report(current_agent.name, agent_report)
+                            if logger:
+                                logger.info(
+                                    "Agent report generated for %s | length: %s chars",
+                                    current_agent.name, len(agent_report),
+                                )
+                        report_memory.update_agent_prompt(new_agent.get_full_prompt(None))
+                        current_agent_history_start = len(history)
                     _apply_agent_switch(
                         new_agent_prompt=new_agent.get_full_prompt(None),
                         analysis_context=analysis_context,
                         history=history,
-                        memory_manager=None,
+                        memory_manager=memory_manager,
                         action_space=action_space,
                         new_agent=new_agent,
                     )
@@ -422,6 +480,11 @@ def run_session_sync(
                     )
                     history.append({"role": "system", "content": action_space.to_message()})
                     history.append({"role": "assistant", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", action_space.to_message())
+                        memory_manager.add_message("assistant", feedback)
+                        if success:
+                            memory_manager.add_pivotal_code(code)
 
             if cancel_response_flag.is_set() and not is_auto:
                 cancel_response_flag.clear()
@@ -459,11 +522,15 @@ def run_session_sync(
                     "the run will halt after that.)"
                 )
                 history.append({"role": "system", "content": no_action_msg})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", no_action_msg)
             elif _action_fired:
                 consecutive_no_action = 0
 
             if is_auto:
                 history.append({"role": "user", "content": "Please continue with the next step."})
+                if memory_manager is not None:
+                    memory_manager.add_message("user", "Please continue with the next step.")
                 continue
 
             # --- Interactive: wait for next user message ---
@@ -504,6 +571,8 @@ async def run_session_async(
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
+    memory_manager: Any = None,
+    report_memory: Any = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -533,4 +602,6 @@ async def run_session_async(
         cancel_response_flag=cancel_response_flag,
         user_input_queue=user_input_queue,
         logger=logger,
+        memory_manager=memory_manager,
+        report_memory=report_memory,
     )

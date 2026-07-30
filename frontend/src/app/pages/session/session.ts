@@ -11,7 +11,7 @@ import { AgentStreamService } from '../../core/services/agent-stream.service';
 import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
-import { Message, Artifact } from '../../core/models/session.model';
+import { Message, Artifact, MemoryState } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
   CodeResultData, ErrorData, StatusChangeData
@@ -92,12 +92,15 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   showTimeline = signal(false);
   artifactFilter = signal<ArtifactFilter>('all');
   artifactSearch = signal('');
+  memoryState = signal<MemoryState | null>(null);
+  memoryStateError = signal(false);
   showConnectionBanner = computed(() => {
     const s = this.stream.connectionState();
     return s === 'reconnecting' || s === 'expired';
   });
   reconnectCountdownSec = signal(0);
   showShortcutHelp = signal(false);
+  showContext = signal(false);
   autoScrollEnabled = signal(true);
   showJumpToLatest = signal(false);
   sessionElapsedSec = signal(0);
@@ -109,6 +112,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   private historyDraft = '';
 
   private subs = new Subscription();
+  private memoryPollSub: Subscription | null = null;
   private shouldScrollToBottom = false;
   private cacheHydrated = false;
 
@@ -221,6 +225,48 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     };
   });
 
+  memoryActive = computed(() => {
+    const s = this.session();
+    return s?.memory?.strategy && s.memory.strategy !== 'full';
+  });
+
+  contextBreakdown = computed(() => {
+    const ms = this.memoryState();
+    if (!ms?.context_breakdown) return null;
+    const bd = ms.context_breakdown;
+    // Bars are sized by estimated token share — tokens are what actually
+    // determines context-window pressure, message count is just a detail.
+    const maxTokens = Math.max(1, bd.total_tokens ?? bd.total);
+    const seg = (label: string, msgs: number, tokens: number | undefined, color: string) => ({
+      label, msgs, tokens: tokens ?? 0, pct: (tokens ?? 0) / maxTokens, color,
+    });
+    return [
+      seg('Pinned system', bd.pinned_system, bd.pinned_system_tokens, 'var(--cividis-navy)'),
+      seg('Pivotal code', bd.pivotal_code, bd.pivotal_code_tokens, 'var(--cividis-teal)'),
+      seg('Summaries', bd.summaries, bd.summaries_tokens, 'var(--cividis-gold)'),
+      seg('Working: user', bd.working_user, bd.working_user_tokens, '#6f42c1'),
+      seg('Working: assistant', bd.working_assistant, bd.working_assistant_tokens, '#28a745'),
+      seg('Working: system', bd.working_system, bd.working_system_tokens, 'var(--text-muted)'),
+    ].filter(b => b.msgs > 0);
+  });
+
+  contextSummary = computed(() => {
+    const ms = this.memoryState();
+    if (!ms) return null;
+    const bd = ms.context_breakdown;
+    return {
+      ...bd,
+      strategy: ms.strategy,
+      summarized_message_count: ms.summarized_message_count ?? 0,
+      total_messages: ms.total_messages ?? bd.total_full_history ?? bd.total,
+      total_tokens: bd.total_tokens ?? ms.context_estimate_tokens,
+      total_full_history_tokens: bd.total_full_history_tokens ?? ms.total_full_history_tokens,
+      working_history_size: ms.config?.['working_history_size'] ?? this.session()?.memory?.working_history_size,
+      summarization_threshold: ms.config?.['summarization_threshold'] ?? this.session()?.memory?.summarization_threshold,
+      chunk_size: ms.config?.['chunk_size_to_summarize'] ?? this.session()?.memory?.chunk_size,
+    };
+  });
+
   constructor() {
     // Reactive tab-title notifications when session completes.
     effect(() => {
@@ -272,17 +318,28 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
     this.cacheHydrated = true;
 
-    this.sessionSvc.getSession(id).subscribe(() => {
-      this.sessionSvc.getMessages(id).subscribe(msgs => {
-        // Only replace chat when server has more/newer messages than cache.
-        if (msgs.length >= this.chatItems().filter(c => c.kind === 'message').length) {
-          const items: ChatItem[] = msgs.map(m => ({ kind: 'message' as const, message: m, turn: m.turn }));
-          this.chatItems.set(items);
-          this.shouldScrollToBottom = true;
-        }
-      });
-      this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
-      this.sessionStartTs = Date.now();
+    this.sessionSvc.getSession(id).subscribe({
+      next: () => {
+        this.sessionSvc.getMessages(id).subscribe(msgs => {
+          // Only replace chat when server has more/newer messages than cache.
+          if (msgs.length >= this.chatItems().filter(c => c.kind === 'message').length) {
+            const items: ChatItem[] = msgs.map(m => ({ kind: 'message' as const, message: m, turn: m.turn }));
+            this.chatItems.set(items);
+            this.shouldScrollToBottom = true;
+          }
+        });
+        this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
+        this.sessionStartTs = Date.now();
+        this.fetchMemoryState(id);
+      },
+      error: () => {
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to load session',
+          detail: 'Could not fetch session details from the server.',
+          ttlMs: 8000,
+        });
+      },
     });
 
     this.stream.connect(id);
@@ -320,6 +377,12 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       const key = `${ev.turn}-${d.block_index}`;
       this.pendingCode.update(m => { const n = new Map(m); n.set(key, d); return n; });
       this.awaitingCodeResult.set(true);
+      this.chatItems.update(items => [...items, {
+        kind: 'code',
+        turn: ev.turn,
+        codeEvent: { submitted: d },
+      }]);
+      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
     }));
 
     this.subs.add(this.stream.codeResult$.subscribe(ev => {
@@ -328,11 +391,21 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       const pending = this.pendingCode();
       const submitted = pending.get(key);
       if (submitted) {
-        this.chatItems.update(items => [...items, { kind: 'code', turn: ev.turn, codeEvent: { submitted, result } }]);
         this.pendingCode.update(m => { const n = new Map(m); n.delete(key); return n; });
+        this.chatItems.update(items => {
+          for (let i = items.length - 1; i >= 0; i--) {
+            const item = items[i];
+            if (item.kind === 'code' && item.codeEvent && !item.codeEvent.result &&
+                item.codeEvent.submitted.block_index === result.block_index && item.turn === ev.turn) {
+              const updated = [...items];
+              updated[i] = { ...item, codeEvent: { submitted: item.codeEvent.submitted, result } };
+              return updated;
+            }
+          }
+          return items;
+        });
         if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
       }
-      // Only clear waiting state when all outstanding blocks are resolved.
       if (this.pendingCode().size === 0) {
         this.awaitingCodeResult.set(false);
       }
@@ -371,6 +444,11 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.waitingForAgent.set(false);
         this.cancellingResponse.set(false);
       }
+      if (d.status === 'running' && !this.memoryPollSub) {
+        this.startMemoryPolling(id);
+      } else if ((d.status === 'stopped' || d.status === 'error') && this.memoryPollSub) {
+        this.stopMemoryPolling(id);
+      }
       this.statusLog.update(log => {
         const last = log[log.length - 1];
         if (last && last.status === d.status && last.reason === d.reason) {
@@ -390,8 +468,33 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnDestroy(): void {
     this.subs.unsubscribe();
+    this.stopMemoryPolling();
     this.stream.disconnect();
     document.title = this.originalTitle;
+  }
+
+  fetchMemoryState(id: string): void {
+    this.sessionSvc.getMemoryState(id).subscribe({
+      next: (state) => {
+        this.memoryStateError.set(false);
+        this.memoryState.set(state);
+      },
+      error: () => this.memoryStateError.set(true),
+    });
+  }
+
+  private startMemoryPolling(id: string): void {
+    if (!this.memoryActive()) return;
+    this.stopMemoryPolling();
+    this.memoryPollSub = interval(5000).subscribe(() => this.fetchMemoryState(id));
+  }
+
+  private stopMemoryPolling(id?: string): void {
+    if (this.memoryPollSub) {
+      this.memoryPollSub.unsubscribe();
+      this.memoryPollSub = null;
+    }
+    if (id) this.fetchMemoryState(id);
   }
 
   sendMessage(): void {
@@ -408,6 +511,30 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.waitingForAgent.set(true);
     this.userInput.set('');
     this.pushHistory(content);
+    this.chatItems.update(items => [...items, {
+      kind: 'message',
+      turn: s.current_turn + 1,
+      message: {
+        id: 'pending-' + Date.now(),
+        session_id: s.id,
+        turn: s.current_turn + 1,
+        role: 'user',
+        agent_name: '',
+        content,
+        timestamp: new Date().toISOString(),
+        is_delegation: false,
+      }
+    }]);
+    this.shouldScrollToBottom = true;
+  }
+
+  continueSession(): void {
+    const s = this.session();
+    if (!s || s.status !== 'idle' || this.waitingForAgent()) return;
+    this.stream.sendUserMessage('Please continue with the next step.');
+    this.waitingForAgent.set(true);
+    this.pushHistory('Continue');
+    const content = 'Please continue with the next step.';
     this.chatItems.update(items => [...items, {
       kind: 'message',
       turn: s.current_turn + 1,
@@ -501,6 +628,17 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   toggleTimeline(): void {
     this.showTimeline.update(v => !v);
+  }
+
+  toggleContext(): void {
+    this.showContext.update(v => {
+      if (!v) this.fetchMemoryState(this.route.snapshot.paramMap.get('id')!);
+      return !v;
+    });
+  }
+
+  retryMemoryState(): void {
+    this.fetchMemoryState(this.route.snapshot.paramMap.get('id')!);
   }
 
   goBack(): void {

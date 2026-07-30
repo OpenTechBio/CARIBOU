@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class SessionStatus(str, Enum):
     initializing = "initializing"
     idle = "idle"
@@ -48,19 +49,47 @@ class ArtifactType(str, Enum):
 # Session
 # ---------------------------------------------------------------------------
 
+
+class MemoryStrategy(str, Enum):
+    full = "full"
+    episodic = "episodic"
+    agent_report = "agent_report"
+    none = "none"
+
+
+class MemoryConfigResponse(BaseModel):
+    strategy: str = "full"
+    working_history_size: Optional[int] = None
+    summarization_threshold: Optional[int] = None
+    chunk_size: Optional[int] = None
+
+
 class SessionCreateRequest(BaseModel):
     mode: SessionMode
     run_mode: RunMode = RunMode.full_system
     agent_system: str
     llm_backend: str
+    model_name: Optional[str] = None
     ollama_model: Optional[str] = None
     sandbox_type: SandboxType = SandboxType.singularity
     dataset_path: str
     reference_dataset_path: Optional[str] = None
     max_turns: Optional[int] = None
     initial_prompt: Optional[str] = None
+    memory_strategy: MemoryStrategy = MemoryStrategy.full
+    memory_working_history_size: Optional[int] = None
+    memory_summarization_threshold: Optional[int] = None
+    memory_chunk_size: Optional[int] = None
     compress_memory: bool = False
     agent_report_memory: bool = False
+
+
+class ResolvedModelInfo(BaseModel):
+    """Exact model identity and effective request controls for provenance."""
+
+    provider: str
+    model: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageRecord(BaseModel):
@@ -109,6 +138,7 @@ class SessionResponse(BaseModel):
     run_mode: RunMode
     agent_system: str
     llm_backend: str
+    resolved_model: Optional[ResolvedModelInfo] = None
     sandbox_type: SandboxType
     dataset_path: str
     max_turns: Optional[int]
@@ -118,17 +148,21 @@ class SessionResponse(BaseModel):
     updated_at: datetime
     artifact_count: int
     message_count: int
+    memory: Optional[MemoryConfigResponse] = None
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
+
 class LLMBackend(BaseModel):
     id: str
     provider: str
     display_name: str
     available: bool
+    model_name: Optional[str] = None
+    thinking: Optional[bool] = None
     status: Optional[str] = None
     message: Optional[str] = None
     suggested_fix: Optional[str] = None
@@ -146,6 +180,7 @@ class AgentBlueprint(BaseModel):
 # ---------------------------------------------------------------------------
 # Blueprint editor
 # ---------------------------------------------------------------------------
+
 
 class CommandConfig(BaseModel):
     target_agent: str
@@ -192,6 +227,7 @@ class OllamaModelsResponse(BaseModel):
 # Datasets
 # ---------------------------------------------------------------------------
 
+
 class DatasetRecord(BaseModel):
     filename: str
     path: str
@@ -206,6 +242,7 @@ class DatasetPathValidationRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # WebSocket messages (client → server)
 # ---------------------------------------------------------------------------
+
 
 class WSRunMessage(BaseModel):
     type: str = "run"
@@ -227,6 +264,7 @@ class WSStopMessage(BaseModel):
 # Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict }
 # Types: token | message_complete | agent_switch | code_submitted |
 #        code_result | artifact | status_change | metrics_result | error | pong
+
 
 def make_event(
     event_type: str,
