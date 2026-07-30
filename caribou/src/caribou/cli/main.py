@@ -12,12 +12,13 @@ from .config_cli import config_app
 from .utils_cli import utils_app
 from .serve_cli import serve_app
 from .server_cli import server_app
+from .machine_cli import register_machine_commands
 
 # Main caribou application
 app = typer.Typer(
     name="caribou",
     help="CARIBOU: The Open-source Language Agent Framework",
-    no_args_is_help=True
+    no_args_is_help=True,
 )
 
 # Register the command groups
@@ -28,10 +29,12 @@ app.add_typer(config_app, name="config")
 app.add_typer(utils_app, name="utils")
 app.add_typer(serve_app, name="serve")
 app.add_typer(server_app, name="server")
+register_machine_commands(app, run_app)
 
 
 def main():
     app()
+
 
 if __name__ == "__main__":
     main()

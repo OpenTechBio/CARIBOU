@@ -18,7 +18,9 @@ from caribou.config import CARIBOU_HOME
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
+    MemoryConfigResponse,
     MessageRecord,
+    ResolvedModelInfo,
     SessionCreateRequest,
     SessionResponse,
     SessionStatus,
@@ -77,11 +79,36 @@ class _Session:
     driver_agent: Any = None
     initial_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
+    resolved_model: Optional[ResolvedModelInfo] = None
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
     logger: Any = None
+    memory_manager: Any = None
 
     def to_response(self) -> SessionResponse:
+        memory = None
+        if self.config.memory_strategy.value != "full" or self.memory_manager is not None:
+            # Only MemoryManager (episodic strategy) carries a `.config` dict;
+            # AgentReportMemory (agent_report strategy) has no equivalent settings.
+            mgr_config = getattr(self.memory_manager, "config", {}) or {}
+            memory = MemoryConfigResponse(
+                strategy=self.config.memory_strategy.value,
+                working_history_size=(
+                    self.config.memory_working_history_size
+                    if self.config.memory_working_history_size is not None
+                    else mgr_config.get("working_history_size")
+                ),
+                summarization_threshold=(
+                    self.config.memory_summarization_threshold
+                    if self.config.memory_summarization_threshold is not None
+                    else mgr_config.get("summarization_threshold")
+                ),
+                chunk_size=(
+                    self.config.memory_chunk_size
+                    if self.config.memory_chunk_size is not None
+                    else mgr_config.get("chunk_size_to_summarize")
+                ),
+            )
         return SessionResponse(
             id=self.id,
             status=self.status,
@@ -89,6 +116,7 @@ class _Session:
             run_mode=self.config.run_mode,
             agent_system=self.config.agent_system,
             llm_backend=self.config.llm_backend,
+            resolved_model=self.resolved_model,
             sandbox_type=self.config.sandbox_type,
             dataset_path=self.config.dataset_path,
             max_turns=self.config.max_turns,
@@ -98,4 +126,5 @@ class _Session:
             updated_at=self.updated_at,
             artifact_count=len(self.artifacts),
             message_count=len(self.messages),
+            memory=memory,
         )

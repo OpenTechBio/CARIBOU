@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "caribou-program-policy-v1",
+  "type": "object",
+  "required": [
+    "policy_version",
+    "policy_id",
+    "issued_at",
+    "decision_policy",
+    "repository",
+    "delegation",
+    "local_execution",
+    "containers",
+    "external_model_apis",
+    "local_models",
+    "slurm",
+    "data",
+    "external_actions",
+    "completion"
+  ],
+  "properties": {
+    "policy_version": {"const": 1},
+    "policy_id": {"type": "string", "minLength": 1},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "purpose": {"type": "string"},
+    "decision_policy": {
+      "type": "object",
+      "required": ["mode", "ask_for_routine_design_decisions", "record_material_decisions", "fallback_order"],
+      "properties": {
+        "mode": {"const": "autonomous_within_policy"},
+        "ask_for_routine_design_decisions": {"type": "boolean"},
+        "record_material_decisions": {"type": "boolean"},
+        "prefer_reversible_changes": {"type": "boolean"},
+        "fallback_order": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": ["read", "modify", "run_local_tests", "run_formatters_and_builds", "create_local_commits", "rewrite_history", "force_push", "push_remote", "preserve_unrelated_changes", "remote_write_policy"],
+      "properties": {
+        "read": {"type": "boolean"},
+        "modify": {"type": "boolean"},
+        "run_local_tests": {"type": "boolean"},
+        "run_formatters_and_builds": {"type": "boolean"},
+        "create_local_commits": {"type": "boolean"},
+        "rewrite_history": {"type": "boolean"},
+        "force_push": {"type": "boolean"},
+        "push_remote": {"type": "boolean"},
+        "open_pull_request": {"type": "boolean"},
+        "preserve_unrelated_changes": {"type": "boolean"},
+        "remote_write_policy": {
+          "type": "object",
+          "required": ["allowed_ref_kind", "denied_branches", "create_non_main_branches", "update_non_main_branches", "delete_remote_branches", "push_tags", "merge_pull_requests"],
+          "properties": {
+            "allowed_ref_kind": {"const": "branch"},
+            "denied_branches": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+            "create_non_main_branches": {"type": "boolean"},
+            "update_non_main_branches": {"type": "boolean"},
+            "delete_remote_branches": {"type": "boolean"},
+            "push_tags": {"type": "boolean"},
+            "merge_pull_requests": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "delegation": {"$ref": "#/$defs/booleanPolicyObject"},
+    "local_execution": {
+      "type": "object",
+      "required": ["allowed", "maximum_concurrent_managed_processes", "maximum_wall_minutes_per_managed_command"],
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "interactive_commands_allowed": {"type": "boolean"},
+        "maximum_concurrent_managed_processes": {"type": "integer", "minimum": 0},
+        "maximum_wall_minutes_per_managed_command": {"type": "integer", "minimum": 0},
+        "destructive_host_actions_allowed": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "containers": {"$ref": "#/$defs/booleanPolicyObject"},
+    "external_model_apis": {"$ref": "#/$defs/externalResourcePolicy"},
+    "local_models": {
+      "type": "object",
+      "required": ["allowed", "allowed_hosts", "allowed_models", "maximum_concurrent_requests"],
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "allowed_hosts": {"type": "array", "items": {"type": "string"}},
+        "allowed_models": {"type": "array", "items": {"type": "string"}},
+        "maximum_concurrent_requests": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"},
+        "require_model_artifact_identity": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "slurm": {
+      "type": "object",
+      "required": ["allowed", "clusters", "partitions", "required_partition", "accounts", "maximum_jobs", "maximum_cpu_hours", "maximum_gpu_hours"],
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "clusters": {"type": "array", "items": {"type": "string"}},
+        "partitions": {"type": "array", "items": {"type": "string"}},
+        "required_partition": {"type": "string"},
+        "accounts": {"type": "array", "items": {"type": "string"}},
+        "maximum_jobs": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"},
+        "maximum_array_size": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"},
+        "maximum_cpu_hours": {"$ref": "#/$defs/nonnegativeNumberOrUnlimited"},
+        "maximum_gpu_hours": {"$ref": "#/$defs/nonnegativeNumberOrUnlimited"},
+        "maximum_wall_minutes_per_job": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"}
+      },
+      "additionalProperties": false
+    },
+    "data": {
+      "type": "object",
+      "required": ["public_data_allowed", "controlled_or_private_data_allowed", "approved_paths", "data_egress_allowed"],
+      "properties": {
+        "public_data_allowed": {"type": "boolean"},
+        "bundled_test_data_allowed": {"type": "boolean"},
+        "controlled_or_private_data_allowed": {"type": "boolean"},
+        "approved_paths": {"type": "array", "items": {"type": "string"}},
+        "require_license_and_content_hash": {"type": "boolean"},
+        "data_egress_allowed": {"type": "boolean"},
+        "external_dataset_discovery_allowed": {"type": "boolean"},
+        "external_dataset_download_allowed": {"type": "boolean"},
+        "external_dataset_sources": {"type": "array", "items": {"type": "string"}},
+        "external_dataset_download_paths": {"type": "array", "items": {"type": "string"}},
+        "maximum_download_bytes": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"}
+      },
+      "additionalProperties": false
+    },
+    "external_actions": {"$ref": "#/$defs/booleanPolicyObject"},
+    "completion": {"$ref": "#/$defs/booleanPolicyObject"}
+  },
+  "$defs": {
+    "booleanPolicyObject": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "boolean"}
+    },
+    "externalResourcePolicy": {
+      "type": "object",
+      "required": ["allowed", "allowed_models", "maximum_calls", "maximum_tokens", "maximum_spend_usd"],
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "allowed_models": {"type": "array", "items": {"type": "string"}},
+        "maximum_calls": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"},
+        "maximum_tokens": {"$ref": "#/$defs/nonnegativeIntegerOrUnlimited"},
+        "maximum_spend_usd": {"$ref": "#/$defs/nonnegativeNumberOrUnlimited"}
+      },
+      "additionalProperties": false
+    },
+    "nonnegativeIntegerOrUnlimited": {
+      "oneOf": [
+        {"type": "integer", "minimum": 0},
+        {"const": "unlimited"}
+      ]
+    },
+    "nonnegativeNumberOrUnlimited": {
+      "oneOf": [
+        {"type": "number", "minimum": 0},
+        {"const": "unlimited"}
+      ]
+    }
+  },
+  "additionalProperties": false
+}

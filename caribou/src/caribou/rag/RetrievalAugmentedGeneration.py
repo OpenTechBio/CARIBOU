@@ -1,28 +1,16 @@
 import json
-import sys
 from pathlib import Path
 from typing import List, Dict, Optional
 from contextlib import redirect_stdout, redirect_stderr
 import io # Import io for suppressing output
+import re
+
+import numpy as np
+from rich.console import Console
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
-# ── Dependencies ─────────────────────────────────────────────
-try:
-    import re
-    from sentence_transformers import SentenceTransformer
-    from rich.console import Console
-    import matplotlib.pyplot as plt
-    import numpy as np
-    # Import specific exceptions that might occur during download
-    import requests.exceptions
-    import urllib3.exceptions
-
-except ImportError as e:
-    print(f"Missing dependency: {e}", file=sys.stderr)
-    sys.exit(1)
 
 # ── Paths and Constants ─────────────────────────────────────────────
 console = Console()
@@ -31,10 +19,20 @@ RAG_DIR = Path(__file__).resolve().parent.parent / "rag"
 EMBEDDING_FILE = RAG_DIR / "embeddings.jsonl"
 FUNCTIONS_FILE = RAG_DIR / "functions.jsonl"
 MIN_SIMILARITY = 0.7
+FROZEN_CORPUS_ENV = "CARIBOU_RAG_CORPUS_FILE"
 
 class RetrievalAugmentedGeneration():
 
     def __init__(self):
+        frozen_corpus = os.environ.get(FROZEN_CORPUS_ENV)
+        self.frozen_corpus = self.load_frozen_corpus(Path(frozen_corpus)) if frozen_corpus else None
+        if self.frozen_corpus is not None:
+            self.embeddings = []
+            self.functions = []
+            self.model = None
+            self.model_loaded = False
+            self.queries = []
+            return
         self.embeddings = self.load_embeddings()
         self.functions = self.load_functions()
         self.model = None # Initialize model as None
@@ -42,10 +40,64 @@ class RetrievalAugmentedGeneration():
         self.queries = []
         self._load_model() # Attempt to load the model during initialization
 
+    @staticmethod
+    def load_frozen_corpus(path: Path) -> List[Dict[str, object]]:
+        """Load the small, content-addressed offline corpus bound by a run spec."""
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("frozen RAG corpus must be a JSON object")
+        if value.get("schema_version") != "caribou.rag_corpus.v1":
+            raise ValueError("frozen RAG corpus has an unsupported schema version")
+        entries = value.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("frozen RAG corpus must contain at least one entry")
+        validated: List[Dict[str, object]] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(f"frozen RAG entry {index} is not an object")
+            title = entry.get("title")
+            content = entry.get("content")
+            keywords = entry.get("keywords", [])
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError(f"frozen RAG entry {index} has no title")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError(f"frozen RAG entry {index} has no content")
+            if not isinstance(keywords, list) or not all(
+                isinstance(keyword, str) and keyword.strip() for keyword in keywords
+            ):
+                raise ValueError(f"frozen RAG entry {index} has invalid keywords")
+            validated.append(
+                {"title": title, "content": content, "keywords": list(keywords)}
+            )
+        return validated
+
+    @staticmethod
+    def _tokens(value: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9_+.-]+", value.lower()))
+
+    def query_frozen_corpus(self, text_query: str) -> Optional[str]:
+        """Return the deterministic best lexical match from a frozen corpus."""
+        query_tokens = self._tokens(text_query)
+        if not query_tokens or self.frozen_corpus is None:
+            return None
+        best_score = 0
+        best_content: Optional[str] = None
+        for entry in self.frozen_corpus:
+            searchable = " ".join(
+                [str(entry["title"]), *map(str, entry["keywords"])]
+            )
+            score = len(query_tokens & self._tokens(searchable))
+            if score > best_score:
+                best_score = score
+                best_content = str(entry["content"])
+        return best_content if best_score > 0 else None
+
     def _load_model(self):
         """Attempts to load the SentenceTransformer model."""
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         try:
+            from sentence_transformers import SentenceTransformer
+
             # Suppress potential stdout/stderr during model download/loading
             # (e.g., download progress bars, warnings)
             # Use io.StringIO to capture and discard output
@@ -55,16 +107,9 @@ class RetrievalAugmentedGeneration():
                 self.model = SentenceTransformer(model_name)
             self.model_loaded = True
             console.log(f"[green]Successfully loaded SentenceTransformer model: {model_name}")
-        # Catch specific network-related exceptions
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-                urllib3.exceptions.MaxRetryError,
-                urllib3.exceptions.NewConnectionError,
-                OSError, # Can sometimes manifest as OSError (e.g., Name or service not known)
-                ValueError # Can occur if model identifier is invalid or files missing
-               ) as e:
+        except (ImportError, OSError, ValueError) as e:
             console.log(f"[yellow]⚠️ Failed to load SentenceTransformer model '{model_name}'. "
-                        f"Network/Connection issue: {type(e).__name__}. RAG queries will be disabled.")
+                        f"Dependency or model issue: {type(e).__name__}. RAG queries will be disabled.")
             console.log(f"[yellow]Error details: {e}")
             self.model = None
             self.model_loaded = False
@@ -129,6 +174,8 @@ class RetrievalAugmentedGeneration():
         return sims
 
     def retrieve_function(self, name:str) -> Optional[str]:
+        if self.frozen_corpus is not None:
+            return self.query_frozen_corpus(name)
         # Check if functions were loaded
         if not hasattr(self, 'functions') or not self.functions:
              console.log("[yellow]No functions loaded to retrieve from.")
@@ -150,6 +197,9 @@ class RetrievalAugmentedGeneration():
             otherwise None. Returns None immediately if the model failed to load.
         """
         self.queries.append(text_query)
+
+        if self.frozen_corpus is not None:
+            return self.query_frozen_corpus(text_query)
 
         # === Mocking Check ===
         if not self.model_loaded or self.model is None:

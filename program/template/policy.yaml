@@ -1,0 +1,119 @@
+policy_version: 1
+policy_id: "caribou-public-template-v1"
+issued_at: "2026-07-13T16:10:32Z"
+purpose: "Safe template for autonomous CARIBOU engineering and local validation"
+
+decision_policy:
+  mode: "autonomous_within_policy"
+  ask_for_routine_design_decisions: false
+  record_material_decisions: true
+  prefer_reversible_changes: true
+  fallback_order:
+    - "use_safe_local_or_public_equivalent"
+    - "reduce_scope_or_resource_use"
+    - "implement_missing_foundation"
+    - "mark_corresponding_claim_not_claimed"
+    - "continue_other_unblocked_work"
+    - "record_blocker_when_no_meaningful_authorized_work_remains"
+
+repository:
+  read: true
+  modify: true
+  run_local_tests: true
+  run_formatters_and_builds: true
+  create_local_commits: true
+  rewrite_history: false
+  force_push: false
+  push_remote: false
+  open_pull_request: false
+  preserve_unrelated_changes: true
+  remote_write_policy:
+    allowed_ref_kind: "branch"
+    denied_branches:
+      - "main"
+    create_non_main_branches: false
+    update_non_main_branches: false
+    delete_remote_branches: false
+    push_tags: false
+    merge_pull_requests: false
+
+delegation:
+  subagents_allowed: true
+  parallel_work_allowed: true
+  independent_review_required_for_validation: true
+  isolate_builder_and_reviewer_context: true
+  record_role_inputs_and_outputs: true
+
+local_execution:
+  allowed: true
+  interactive_commands_allowed: false
+  maximum_concurrent_managed_processes: 4
+  maximum_wall_minutes_per_managed_command: 60
+  destructive_host_actions_allowed: false
+
+containers:
+  docker_allowed: true
+  apptainer_or_singularity_allowed: true
+  privileged_containers_allowed: false
+  external_network_follows_environment_policy: true
+  require_declared_mounts: true
+  preserve_build_recipe_and_digest: true
+
+external_model_apis:
+  allowed: false
+  allowed_models: []
+  maximum_calls: 0
+  maximum_tokens: 0
+  maximum_spend_usd: 0
+
+local_models:
+  allowed: true
+  allowed_hosts:
+    - "http://localhost:11434"
+  allowed_models: []
+  maximum_concurrent_requests: 1
+  require_model_artifact_identity: true
+
+slurm:
+  allowed: false
+  clusters: []
+  partitions: []
+  required_partition: "peerd"
+  accounts: []
+  maximum_jobs: 0
+  maximum_array_size: 0
+  maximum_cpu_hours: 0
+  maximum_gpu_hours: 0
+  maximum_wall_minutes_per_job: 0
+
+data:
+  public_data_allowed: true
+  bundled_test_data_allowed: true
+  controlled_or_private_data_allowed: false
+  approved_paths: []
+  require_license_and_content_hash: true
+  data_egress_allowed: false
+  external_dataset_discovery_allowed: false
+  external_dataset_download_allowed: false
+  external_dataset_sources: []
+  external_dataset_download_paths: []
+  maximum_download_bytes: 0
+
+external_actions:
+  publish_release: false
+  upload_archive: false
+  mint_doi: false
+  send_external_messages: false
+  submit_manuscript: false
+  expose_network_service: false
+  prepare_release_candidate_locally: true
+  prepare_submission_package_locally: true
+  push_non_main_branches: false
+  push_main: false
+  merge_main: false
+
+completion:
+  require_program_goal_contract: true
+  require_claims_validated_or_not_claimed: true
+  require_independent_reproduction: true
+  external_publication_is_not_required_for_local_completion: true

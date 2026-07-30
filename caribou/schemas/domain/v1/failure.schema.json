@@ -1,0 +1,184 @@
+{
+  "$defs": {
+    "FailureCategory": {
+      "enum": [
+        "validation",
+        "permission",
+        "budget",
+        "provider",
+        "scheduler",
+        "container",
+        "execution",
+        "metric",
+        "persistence",
+        "cancellation",
+        "scientific",
+        "timeout",
+        "internal"
+      ],
+      "title": "FailureCategory",
+      "type": "string"
+    },
+    "FailureDisposition": {
+      "enum": [
+        "retry",
+        "resume",
+        "terminate",
+        "corrected",
+        "not_claimed",
+        "investigate"
+      ],
+      "title": "FailureDisposition",
+      "type": "string"
+    },
+    "JsonValue": {}
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/failure.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt": {
+      "exclusiveMinimum": 0,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "category": {
+      "$ref": "#/$defs/FailureCategory"
+    },
+    "caused_by_failure_id": {
+      "anyOf": [
+        {
+          "pattern": "^fail_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Caused By Failure Id"
+    },
+    "code": {
+      "minLength": 1,
+      "title": "Code",
+      "type": "string"
+    },
+    "correction_attempted": {
+      "default": false,
+      "title": "Correction Attempted",
+      "type": "boolean"
+    },
+    "correction_status": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Correction Status"
+    },
+    "detail": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Detail",
+      "type": "object"
+    },
+    "detected_by": {
+      "minLength": 1,
+      "title": "Detected By",
+      "type": "string"
+    },
+    "disposition": {
+      "$ref": "#/$defs/FailureDisposition"
+    },
+    "downstream_effect": {
+      "minLength": 1,
+      "title": "Downstream Effect",
+      "type": "string"
+    },
+    "event_id": {
+      "pattern": "^evt_[0-9a-f]{32}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "failure_id": {
+      "pattern": "^fail_[0-9a-f]{32}$",
+      "title": "Failure Id",
+      "type": "string"
+    },
+    "fatal": {
+      "title": "Fatal",
+      "type": "boolean"
+    },
+    "message": {
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "retryable": {
+      "title": "Retryable",
+      "type": "boolean"
+    },
+    "run_id": {
+      "pattern": "^run_[0-9a-f]{32}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "caribou.failure.v1",
+      "default": "caribou.failure.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage": {
+      "minLength": 1,
+      "title": "Stage",
+      "type": "string"
+    },
+    "traceback_artifact_id": {
+      "anyOf": [
+        {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Traceback Artifact Id"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "run_id",
+    "event_id",
+    "category",
+    "stage",
+    "code",
+    "message",
+    "fatal",
+    "retryable",
+    "attempt",
+    "detected_by",
+    "downstream_effect",
+    "disposition"
+  ],
+  "title": "FailureRecord",
+  "type": "object"
+}

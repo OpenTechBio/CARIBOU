@@ -14,7 +14,7 @@ import base64
 from datetime import datetime
 
 _FENCE_RE = re.compile(
-    r'^[ \t]*```(?:python)?[ \t]*\n'   # opening fence, with optional "python"
+    r'```(?:python)?[ \t]*\n'          # opening fence, optionally inline
     r'([\s\S]*?)'                     # capture all lines
     r'^[ \t]*```[ \t]*$',             # closing fence
     re.MULTILINE
@@ -26,6 +26,7 @@ def extract_python_code_blocks(txt: str) -> List[str]:
     Handles:
     * ```python ... ```
     * ``` ... ``` (no language tag)
+    * Prose immediately followed by an opening fence (common model drift)
     * Leading indentation before fences (common in Markdown transcripts)
     """
     if not txt:

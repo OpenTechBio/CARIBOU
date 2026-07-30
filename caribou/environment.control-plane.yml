@@ -1,0 +1,31 @@
+name: caribou
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pydantic>=2.7,<3
+  - fastapi>=0.111
+  - uvicorn>=0.29
+  - typer
+  - rich
+  - openai
+  - python-dotenv
+  - platformdirs
+  - docker-py
+  - jupyter_client
+  - nbformat
+  - numpy
+  - aiofiles
+  - python-multipart
+  - pyyaml
+  - jsonschema
+  - pytest
+  - pytest-cov
+  - ruff
+  - mypy
+  - pip
+
+# Lightweight host/control-plane environment. Biological execution uses the
+# immutable Docker/Apptainer image built from src/caribou/sandbox/environment.yml.
+# Do not create one Conda environment per experiment or Slurm job.

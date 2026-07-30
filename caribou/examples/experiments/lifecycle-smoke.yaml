@@ -1,0 +1,78 @@
+spec_id: spec_00000000000000000000000000000001
+title: Local lifecycle smoke probe
+study_class: pilot
+question: Can an external process submit, detach, reconnect, and retrieve evidence?
+hypothesis: The durable local control-plane lifecycle completes without the submitter.
+negative_interpretation: Failure blocks integration of the real CARIBOU workload.
+owner: local-operator
+reviewers:
+  - independent-reviewer
+code:
+  repository: OpenTechBio/caribou
+  branch: AddingAgentInterface
+  commit: cccccccccccccccccccccccccccccccccccccccc
+inputs:
+  - uri: artifact://probe/input
+    content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+conditions:
+  - condition_id: lifecycle-smoke
+    label: Deterministic local control-plane probe
+    blueprint:
+      source:
+        uri: artifact://probe/blueprint
+        content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      topology: single_agent
+      driver_agent: probe
+      global_policy_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      topology_hash: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      prompt_hashes:
+        probe: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    model:
+      provider: probe
+      model: deterministic-lifecycle-smoke@v1
+      context_length: 8192
+    prompt:
+      uri: artifact://probe/prompt
+      content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    parameters:
+      caribou.execution_adapter: lifecycle_smoke
+      caribou.lifecycle_smoke_seconds: 0.25
+repetitions: 1
+execution:
+  executor: local
+  resources:
+    memory_bytes: 1000000
+    wall_seconds: 60
+  container:
+    sandbox: apptainer
+    image:
+      uri: artifact://probe/not-invoked.sif
+      content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  output_root: runs/lifecycle-smoke
+budget:
+  api_calls: {unit: calls, limit: 0}
+  input_tokens: {unit: tokens, limit: 0}
+  output_tokens: {unit: tokens, limit: 0}
+  cached_tokens: {unit: tokens, limit: 0}
+  cost: {unit: usd, limit: 0}
+  cpu_seconds: {unit: cpu_seconds, limit: 60}
+  gpu_seconds: {unit: gpu_seconds, limit: 0}
+  memory_byte_seconds: {unit: byte_seconds, limit: 60000000}
+  storage_bytes: {unit: bytes, limit: 1000000}
+  wall_seconds: {unit: seconds, limit: 60}
+  concurrency: {unit: runs, limit: 1}
+metrics:
+  - metric_key: lifecycle_completion
+    name: Lifecycle completion
+    role: primary
+    evaluator:
+      uri: artifact://probe/built-in-evaluator
+      content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    direction: maximize
+stop_rules:
+  maximum_turns: 1
+  timeout_seconds: 60
+  maximum_consecutive_execution_failures: 1
+  maximum_consecutive_no_action: 1
+randomization: none; deterministic control-plane probe
+created_at: "2026-07-13T00:00:00Z"

@@ -26,10 +26,12 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from caribou.config import ENV_FILE
+from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
     ArtifactType,
     CodeEventRecord,
+    MemoryStrategy,
     MessageRecord,
     SessionCreateRequest,
     SessionMode,
@@ -41,7 +43,12 @@ from caribou.server.session_persistence import (
     save_session,
     session_dir,
 )
-from caribou.server.session_setup import build_llm_client, build_sandbox, find_blueprint
+from caribou.server.session_setup import (
+    build_llm_client,
+    build_sandbox,
+    find_blueprint,
+    resolve_model_info,
+)
 from caribou.server.session_state import (
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
@@ -141,6 +148,7 @@ class SessionManager:
             user_input_queue=queue.Queue(),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            resolved_model=resolve_model_info(config),
         )
 
         async with self._lock:
@@ -149,8 +157,13 @@ class SessionManager:
 
         session.logger = _create_session_logger(session_id, output_dir.parent)
         session.logger.info(
-            "Session created | backend: %s | mode: %s | sandbox: %s | log: %s",
+            "Session created | backend: %s | model: %s | mode: %s | sandbox: %s | log: %s",
             config.llm_backend,
+            (
+                session.resolved_model.model
+                if session.resolved_model is not None
+                else "unresolved"
+            ),
             config.mode.value,
             config.sandbox_type.value,
             output_dir.parent / "session.log",
@@ -183,6 +196,68 @@ class SessionManager:
             return False
         session.cancel_response_flag.set()
         return True
+
+    def get_memory_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return a read-only snapshot of the session's memory state."""
+        session = self._sessions.get(session_id)
+        if not session or not session.memory_manager:
+            return None
+        return session.memory_manager.get_state()
+
+    def get_context_breakdown(self, session_id: str) -> Dict[str, Any]:
+        """Return the context breakdown for any session."""
+        session = self._sessions.get(session_id)
+        if not session:
+            return {"error": "Session not found"}
+
+        if session.memory_manager is not None:
+            return session.memory_manager.get_state()
+
+        # Fallback: compute breakdown from the pinned system messages set up at
+        # session init plus the raw per-turn message records.
+        pinned_messages = session.initial_history
+        pinned_tokens = sum(estimate_tokens(m.get("content", "")) for m in pinned_messages)
+
+        user_count = assistant_count = system_count = 0
+        user_tokens = assistant_tokens = system_tokens = 0
+        for msg in session.messages:
+            tokens = estimate_tokens(msg.content)
+            if msg.role == "user":
+                user_count += 1
+                user_tokens += tokens
+            elif msg.role == "assistant":
+                assistant_count += 1
+                assistant_tokens += tokens
+            else:
+                system_count += 1
+                system_tokens += tokens
+
+        working_tokens = user_tokens + assistant_tokens + system_tokens
+        total_messages = len(pinned_messages) + len(session.messages)
+        total_tokens = pinned_tokens + working_tokens
+
+        return {
+            "strategy": session.config.memory_strategy.value,
+            "total_messages": total_messages,
+            "context_breakdown": {
+                "pinned_system": len(pinned_messages),
+                "pivotal_code": 0,
+                "summaries": 0,
+                "working_user": user_count,
+                "working_assistant": assistant_count,
+                "working_system": system_count,
+                "total": total_messages,
+                "total_full_history": total_messages,
+                "pinned_system_tokens": pinned_tokens,
+                "pivotal_code_tokens": 0,
+                "summaries_tokens": 0,
+                "working_user_tokens": user_tokens,
+                "working_assistant_tokens": assistant_tokens,
+                "working_system_tokens": system_tokens,
+                "total_tokens": total_tokens,
+                "total_full_history_tokens": total_tokens,
+            },
+        }
 
     async def delete_session(self, session_id: str) -> None:
         async with self._lock:
@@ -329,12 +404,61 @@ class SessionManager:
         is_auto = session.config.mode == SessionMode.auto
         max_turns = session.config.max_turns or 20
 
+        # Determine effective memory strategy: new fields take precedence,
+        # legacy booleans are the fallback.
+        memory_strategy = session.config.memory_strategy
+        if memory_strategy == MemoryStrategy.full:
+            if session.config.agent_report_memory:
+                memory_strategy = MemoryStrategy.agent_report
+            elif session.config.compress_memory:
+                memory_strategy = MemoryStrategy.episodic
+        # Persist the effective strategy so to_response()/get_context_breakdown()
+        # report what's actually running, even when it was derived from the
+        # legacy compress_memory/agent_report_memory flags.
+        session.config.memory_strategy = memory_strategy
+
+        memory_manager = None
+        report_memory = None
+
+        if memory_strategy == MemoryStrategy.episodic:
+            from caribou.execution.MemoryManager import MemoryManager
+            whs = session.config.memory_working_history_size or 4
+            st = session.config.memory_summarization_threshold or 20
+            cs = session.config.memory_chunk_size or 10
+            memory_manager = MemoryManager(
+                llm_client=session.llm_client,
+                model_name=session.model_name,
+                initial_history=history,
+                working_history_size=whs,
+                summarization_threshold=st,
+                chunk_size_to_summarize=cs,
+            )
+            session.memory_manager = memory_manager
+            if session.logger:
+                session.logger.info(
+                    "Episodic memory enabled | working_history: %s | threshold: %s | chunk: %s",
+                    whs, st, cs,
+                )
+            # agent_report and episodic are mutually exclusive
+            if session.config.agent_report_memory:
+                session.config.agent_report_memory = False
+
+        elif memory_strategy == MemoryStrategy.agent_report:
+            from caribou.execution.report_generation import AgentReportMemory
+            base_globals = [history[0]] if history else []
+            agent_prompt_content = history[1]["content"] if len(history) > 1 else ""
+            report_memory = AgentReportMemory(base_globals, agent_prompt_content)
+            session.memory_manager = report_memory
+            if session.logger:
+                session.logger.info("Agent report memory enabled")
+
         if session.logger:
             session.logger.info(
-                "Runner launching | mode: %s | max_turns: %s | history_messages: %s",
+                "Runner launching | mode: %s | max_turns: %s | history_messages: %s | memory: %s",
                 session.config.mode.value,
                 max_turns,
                 len(history),
+                memory_strategy.value,
             )
 
         async def _guarded_runner() -> None:
@@ -359,6 +483,8 @@ class SessionManager:
                     cancel_response_flag=session.cancel_response_flag,
                     user_input_queue=session.user_input_queue if not is_auto else None,
                     logger=session.logger,
+                    memory_manager=memory_manager,
+                    report_memory=report_memory,
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.
@@ -509,6 +635,11 @@ class SessionManager:
                 return
             session.llm_client = llm_client
             session.model_name = model_name
+            session.resolved_model = resolve_model_info(
+                session.config,
+                resolved_model_name=model_name,
+            )
+            self._save_session(session)
             if log:
                 log.info("LLM client ready | backend: %s | model: %s", session.config.llm_backend, model_name)
 

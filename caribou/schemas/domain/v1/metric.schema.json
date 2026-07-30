@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "ContentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "accession": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accession"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "uri",
+        "content_hash"
+      ],
+      "title": "ContentReference",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "MetricRole": {
+      "enum": [
+        "primary",
+        "secondary",
+        "exploratory",
+        "diagnostic"
+      ],
+      "title": "MetricRole",
+      "type": "string"
+    },
+    "MetricStatus": {
+      "enum": [
+        "measured",
+        "missing",
+        "failed",
+        "excluded"
+      ],
+      "title": "MetricStatus",
+      "type": "string"
+    },
+    "UncertaintyRole": {
+      "enum": [
+        "not_applicable",
+        "point_estimate",
+        "replicate",
+        "lower_bound",
+        "upper_bound",
+        "standard_error",
+        "standard_deviation",
+        "confidence_interval",
+        "credible_interval",
+        "distribution"
+      ],
+      "title": "UncertaintyRole",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/metric.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "condition_id": {
+      "minLength": 1,
+      "title": "Condition Id",
+      "type": "string"
+    },
+    "denominator": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Denominator"
+    },
+    "direction": {
+      "anyOf": [
+        {
+          "enum": [
+            "minimize",
+            "maximize",
+            "target"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Direction"
+    },
+    "evaluator": {
+      "$ref": "#/$defs/ContentReference"
+    },
+    "event_id": {
+      "pattern": "^evt_[0-9a-f]{32}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "exclusion_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exclusion Reason"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "failure_id": {
+      "anyOf": [
+        {
+          "pattern": "^fail_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Id"
+    },
+    "input_artifact_ids": {
+      "items": {
+        "pattern": "^art_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Input Artifact Ids",
+      "type": "array"
+    },
+    "metric_key": {
+      "minLength": 1,
+      "title": "Metric Key",
+      "type": "string"
+    },
+    "metric_name": {
+      "minLength": 1,
+      "title": "Metric Name",
+      "type": "string"
+    },
+    "metric_record_id": {
+      "pattern": "^metric_[0-9a-f]{32}$",
+      "title": "Metric Record Id",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "replicate_index": {
+      "minimum": 0,
+      "title": "Replicate Index",
+      "type": "integer"
+    },
+    "role": {
+      "$ref": "#/$defs/MetricRole"
+    },
+    "run_id": {
+      "pattern": "^run_[0-9a-f]{32}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "sample_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sample Count"
+    },
+    "schema_version": {
+      "const": "caribou.metric.v1",
+      "default": "caribou.metric.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/MetricStatus"
+    },
+    "uncertainty_role": {
+      "$ref": "#/$defs/UncertaintyRole"
+    },
+    "unit": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unit"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "experiment_id",
+    "run_id",
+    "event_id",
+    "condition_id",
+    "replicate_index",
+    "metric_key",
+    "metric_name",
+    "evaluator",
+    "status",
+    "role",
+    "uncertainty_role",
+    "input_artifact_ids"
+  ],
+  "title": "MetricRecord",
+  "type": "object"
+}

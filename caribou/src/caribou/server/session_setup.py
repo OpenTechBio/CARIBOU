@@ -4,6 +4,7 @@ Session bootstrap helpers.
 Isolated from `session_manager` so blueprint resolution and sandbox/LLM
 construction can be reused (or tested) without touching the manager.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,13 +15,66 @@ from pathlib import Path
 from typing import Optional
 
 from caribou.config import DEFAULT_AGENT_DIR
-from caribou.server.models import SessionCreateRequest
+from caribou.server.models import ResolvedModelInfo, SessionCreateRequest
 from caribou.server.session_state import (
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
 )
 
 _log = logging.getLogger(__name__)
+
+
+def resolve_model_info(
+    config: SessionCreateRequest,
+    *,
+    resolved_model_name: str | None = None,
+) -> ResolvedModelInfo | None:
+    """Resolve the exact model record shown to users and persisted on disk."""
+
+    from caribou.core.deepseek import (
+        deepseek_profile_for_backend,
+        is_deepseek_backend,
+    )
+
+    backend = config.llm_backend
+    if is_deepseek_backend(backend):
+        profile = deepseek_profile_for_backend(backend)
+        return ResolvedModelInfo(
+            provider="deepseek",
+            model=resolved_model_name or profile.model,
+            parameters=profile.model_parameters(),
+        )
+    if backend == "chatgpt":
+        return ResolvedModelInfo(
+            provider="openai",
+            model=resolved_model_name or "gpt-4o",
+        )
+    if backend == "claude":
+        return ResolvedModelInfo(
+            provider="anthropic",
+            model=resolved_model_name or "claude-sonnet-4-6",
+        )
+    if backend == "openrouter":
+        model = resolved_model_name or config.model_name or ""
+        if model:
+            return ResolvedModelInfo(
+                provider="openrouter",
+                model=model,
+                parameters={
+                    "routing": "flexible",
+                    "zdr": True,
+                    "data_collection": "deny",
+                },
+            )
+    if backend.startswith("ollama"):
+        model = (
+            resolved_model_name
+            or config.ollama_model
+            or os.environ.get("OLLAMA_MODEL", "")
+        )
+        if model:
+            return ResolvedModelInfo(provider="ollama", model=model)
+    return None
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -30,6 +84,7 @@ class SandboxUnavailableError(RuntimeError):
     this and forwards `code` + `suggested_fix` to the UI so users see an
     actionable message instead of a stack trace.
     """
+
     def __init__(self, code: str, message: str, suggested_fix: Optional[str] = None):
         super().__init__(message)
         self.code = code
@@ -62,6 +117,12 @@ def build_llm_client(config: SessionCreateRequest):
     """Return (llm_client, model_name) for the given backend string."""
     from openai import OpenAI
 
+    from caribou.core.deepseek import (
+        create_deepseek_client,
+        deepseek_profile_for_backend,
+        is_deepseek_backend,
+    )
+
     backend = config.llm_backend
 
     if backend == "chatgpt":
@@ -75,13 +136,29 @@ def build_llm_client(config: SessionCreateRequest):
         if not key:
             raise EnvironmentError("ANTHROPIC_API_KEY not set.")
         from caribou.core.anthropic_wrapper import AnthropicClient
+
         return AnthropicClient(api_key=key), "claude-sonnet-4-6"
 
-    if backend == "deepseek":
+    if is_deepseek_backend(backend):
         key = os.environ.get("DEEPSEEK_API_KEY", "")
         if not key:
             raise EnvironmentError("DEEPSEEK_API_KEY not set.")
-        return OpenAI(api_key=key, base_url="https://api.deepseek.com"), "deepseek-chat"
+        profile = deepseek_profile_for_backend(backend)
+        return create_deepseek_client(key, profile=profile), profile.model
+
+    if backend == "openrouter":
+        from caribou.core.openrouter import (
+            create_openrouter_client,
+            validate_openrouter_model_id,
+        )
+
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not key:
+            raise EnvironmentError("OPENROUTER_API_KEY not set.")
+        if not config.model_name:
+            raise ValueError("Select an OpenRouter model before starting the session.")
+        model = validate_openrouter_model_id(config.model_name, strict=False)
+        return create_openrouter_client(key), model
 
     if backend.startswith("ollama"):
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -89,6 +166,7 @@ def build_llm_client(config: SessionCreateRequest):
         requested_model = config.ollama_model or env_model or ""
         from caribou.server.ollama_service import ensure_ollama_ready
         from caribou.core.ollama_wrapper import OllamaClient
+
         resolved_host, model_name = ensure_ollama_ready(host, requested_model)
         return OllamaClient(host=resolved_host, model=model_name), model_name
 
@@ -155,7 +233,9 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
                 )
             copy_cmd(config.dataset_path, f"{handle}:{SANDBOX_DATA_PATH}")
             if config.reference_dataset_path:
-                copy_cmd(config.reference_dataset_path, f"{handle}:{SANDBOX_REF_DATA_PATH}")
+                copy_cmd(
+                    config.reference_dataset_path, f"{handle}:{SANDBOX_REF_DATA_PATH}"
+                )
             return sandbox
 
         if sandbox_type == "singularity":
@@ -168,8 +248,11 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
             sandbox = manager_class()
             sandbox.set_data(
                 [(Path(config.dataset_path), SANDBOX_DATA_PATH)]
-                + ([(Path(config.reference_dataset_path), SANDBOX_REF_DATA_PATH)]
-                   if config.reference_dataset_path else []),
+                + (
+                    [(Path(config.reference_dataset_path), SANDBOX_REF_DATA_PATH)]
+                    if config.reference_dataset_path
+                    else []
+                ),
                 output_dir,
             )
             if not sandbox.start_container():
@@ -191,7 +274,9 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
         # Legacy sandbox helpers call sys.exit(1) on missing binaries at
         # import time. Convert that into an actionable UI error rather than
         # letting SystemExit escape and take down the event loop.
-        _log.warning("Sandbox helper raised SystemExit(%s); converting to error.", exc.code)
+        _log.warning(
+            "Sandbox helper raised SystemExit(%s); converting to error.", exc.code
+        )
         raise SandboxUnavailableError(
             code="SANDBOX_UNAVAILABLE",
             message=f"Sandbox helper exited unexpectedly (SystemExit {exc.code}).",

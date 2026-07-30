@@ -17,6 +17,11 @@ export const routes: Routes = [
       import('./pages/settings/settings').then(m => m.SettingsComponent),
   },
   {
+    path: 'experiments',
+    loadComponent: () =>
+      import('./pages/experiments/experiments').then(m => m.ExperimentsComponent),
+  },
+  {
     path: 'blueprints',
     loadComponent: () =>
       import('./pages/blueprint-editor/blueprint-editor').then(m => m.BlueprintEditorComponent),
@@ -30,6 +35,11 @@ export const routes: Routes = [
     path: 'code-samples',
     loadComponent: () =>
       import('./pages/code-samples/code-samples').then(m => m.CodeSamplesComponent),
+  },
+  {
+    path: 'experiments/wizard',
+    loadComponent: () =>
+      import('./pages/experiments-wizard/wizard.component').then(m => m.WizardComponent),
   },
   { path: '**', redirectTo: '' },
 ];

@@ -4,6 +4,15 @@ export type RunMode = 'full_system' | 'single_agent' | 'one_shot';
 export type SandboxType = 'singularity' | 'docker' | 'offline';
 export type ArtifactType = 'plot' | 'data' | 'code' | 'report';
 
+export type MemoryStrategy = 'full' | 'episodic' | 'agent_report' | 'none';
+
+export interface MemoryConfig {
+  strategy: string;
+  working_history_size: number | null;
+  summarization_threshold: number | null;
+  chunk_size: number | null;
+}
+
 export interface Session {
   id: string;
   status: SessionStatus;
@@ -11,6 +20,7 @@ export interface Session {
   run_mode: RunMode;
   agent_system: string;
   llm_backend: string;
+  resolved_model: ResolvedModelInfo | null;
   sandbox_type: SandboxType;
   dataset_path: string;
   max_turns: number | null;
@@ -20,6 +30,13 @@ export interface Session {
   updated_at: string;
   artifact_count: number;
   message_count: number;
+  memory: MemoryConfig | null;
+}
+
+export interface ResolvedModelInfo {
+  provider: string;
+  model: string;
+  parameters: Record<string, unknown>;
 }
 
 export interface SessionCreateRequest {
@@ -27,14 +44,50 @@ export interface SessionCreateRequest {
   run_mode: RunMode;
   agent_system: string;
   llm_backend: string;
+  model_name?: string;
   ollama_model?: string;
   sandbox_type: SandboxType;
   dataset_path: string;
   reference_dataset_path?: string;
   max_turns?: number;
   initial_prompt?: string;
+  memory_strategy?: MemoryStrategy;
+  memory_working_history_size?: number;
+  memory_summarization_threshold?: number;
+  memory_chunk_size?: number;
   compress_memory?: boolean;
   agent_report_memory?: boolean;
+}
+
+export interface OpenRouterModel {
+  id: string;
+  canonical_slug: string;
+  name: string;
+  context_length: number | null;
+  pricing: Record<string, string>;
+  supported_parameters: string[];
+  description: string | null;
+  expiration_date: string | null;
+}
+
+export interface OpenRouterCatalogue {
+  models: OpenRouterModel[];
+  fetched_at: number;
+  stale: boolean;
+  catalog_url: string;
+}
+
+export interface OpenRouterEndpoint {
+  slug: string;
+  name: string;
+  context_length: number | null;
+  pricing: Record<string, string>;
+}
+
+export interface OpenRouterEndpointsResponse {
+  model_id: string;
+  endpoints: OpenRouterEndpoint[];
+  catalog_url: string;
 }
 
 export interface Message {
@@ -78,6 +131,8 @@ export interface LLMBackend {
   provider: string;
   display_name: string;
   available: boolean;
+  model_name?: string | null;
+  thinking?: boolean | null;
   status?: string | null;
   message?: string | null;
   suggested_fix?: string | null;
@@ -113,4 +168,51 @@ export interface Dataset {
   path: string;
   size_bytes: number;
   uploaded_at: string;
+}
+
+export interface ContextBreakdown {
+  pinned_system: number;
+  pivotal_code: number;
+  summaries: number;
+  working_user: number;
+  working_assistant: number;
+  working_system: number;
+  total: number;
+  total_full_history: number;
+  global_messages?: number;
+  agent_reports?: number;
+  has_agent_prompt?: boolean;
+  // Estimated token counts (see caribou/execution/token_utils.py) — approximate,
+  // not an exact tokenizer count, but a much better proxy for context size
+  // than raw message counts.
+  pinned_system_tokens?: number;
+  pivotal_code_tokens?: number;
+  summaries_tokens?: number;
+  working_user_tokens?: number;
+  working_assistant_tokens?: number;
+  working_system_tokens?: number;
+  total_tokens?: number;
+  total_full_history_tokens?: number;
+  global_messages_tokens?: number;
+  agent_reports_tokens?: number;
+  agent_prompt_tokens?: number;
+}
+
+export interface MemoryState {
+  strategy: string;
+  config?: Record<string, number>;
+  total_messages?: number;
+  pinned_count?: number;
+  summary_entries?: number;
+  summarized_message_count?: number;
+  unsummarized_count?: number;
+  pivotal_code_count?: number;
+  working_history_count?: number;
+  context_estimate?: number;
+  context_estimate_tokens?: number;
+  total_full_history_tokens?: number;
+  report_count?: number;
+  global_message_count?: number;
+  has_agent_prompt?: boolean;
+  context_breakdown: ContextBreakdown;
 }

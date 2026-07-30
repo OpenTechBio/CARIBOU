@@ -71,6 +71,39 @@ caribou run auto --turns 10 --prompt "Perform QC and generate a UMAP."
 
 The run wizard prompts for blueprint, dataset, sandbox, and LLM backend if not supplied as flags.
 
+DeepSeek uses exact V4 model IDs and exposes two locked modes:
+
+```bash
+# Fast responses: DeepSeek V4 Flash with thinking disabled
+caribou run auto --llm deepseek --turns 10 --prompt "Perform QC."
+
+# Deliberate responses: DeepSeek V4 Pro with thinking enabled at high effort
+caribou run auto --llm deepseek-thinking --turns 10 --prompt "Perform QC."
+```
+
+The existing `deepseek` backend name remains compatible and now resolves to
+`deepseek-v4-flash`; CARIBOU no longer relies on the retiring `deepseek-chat`
+alias. Web session records persist the exact model ID and effective mode, and
+CLI runs using `--make-report` write both `model` and `model_parameters` into
+the session report.
+
+OpenRouter is available as a first-class provider through its account-filtered
+model catalogue:
+
+```bash
+caribou config set-openrouter-key "sk-or-..."
+caribou config list-openrouter-models
+caribou config list-openrouter-models --json
+caribou run interactive --llm openrouter --model anthropic/claude-sonnet-4
+```
+
+The web UI provides searchable model selection and links to the full
+[OpenRouter catalogue](https://openrouter.ai/models). Interactive sessions use
+OpenRouter's normal provider routing with zero retention and provider data
+collection denied. Reproducible experiments additionally freeze one explicit
+upstream endpoint, disable fallback routing, and persist the canonical model,
+routing policy, returned provider, token usage, and provider-reported cost.
+
 ---
 
 ## Web Frontend
@@ -92,6 +125,21 @@ caribou serve                    # binds to 0.0.0.0:8000
 caribou serve --port 9000        # custom port
 caribou serve --refresh          # backend reload + Angular browser refresh
 ```
+
+At startup, `caribou serve` displays the experiment access token used by the
+guided experiment interface. If no token is configured, CARIBOU generates one,
+saves it in the protected CARIBOU environment file, and reuses it on later
+starts. Retrieve the same token at any time with:
+
+```bash
+caribou config get-control-token
+```
+
+Treat this value as a deployment secret: anyone who has it can operate durable
+experiments on that CARIBOU server. It is not a model-provider API key.
+The browser sends it in the proxy-safe `X-Caribou-Control-Token` header so it
+does not collide with Open OnDemand's own `Authorization` handling. Direct API
+clients may continue using `Authorization: Bearer <token>` for compatibility.
 
 FastAPI serves both the REST/WebSocket API and the Angular static bundle. The server auto-detects the Open OnDemand node-proxy path pattern and strips it transparently — no extra flags needed.
 

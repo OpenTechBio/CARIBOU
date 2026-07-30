@@ -140,6 +140,31 @@ select:focus:not(:focus-visible) {
   animation: app-tooltip-in 80ms ease-out;
 }
 
+/* Keyboard-accessible help anchors used beside dense form labels. */
+.help-tip {
+  display: inline-grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  place-items: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--text-on-dark);
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+}
+
 @keyframes app-tooltip-in {
   from { opacity: 0; transform: translateY(2px); }
   to   { opacity: 1; transform: translateY(0); }

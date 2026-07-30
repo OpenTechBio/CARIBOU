@@ -1,0 +1,322 @@
+<div class="wizard-step resources-step">
+  <div class="step-intro">
+    <span class="step-kicker">Configuration</span>
+    <h2>Configure the run</h2>
+    <p>
+      These settings determine execution behavior and are recorded in the frozen experiment
+      specification.
+    </p>
+  </div>
+
+  <div class="configuration-layout">
+    <div class="form-sections">
+      <section class="form-section" aria-labelledby="execution-heading">
+        <div class="section-heading">
+          <div>
+            <span class="section-number">01</span>
+            <h3 id="execution-heading">Execution</h3>
+          </div>
+          <p>Choose where the run executes and how much work it may perform.</p>
+        </div>
+
+        <div class="field-grid three-columns">
+          <div class="field">
+            <div class="field-label">
+              <label for="resource-profile">Resource profile</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Selects a server-defined bundle of CPU, memory, and wall-time limits"
+                aria-label="About resource profiles"
+              >
+                ?
+              </button>
+            </div>
+            <select
+              id="resource-profile"
+              [ngModel]="profile"
+              (ngModelChange)="profileChange.emit($event)"
+              title="Select the resource allocation profile"
+            >
+              <option value="fast">Fast</option>
+              <option value="thorough">Thorough</option>
+            </select>
+            <small>{{
+              profile === 'fast'
+                ? 'Smaller bounded pilot allocation'
+                : 'Larger allocation for deeper analysis'
+            }}</small>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="maximum-turns">Maximum turns</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Hard upper bound on agent turns; the run may finish earlier"
+                aria-label="About maximum turns"
+              >
+                ?
+              </button>
+            </div>
+            <input
+              id="maximum-turns"
+              type="number"
+              [ngModel]="maxTurns"
+              (ngModelChange)="maxTurnsChange.emit($event)"
+              min="1"
+              [max]="preset?.maximum_max_turns ?? 100"
+              title="Maximum number of agent turns allowed for this run"
+            />
+            <small>Allowed range: 1–{{ preset?.maximum_max_turns ?? 100 }}</small>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="executor">Executor</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Slurm queues a traceable cluster job; local runs on the web control host"
+                aria-label="About executors"
+              >
+                ?
+              </button>
+            </div>
+            <select
+              id="executor"
+              [ngModel]="executor"
+              (ngModelChange)="executorChange.emit($event)"
+              title="Choose where CARIBOU should execute the experiment"
+            >
+              <option value="slurm">Slurm · peerd partition</option>
+              <option value="local">Local control host</option>
+            </select>
+            <small>{{
+              executor === 'slurm'
+                ? 'Submitted as a durable scheduler job'
+                : 'Runs directly on this server host'
+            }}</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section" aria-labelledby="model-heading">
+        <div class="section-heading">
+          <div>
+            <span class="section-number">02</span>
+            <h3 id="model-heading">Model</h3>
+          </div>
+          <p>Freeze the provider and exact model identifier used for inference.</p>
+        </div>
+
+        <div class="field-grid">
+          <div class="field">
+            <div class="field-label">
+              <label for="model-provider">Provider</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="The API provider used for every model call in this condition"
+                aria-label="About model providers"
+              >
+                ?
+              </button>
+            </div>
+            <select
+              id="model-provider"
+              [ngModel]="provider"
+              (ngModelChange)="providerChange.emit($event)"
+              title="Select the model API provider"
+            >
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="model-name">Exact model</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Exact versioned identifier persisted in run provenance; aliases are not used"
+                aria-label="About exact model identifiers"
+              >
+                ?
+              </button>
+            </div>
+            @if (provider === 'deepseek') {
+              <select
+                id="model-name"
+                [ngModel]="modelName"
+                (ngModelChange)="modelNameChange.emit($event)"
+                title="Select the exact DeepSeek V4 model and thinking mode"
+              >
+                @for (model of deepseekModels; track model.id) {
+                  <option [value]="model.id">{{ model.label }}</option>
+                }
+              </select>
+            } @else if (provider === 'openrouter') {
+              <select
+                id="model-name"
+                [ngModel]="modelName"
+                (ngModelChange)="modelNameChange.emit($event)"
+                title="Select an account-authorized canonical OpenRouter model"
+              >
+                @for (
+                  model of config.openRouterCatalogue()?.models || [];
+                  track model.canonical_slug
+                ) {
+                  <option [value]="model.canonical_slug">
+                    {{ model.name }} · {{ model.canonical_slug }}
+                  </option>
+                }
+              </select>
+              <small>
+                Canonical model identifier preserved permanently.
+                <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer"
+                  >Browse catalogue</a
+                >
+              </small>
+            } @else {
+              <input
+                id="model-name"
+                type="text"
+                [ngModel]="modelName"
+                (ngModelChange)="modelNameChange.emit($event)"
+                autocomplete="off"
+                title="Enter an exact versioned OpenAI model identifier"
+              />
+            }
+            <small>This value becomes part of the permanent run record.</small>
+          </div>
+        </div>
+
+        @if (provider === 'openrouter') {
+          <div class="field-grid">
+            <div class="field">
+              <div class="field-label">
+                <label for="openrouter-endpoint">Inference provider endpoint</label>
+                <button
+                  type="button"
+                  class="help-tip"
+                  appTooltip="Frozen for reproducibility; OpenRouter fallbacks are disabled for this experiment"
+                  aria-label="About OpenRouter endpoint routing"
+                >
+                  ?
+                </button>
+              </div>
+              <select
+                id="openrouter-endpoint"
+                [ngModel]="openrouterEndpoint"
+                (ngModelChange)="openrouterEndpointChange.emit($event)"
+                [disabled]="loadingOpenrouterEndpoints()"
+              >
+                <option value="">Select an endpoint…</option>
+                @for (endpoint of openrouterEndpoints(); track endpoint.slug) {
+                  <option [value]="endpoint.slug">{{ endpoint.name }} · {{ endpoint.slug }}</option>
+                }
+              </select>
+              <small>Zero retention and no provider data collection are required.</small>
+              @if (openrouterError()) {
+                <small class="field-error">{{ openrouterError() }}</small>
+              }
+            </div>
+          </div>
+        }
+      </section>
+
+      <section class="form-section" aria-labelledby="accountability-heading">
+        <div class="section-heading">
+          <div>
+            <span class="section-number">03</span>
+            <h3 id="accountability-heading">Accountability</h3>
+          </div>
+          <p>Identify who owns the run and who is responsible for reviewing it.</p>
+        </div>
+
+        <div class="field-grid">
+          <div class="field">
+            <div class="field-label">
+              <label for="experiment-owner">Owner</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Stable operator or team identifier responsible for this experiment"
+                aria-label="About experiment owners"
+              >
+                ?
+              </button>
+            </div>
+            <input
+              id="experiment-owner"
+              type="text"
+              [ngModel]="owner"
+              (ngModelChange)="ownerChange.emit($event)"
+              autocomplete="off"
+              title="Enter the experiment owner identifier"
+            />
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="experiment-reviewer">Reviewer</label>
+              <button
+                type="button"
+                class="help-tip"
+                appTooltip="Identifier for the person or role expected to review the run evidence"
+                aria-label="About experiment reviewers"
+              >
+                ?
+              </button>
+            </div>
+            <input
+              id="experiment-reviewer"
+              type="text"
+              [ngModel]="reviewer"
+              (ngModelChange)="reviewerChange.emit($event)"
+              autocomplete="off"
+              title="Enter the required reviewer identifier"
+            />
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="allocation-card" aria-labelledby="allocation-heading">
+      <span class="allocation-kicker">Resolved allocation</span>
+      <h3 id="allocation-heading">
+        {{ profile === 'fast' ? 'Fast profile' : 'Thorough profile' }}
+      </h3>
+      <p>The server will freeze these limits into the experiment plan.</p>
+      <dl class="resource-list">
+        <div title="Number of CPU cores requested for each run">
+          <dt>CPU cores</dt>
+          <dd>{{ cpuCores }}</dd>
+        </div>
+        <div title="Maximum memory requested for each run">
+          <dt>Memory</dt>
+          <dd>{{ memoryGB }} GB</dd>
+        </div>
+        <div title="Maximum scheduler or local wall-clock duration">
+          <dt>Wall time</dt>
+          <dd>{{ wallHours }} h</dd>
+        </div>
+        <div title="Maximum number of agent turns allowed">
+          <dt>Agent turns</dt>
+          <dd>{{ maxTurns }}</dd>
+        </div>
+      </dl>
+      <div class="budget-note">
+        <strong>Budget note</strong>
+        <p>
+          Compute and external-model usage are recorded. This worker adapter does not yet enforce
+          monetary or token ceilings.
+        </p>
+      </div>
+    </aside>
+  </div>
+</div>

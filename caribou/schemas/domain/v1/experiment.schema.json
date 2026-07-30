@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "ExperimentState": {
+      "enum": [
+        "draft",
+        "validated",
+        "planned",
+        "active",
+        "aggregating",
+        "completed",
+        "cancelled",
+        "failed",
+        "rejected"
+      ],
+      "title": "ExperimentState",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/experiment.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "aggregate_ids": {
+      "items": {
+        "pattern": "^agg_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Aggregate Ids",
+      "type": "array"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "experiment_id": {
+      "pattern": "^exp_[0-9a-f]{32}$",
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "run_ids": {
+      "items": {
+        "pattern": "^run_[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "title": "Run Ids",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "caribou.experiment.v1",
+      "default": "caribou.experiment.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "spec_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Spec Hash",
+      "type": "string"
+    },
+    "spec_id": {
+      "pattern": "^spec_[0-9a-f]{32}$",
+      "title": "Spec Id",
+      "type": "string"
+    },
+    "spec_version": {
+      "exclusiveMinimum": 0,
+      "title": "Spec Version",
+      "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/ExperimentState",
+      "default": "draft"
+    },
+    "transition_sequence": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Transition Sequence",
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "spec_id",
+    "spec_version",
+    "spec_hash",
+    "owner"
+  ],
+  "title": "Experiment",
+  "type": "object"
+}

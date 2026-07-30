@@ -1,0 +1,1833 @@
+{
+  "$defs": {
+    "AgentSwitchPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "from_agent": {
+          "minLength": 1,
+          "title": "From Agent",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "to_agent": {
+          "minLength": 1,
+          "title": "To Agent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from_agent",
+        "to_agent",
+        "command"
+      ],
+      "title": "AgentSwitchPayload",
+      "type": "object"
+    },
+    "ArtifactCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "title": "Artifact Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "title": "ArtifactCreatedPayload",
+      "type": "object"
+    },
+    "BlueprintSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "code_sample_hashes": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Code Sample Hashes",
+          "type": "object"
+        },
+        "driver_agent": {
+          "minLength": 1,
+          "title": "Driver Agent",
+          "type": "string"
+        },
+        "global_policy_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Global Policy Hash",
+          "type": "string"
+        },
+        "prompt_hashes": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Prompt Hashes",
+          "type": "object"
+        },
+        "rag_corpus": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolSpec"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "topology": {
+          "$ref": "#/$defs/TopologyKind"
+        },
+        "topology_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Topology Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "topology",
+        "driver_agent",
+        "global_policy_hash",
+        "topology_hash",
+        "prompt_hashes"
+      ],
+      "title": "BlueprintSpec",
+      "type": "object"
+    },
+    "BudgetAllocation": {
+      "additionalProperties": false,
+      "properties": {
+        "api_calls": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cached_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cost": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "cpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "gpu_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "memory_byte_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "storage_bytes": {
+          "$ref": "#/$defs/BudgetCounter"
+        },
+        "wall_seconds": {
+          "$ref": "#/$defs/BudgetCounter"
+        }
+      },
+      "required": [
+        "api_calls",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "cost",
+        "cpu_seconds",
+        "gpu_seconds",
+        "memory_byte_seconds",
+        "storage_bytes",
+        "wall_seconds",
+        "concurrency"
+      ],
+      "title": "BudgetAllocation",
+      "type": "object"
+    },
+    "BudgetCounter": {
+      "additionalProperties": false,
+      "properties": {
+        "consumed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Consumed"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "reserved": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "default": 0,
+          "title": "Reserved"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "title": "BudgetCounter",
+      "type": "object"
+    },
+    "BudgetRecordedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_record_id": {
+          "pattern": "^budget_[0-9a-f]{32}$",
+          "title": "Budget Record Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "budget_record_id"
+      ],
+      "title": "BudgetRecordedPayload",
+      "type": "object"
+    },
+    "Checkpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_state_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent State Artifact Id"
+        },
+        "artifact_manifest_id": {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "title": "Artifact Manifest Id",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "pattern": "^chk_[0-9a-f]{32}$",
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "code_commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Code Commit",
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/CheckpointComponent"
+          },
+          "title": "Components",
+          "type": "array"
+        },
+        "container_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Container Digest",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "dataset_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset Artifact Id"
+        },
+        "event_id": {
+          "pattern": "^evt_[0-9a-f]{32}$",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_sequence": {
+          "minimum": 0,
+          "title": "Event Sequence",
+          "type": "integer"
+        },
+        "executed_actions_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executed Actions Artifact Id"
+        },
+        "experiment_id": {
+          "pattern": "^exp_[0-9a-f]{32}$",
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "integrity_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Integrity Hash",
+          "type": "string"
+        },
+        "message_history_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message History Artifact Id"
+        },
+        "model_identity": {
+          "minLength": 1,
+          "title": "Model Identity",
+          "type": "string"
+        },
+        "parent_checkpoint_id": {
+          "anyOf": [
+            {
+              "pattern": "^chk_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Checkpoint Id"
+        },
+        "random_state_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Random State Artifact Id"
+        },
+        "resume_requirements": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Resume Requirements",
+          "type": "array"
+        },
+        "run_id": {
+          "pattern": "^run_[0-9a-f]{32}$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "caribou.checkpoint.v1",
+          "default": "caribou.checkpoint.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "spec_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Spec Hash",
+          "type": "string"
+        },
+        "stage": {
+          "minLength": 1,
+          "title": "Stage",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CheckpointStatus",
+          "default": "complete"
+        },
+        "turn": {
+          "minimum": 0,
+          "title": "Turn",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "run_id",
+        "event_id",
+        "event_sequence",
+        "stage",
+        "turn",
+        "components",
+        "artifact_manifest_id",
+        "spec_hash",
+        "code_commit",
+        "container_digest",
+        "model_identity",
+        "integrity_hash"
+      ],
+      "title": "Checkpoint",
+      "type": "object"
+    },
+    "CheckpointComponent": {
+      "enum": [
+        "dataset_state",
+        "message_history",
+        "agent_state",
+        "executed_actions",
+        "artifact_manifest",
+        "random_state"
+      ],
+      "title": "CheckpointComponent",
+      "type": "string"
+    },
+    "CheckpointCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": {
+          "pattern": "^chk_[0-9a-f]{32}$",
+          "title": "Checkpoint Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id"
+      ],
+      "title": "CheckpointCreatedPayload",
+      "type": "object"
+    },
+    "CheckpointStatus": {
+      "enum": [
+        "complete",
+        "invalid",
+        "incompatible"
+      ],
+      "title": "CheckpointStatus",
+      "type": "string"
+    },
+    "CodeIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string"
+        },
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "dirty": {
+          "default": false,
+          "title": "Dirty",
+          "type": "boolean"
+        },
+        "repository": {
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "commit"
+      ],
+      "title": "CodeIdentity",
+      "type": "object"
+    },
+    "CodeResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "stderr_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stderr Artifact Id"
+        },
+        "stdout_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stdout Artifact Id"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action_id",
+        "success",
+        "duration_ms"
+      ],
+      "title": "CodeResultPayload",
+      "type": "object"
+    },
+    "CodeSubmittedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "agent_name": {
+          "minLength": 1,
+          "title": "Agent Name",
+          "type": "string"
+        },
+        "block_index": {
+          "exclusiveMinimum": 0,
+          "title": "Block Index",
+          "type": "integer"
+        },
+        "source_artifact_id": {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "title": "Source Artifact Id",
+          "type": "string"
+        },
+        "total_blocks": {
+          "exclusiveMinimum": 0,
+          "title": "Total Blocks",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action_id",
+        "source_artifact_id",
+        "agent_name",
+        "block_index",
+        "total_blocks"
+      ],
+      "title": "CodeSubmittedPayload",
+      "type": "object"
+    },
+    "ContainerSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_mounts": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Bind Mounts",
+          "type": "object"
+        },
+        "force_refresh": {
+          "default": false,
+          "title": "Force Refresh",
+          "type": "boolean"
+        },
+        "gpu_enabled": {
+          "default": false,
+          "title": "Gpu Enabled",
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "network_enabled": {
+          "default": false,
+          "title": "Network Enabled",
+          "type": "boolean"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxKind"
+        }
+      },
+      "required": [
+        "sandbox",
+        "image"
+      ],
+      "title": "ContainerSpec",
+      "type": "object"
+    },
+    "ContentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "accession": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accession"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "uri",
+        "content_hash"
+      ],
+      "title": "ContentReference",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "causation_event_id": {
+          "anyOf": [
+            {
+              "pattern": "^evt_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Event Id"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correlation Id"
+        },
+        "durable": {
+          "default": true,
+          "title": "Durable",
+          "type": "boolean"
+        },
+        "event_id": {
+          "pattern": "^evt_[0-9a-f]{32}$",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "experiment_id": {
+          "pattern": "^exp_[0-9a-f]{32}$",
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateTransitionPayload"
+            },
+            {
+              "$ref": "#/$defs/MessagePayload"
+            },
+            {
+              "$ref": "#/$defs/TokenPayload"
+            },
+            {
+              "$ref": "#/$defs/AgentSwitchPayload"
+            },
+            {
+              "$ref": "#/$defs/RagPayload"
+            },
+            {
+              "$ref": "#/$defs/CodeSubmittedPayload"
+            },
+            {
+              "$ref": "#/$defs/CodeResultPayload"
+            },
+            {
+              "$ref": "#/$defs/ArtifactCreatedPayload"
+            },
+            {
+              "$ref": "#/$defs/MetricRecordedPayload"
+            },
+            {
+              "$ref": "#/$defs/CheckpointCreatedPayload"
+            },
+            {
+              "$ref": "#/$defs/BudgetRecordedPayload"
+            },
+            {
+              "$ref": "#/$defs/FailureRecordedPayload"
+            },
+            {
+              "$ref": "#/$defs/HeartbeatPayload"
+            }
+          ],
+          "title": "Payload"
+        },
+        "run_id": {
+          "pattern": "^run_[0-9a-f]{32}$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "caribou.event.v1",
+          "default": "caribou.event.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage"
+        },
+        "turn": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "run_id",
+        "sequence",
+        "event_type",
+        "actor",
+        "payload"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "EventType": {
+      "enum": [
+        "state_transition",
+        "message",
+        "token",
+        "agent_switch",
+        "rag",
+        "code_submitted",
+        "code_result",
+        "artifact_created",
+        "metric_recorded",
+        "checkpoint_created",
+        "budget_recorded",
+        "failure_recorded",
+        "heartbeat"
+      ],
+      "title": "EventType",
+      "type": "string"
+    },
+    "ExecutorKind": {
+      "enum": [
+        "local",
+        "slurm"
+      ],
+      "title": "ExecutorKind",
+      "type": "string"
+    },
+    "FailureCategory": {
+      "enum": [
+        "validation",
+        "permission",
+        "budget",
+        "provider",
+        "scheduler",
+        "container",
+        "execution",
+        "metric",
+        "persistence",
+        "cancellation",
+        "scientific",
+        "timeout",
+        "internal"
+      ],
+      "title": "FailureCategory",
+      "type": "string"
+    },
+    "FailureRecordedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "failure_id": {
+          "pattern": "^fail_[0-9a-f]{32}$",
+          "title": "Failure Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "failure_id"
+      ],
+      "title": "FailureRecordedPayload",
+      "type": "object"
+    },
+    "HeartbeatPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "title": "HeartbeatPayload",
+      "type": "object"
+    },
+    "InterfaceOrigin": {
+      "enum": [
+        "cli",
+        "web",
+        "benchmark",
+        "migration"
+      ],
+      "title": "InterfaceOrigin",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "MemorySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_size": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Size"
+        },
+        "strategy": {
+          "$ref": "#/$defs/MemoryStrategy",
+          "default": "full"
+        },
+        "summarization_threshold": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summarization Threshold"
+        },
+        "summarizer_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "working_history_size": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working History Size"
+        }
+      },
+      "title": "MemorySpec",
+      "type": "object"
+    },
+    "MemoryStrategy": {
+      "enum": [
+        "full",
+        "episodic",
+        "agent_report",
+        "none"
+      ],
+      "title": "MemoryStrategy",
+      "type": "string"
+    },
+    "MessagePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Name"
+        },
+        "content": {
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "is_delegation": {
+          "default": false,
+          "title": "Is Delegation",
+          "type": "boolean"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "title": "MessagePayload",
+      "type": "object"
+    },
+    "MetricRecordedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "metric_record_id": {
+          "pattern": "^metric_[0-9a-f]{32}$",
+          "title": "Metric Record Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_record_id"
+      ],
+      "title": "MetricRecordedPayload",
+      "type": "object"
+    },
+    "ModelSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context_length": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Length"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "provider": {
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "quantization": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quantization"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "ModelSpec",
+      "type": "object"
+    },
+    "RagPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "result_artifact_id": {
+          "anyOf": [
+            {
+              "pattern": "^art_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Artifact Id"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "success"
+      ],
+      "title": "RagPayload",
+      "type": "object"
+    },
+    "ResourceRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu_cores": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Cpu Cores",
+          "type": "integer"
+        },
+        "gpu_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Gpu Count",
+          "type": "integer"
+        },
+        "memory_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "scratch_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Scratch Bytes",
+          "type": "integer"
+        },
+        "storage_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Storage Bytes",
+          "type": "integer"
+        },
+        "wall_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Wall Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "memory_bytes",
+        "wall_seconds"
+      ],
+      "title": "ResourceRequest",
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "base_delay_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Base Delay Seconds",
+          "type": "number"
+        },
+        "maximum_attempts": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Maximum Attempts",
+          "type": "integer"
+        },
+        "maximum_delay_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Maximum Delay Seconds",
+          "type": "number"
+        },
+        "retryable_categories": {
+          "items": {
+            "$ref": "#/$defs/FailureCategory"
+          },
+          "title": "Retryable Categories",
+          "type": "array"
+        }
+      },
+      "title": "RetryPolicy",
+      "type": "object"
+    },
+    "Run": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "pattern": "^art_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Artifact Ids",
+          "type": "array"
+        },
+        "attempt_index": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Attempt Index",
+          "type": "integer"
+        },
+        "budget_record_ids": {
+          "items": {
+            "pattern": "^budget_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Budget Record Ids",
+          "type": "array"
+        },
+        "checkpoint_ids": {
+          "items": {
+            "pattern": "^chk_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Checkpoint Ids",
+          "type": "array"
+        },
+        "code": {
+          "$ref": "#/$defs/CodeIdentity"
+        },
+        "condition_id": {
+          "minLength": 1,
+          "title": "Condition Id",
+          "type": "string"
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerSpec"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "current_agent": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Agent"
+        },
+        "current_turn": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Current Turn",
+          "type": "integer"
+        },
+        "end_reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Reason"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "event_sequence": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Event Sequence",
+          "type": "integer"
+        },
+        "executor": {
+          "$ref": "#/$defs/ExecutorKind"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "experiment_id": {
+          "pattern": "^exp_[0-9a-f]{32}$",
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "failure_ids": {
+          "items": {
+            "pattern": "^fail_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Failure Ids",
+          "type": "array"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "initial_state": {
+          "$ref": "#/$defs/RunState",
+          "default": "draft"
+        },
+        "interface": {
+          "$ref": "#/$defs/InterfaceOrigin"
+        },
+        "metric_record_ids": {
+          "items": {
+            "pattern": "^metric_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Metric Record Ids",
+          "type": "array"
+        },
+        "owner": {
+          "minLength": 1,
+          "title": "Owner",
+          "type": "string"
+        },
+        "partition": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Partition"
+        },
+        "queued_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Queued At"
+        },
+        "replicate_index": {
+          "minimum": 0,
+          "title": "Replicate Index",
+          "type": "integer"
+        },
+        "resolved_blueprint": {
+          "$ref": "#/$defs/BlueprintSpec"
+        },
+        "resolved_budget": {
+          "$ref": "#/$defs/BudgetAllocation"
+        },
+        "resolved_inputs": {
+          "items": {
+            "$ref": "#/$defs/ContentReference"
+          },
+          "title": "Resolved Inputs",
+          "type": "array"
+        },
+        "resolved_memory": {
+          "$ref": "#/$defs/MemorySpec"
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ModelSpec"
+        },
+        "resolved_prompt": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "resolved_stop_rules": {
+          "$ref": "#/$defs/StopRules"
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceRequest"
+        },
+        "resume_checkpoint_id": {
+          "anyOf": [
+            {
+              "pattern": "^chk_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resume Checkpoint Id"
+        },
+        "resume_eligible": {
+          "default": false,
+          "title": "Resume Eligible",
+          "type": "boolean"
+        },
+        "resumed_from_run_id": {
+          "anyOf": [
+            {
+              "pattern": "^run_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resumed From Run Id"
+        },
+        "run_id": {
+          "pattern": "^run_[0-9a-f]{32}$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "scheduler_job_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduler Job Id"
+        },
+        "schema_version": {
+          "const": "caribou.run.v1",
+          "default": "caribou.run.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "spec_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Spec Hash",
+          "type": "string"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState",
+          "default": "draft"
+        },
+        "terminal_outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "spec_hash",
+        "condition_id",
+        "replicate_index",
+        "idempotency_key",
+        "interface",
+        "owner",
+        "executor",
+        "code",
+        "resolved_model",
+        "resolved_blueprint",
+        "resolved_prompt",
+        "resolved_memory",
+        "resolved_inputs",
+        "resolved_stop_rules",
+        "resolved_budget",
+        "container",
+        "resources"
+      ],
+      "title": "Run",
+      "type": "object"
+    },
+    "RunOutcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "rejected",
+        "interrupted_resumable"
+      ],
+      "title": "RunOutcome",
+      "type": "string"
+    },
+    "RunState": {
+      "enum": [
+        "draft",
+        "validated",
+        "planned",
+        "queued",
+        "starting",
+        "running",
+        "checkpointed",
+        "cancelling",
+        "cancelled",
+        "failed",
+        "resumable",
+        "succeeded",
+        "rejected"
+      ],
+      "title": "RunState",
+      "type": "string"
+    },
+    "SandboxKind": {
+      "enum": [
+        "docker",
+        "apptainer",
+        "singularity",
+        "offline"
+      ],
+      "title": "SandboxKind",
+      "type": "string"
+    },
+    "StateTransitionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "from_state": {
+          "$ref": "#/$defs/RunState"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "to_state": {
+          "$ref": "#/$defs/RunState"
+        }
+      },
+      "required": [
+        "from_state",
+        "to_state",
+        "reason"
+      ],
+      "title": "StateTransitionPayload",
+      "type": "object"
+    },
+    "StopRules": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_consecutive_execution_failures": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Consecutive Execution Failures",
+          "type": "integer"
+        },
+        "maximum_consecutive_no_action": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Consecutive No Action",
+          "type": "integer"
+        },
+        "maximum_turns": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Turns",
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maximum_turns",
+        "timeout_seconds",
+        "maximum_consecutive_execution_failures",
+        "maximum_consecutive_no_action"
+      ],
+      "title": "StopRules",
+      "type": "object"
+    },
+    "TokenPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_name": {
+          "minLength": 1,
+          "title": "Agent Name",
+          "type": "string"
+        },
+        "token": {
+          "title": "Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_name",
+        "token"
+      ],
+      "title": "TokenPayload",
+      "type": "object"
+    },
+    "ToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Hash"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ToolSpec",
+      "type": "object"
+    },
+    "TopologyKind": {
+      "enum": [
+        "one_shot",
+        "single_agent",
+        "multi_agent"
+      ],
+      "title": "TopologyKind",
+      "type": "string"
+    }
+  },
+  "$id": "https://caribou.dev/schemas/domain/v1/run-journal.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One atomically persisted run snapshot and its complete durable ledger.",
+  "properties": {
+    "checkpoints": {
+      "items": {
+        "$ref": "#/$defs/Checkpoint"
+      },
+      "title": "Checkpoints",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "run": {
+      "$ref": "#/$defs/Run"
+    },
+    "schema_version": {
+      "const": "caribou.run_journal.v1",
+      "default": "caribou.run_journal.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run",
+    "events"
+  ],
+  "title": "RunJournal",
+  "type": "object"
+}
