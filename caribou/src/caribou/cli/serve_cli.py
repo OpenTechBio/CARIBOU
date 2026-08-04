@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm
+from rich.prompt import Confirm, IntPrompt
 
 from caribou.config import ENV_FILE
 from caribou.core.control_access import (
@@ -118,6 +119,34 @@ def _ensure_frontend_built(frontend_dir: Path, dist_dir: Path) -> None:
 
     _run_npm(frontend_dir, ["run", "build"], "npm run build")
     _console.print("[green]Frontend build complete.[/green]")
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    """Probe whether `port` can be bound on `host`, using the same socket
+    options uvicorn itself uses, so a pass here means uvicorn's own bind
+    will succeed too."""
+    family = socket.AF_INET6 if host and ":" in host else socket.AF_INET
+    sock = socket.socket(family=family, type=socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        return False
+    else:
+        return True
+    finally:
+        sock.close()
+
+
+def _resolve_available_port(host: str, port: int, *, label: str) -> int:
+    """Ensure `port` is free on `host`, prompting the user for an alternative
+    instead of letting uvicorn crash with an unhandled bind error."""
+    while not _is_port_available(host, port):
+        _console.print(f"[red]{label} port {port} is already in use on {host}.[/red]")
+        if not Confirm.ask("Try a different port?", default=True):
+            raise typer.Exit(1)
+        port = IntPrompt.ask("Enter a port to use", default=port + 1)
+    return port
 
 
 def _backend_proxy_host(host: str) -> str:
@@ -244,6 +273,10 @@ def serve(
     control_access = resolve_control_access_token(create=True, env_file=ENV_FILE)
     if control_access is None:  # Defensive: create=True always returns a token.
         raise typer.Exit(1)
+
+    port = _resolve_available_port(host, port, label="Backend")
+    if refresh:
+        frontend_port = _resolve_available_port(host, frontend_port, label="Frontend dev server")
 
     display_host = _display_host(host)
     typer.echo(f"Starting CARIBOU server at http://{display_host}:{port}")

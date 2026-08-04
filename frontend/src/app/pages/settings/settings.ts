@@ -15,6 +15,7 @@ interface ServerSettings {
   api_keys: Record<string, string>;
   ollama_host: string;
   ollama_model: string;
+  slurm_partition: string;
 }
 
 @Component({
@@ -44,6 +45,7 @@ export class SettingsComponent implements OnInit {
   openrouterKey = signal('');
   ollamaHost = signal('');
   ollamaModel = signal('');
+  slurmPartition = signal('');
 
   showKeys: Record<string, boolean> = {
     openai: false,
@@ -59,6 +61,7 @@ export class SettingsComponent implements OnInit {
         this.sessionsDir.set(s.sessions_dir);
         this.ollamaHost.set(s.ollama_host);
         this.ollamaModel.set(s.ollama_model);
+        this.slurmPartition.set(s.slurm_partition);
         this.loading.set(false);
         this.refreshOllamaModels();
       },
@@ -83,6 +86,9 @@ export class SettingsComponent implements OnInit {
     if (this.ollamaModel() !== this.settings()?.ollama_model) {
       body['ollama_model'] = this.ollamaModel();
     }
+    if (this.slurmPartition() !== this.settings()?.slurm_partition) {
+      body['slurm_partition'] = this.slurmPartition();
+    }
 
     if (Object.keys(body).length === 0) {
       this.saving.set(false);
@@ -103,6 +109,7 @@ export class SettingsComponent implements OnInit {
           this.settings.set(s);
           this.ollamaHost.set(s.ollama_host);
           this.ollamaModel.set(s.ollama_model);
+          this.slurmPartition.set(s.slurm_partition);
           this.refreshOllamaModels();
         });
       },
