@@ -47,6 +47,7 @@
           <option value="stopped">Stopped ({{ statusCounts().stopped }})</option>
           <option value="error">Errored ({{ statusCounts().error }})</option>
           <option value="initializing">Initializing ({{ statusCounts().initializing }})</option>
+          <option value="recovering">Recovering ({{ statusCounts().recovering }})</option>
         </select>
         <select
           class="toolbar-select"
@@ -128,15 +129,15 @@
           }
           <div class="session-card-header">
             <app-status-indicator [status]="session.status" />
-            <span class="session-id" [title]="session.id">{{ session.id.slice(0, 8) }}</span>
+            <span class="session-id" [title]="session.id">{{ session.name || session.id.slice(0, 8) }}</span>
             <button
               class="btn btn-ghost btn-sm icon-btn"
               type="button"
-              [attr.aria-label]="'Duplicate session ' + session.id.slice(0, 8)"
+              [attr.aria-label]="'Fork session ' + (session.name || session.id.slice(0, 8))"
               (click)="duplicateSession(session, $event)"
-              title="Duplicate — copy this session's config into a new session"
+              title="Fork this session from durable state"
             >
-              <app-icon name="copy-plus" />
+              <app-icon name="git-fork" />
             </button>
             <button
               class="btn btn-ghost btn-sm delete-btn"
@@ -301,6 +302,9 @@
         <h2>Configure session</h2>
 
         <div class="form-grid">
+          <label>Session name</label>
+          <input [(ngModel)]="form.name" maxlength="120" placeholder="Name this session" required />
+
           <label>Blueprint</label>
           <select [(ngModel)]="form.agent_system">
             @for (bp of configSvc.blueprints(); track bp.name) {
@@ -556,6 +560,8 @@
         <h2>Review &amp; create</h2>
         <p class="wizard-subtitle">Confirm your setup — one-click back to change anything.</p>
         <dl class="confirm-summary">
+          <dt>Name</dt>
+          <dd>{{ form.name }}</dd>
           <dt>Blueprint</dt>
           <dd>{{ form.agent_system }}</dd>
           <dt>LLM backend</dt>
@@ -608,6 +614,84 @@
           </button>
         </div>
       }
+    </div>
+  </div>
+}
+
+@if (forkSource(); as source) {
+  <div class="overlay" (click)="cancelFork()" role="dialog" aria-modal="true" aria-label="Fork session">
+    <div class="dialog wizard" (click)="$event.stopPropagation()">
+      <h2>Fork {{ source.name || source.id.slice(0, 8) }}</h2>
+      <p class="wizard-subtitle">
+        The child receives the transcript, checkpointed AnnData, action history, and copied files.
+        A fresh Singularity process cannot directly restore arbitrary Python variables.
+      </p>
+      @if (forkError()) { <div class="error-banner">{{ forkError() }}</div> }
+      <div class="form-grid">
+        <label>New session name</label>
+        <input [(ngModel)]="forkForm.name" maxlength="120" required />
+
+        <label>LLM backend</label>
+        <select [ngModel]="forkForm.llm_backend" (ngModelChange)="onForkBackendChange($event)">
+          @for (be of availableBackends(); track be.id) {
+            <option [value]="be.id">{{ be.display_name }}</option>
+          }
+        </select>
+
+        @if (forkForm.llm_backend === 'ollama') {
+          <label>Ollama model</label>
+          <select [(ngModel)]="forkForm.ollama_model">
+            @for (model of configSvc.ollamaModels()?.models || []; track model) {
+              <option [value]="model">{{ model }}</option>
+            }
+          </select>
+        }
+        @if (forkForm.llm_backend === 'openrouter') {
+          <label>OpenRouter model</label>
+          <select [(ngModel)]="forkForm.model_name">
+            @for (model of configSvc.openRouterCatalogue()?.models || []; track model.canonical_slug) {
+              <option [value]="model.canonical_slug">{{ model.name }} · {{ model.canonical_slug }}</option>
+            }
+          </select>
+        }
+
+        <div class="recovery-field-label">
+          <label for="dashboard-fork-recovery">Recovery</label>
+          <button
+            type="button"
+            class="help-tip"
+            appTooltip="Smart rebuild (recommended) loads checkpointed AnnData and asks the agent to reconstruct only needed transient variables. Literal replay starts from the original dataset and reruns every recorded code block, including failed attempts, so external side effects may repeat."
+            tooltipPosition="right"
+            aria-label="About smart rebuild and literal replay recovery modes"
+          >?</button>
+        </div>
+        <select id="dashboard-fork-recovery" [(ngModel)]="forkForm.recovery_mode">
+          <option value="smart">Smart rebuild (recommended)</option>
+          <option value="literal_replay">Literal code replay</option>
+        </select>
+
+        <label>Run mode</label>
+        <select [(ngModel)]="forkForm.target_mode">
+          <option value="interactive">Interactive</option>
+          <option value="auto">Auto</option>
+        </select>
+        @if (forkForm.target_mode === 'auto') {
+          <label>Additional turns</label>
+          <input type="number" min="1" max="10000" [(ngModel)]="forkForm.additional_turns" />
+        }
+      </div>
+      @if (forkForm.recovery_mode === 'literal_replay') {
+        <label class="confirm-warning">
+          <input type="checkbox" [(ngModel)]="forkForm.acknowledge_replay_risk" />
+          I understand that filesystem, network, and external-service side effects may repeat.
+        </label>
+      }
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="cancelFork()" [disabled]="forkSubmitting()">Cancel</button>
+        <button class="btn btn-primary" (click)="submitFork()" [disabled]="forkSubmitting()">
+          {{ forkSubmitting() ? 'Creating fork…' : 'Create fork' }}
+        </button>
+      </div>
     </div>
   </div>
 }

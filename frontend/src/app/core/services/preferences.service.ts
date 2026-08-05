@@ -7,6 +7,7 @@ export interface UserPreferences {
   tabTitleNotifications: boolean;
   toastNotifications: boolean;
   slowCodeThresholdMs: number;
+  developerMode: boolean;
 }
 
 const DEFAULTS: UserPreferences = {
@@ -14,6 +15,7 @@ const DEFAULTS: UserPreferences = {
   tabTitleNotifications: true,
   toastNotifications: true,
   slowCodeThresholdMs: 5000,
+  developerMode: false,
 };
 
 @Injectable({ providedIn: 'root' })

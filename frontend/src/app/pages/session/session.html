@@ -7,7 +7,20 @@
       <span>Back</span>
     </button>
     <div class="session-info">
-      <span class="session-id" title="Full ID: {{ session()?.id }}">{{ session()?.id?.slice(0,8) }}</span>
+      <span class="session-id" title="Full ID: {{ session()?.id }}">{{ session()?.name || session()?.id?.slice(0,8) }}</span>
+      <span class="dim" *ngIf="session()?.name">{{ session()?.id?.slice(0,8) }}</span>
+      @if (session()) {
+        <div class="session-lifecycle-actions">
+          @if (isStopped()) {
+            <button class="btn btn-primary btn-sm" type="button" (click)="openResume()">
+              <app-icon name="play" /><span>Resume</span>
+            </button>
+          }
+          <button class="btn btn-ghost btn-sm" type="button" (click)="openFork()">
+            <app-icon name="git-fork" /><span>Fork</span>
+          </button>
+        </div>
+      }
       <span class="agent-badge" *ngIf="currentAgent()">{{ currentAgent() }}</span>
       <span class="run-state-chip" [attr.data-state]="runState()" aria-live="polite">
         <span class="run-state-dot" aria-hidden="true"></span>
@@ -38,7 +51,7 @@
         title="Toggle turn timeline"
         [class.active]="showTimeline()"
         (click)="toggleTimeline()"
-        *ngIf="chatItems().length > 4">
+        *ngIf="displayChatItems().length > 4 || hasRecoveryMilestone()">
         <app-icon [name]="showTimeline() ? 'x' : 'list'" />
         <span>Timeline</span>
       </button>
@@ -60,7 +73,7 @@
         </a>
       }
       <app-status-indicator [status]="status()" />
-      @if (!isStopped() && !isError() && !isInitializing() && (session()?.current_turn ?? 0) > 0) {
+      @if (!isStopped() && !isError() && !isInitializing() && !isRecovering() && (session()?.current_turn ?? 0) > 0) {
         <button class="btn btn-danger btn-sm"
                 (click)="endSession()" aria-label="End session"
                 title="End this session">
@@ -93,6 +106,64 @@
     </div>
   }
 
+  @if (session(); as s) {
+    @if (s.recovery_status === 'awaiting_checkpoint' || s.recovery_status === 'recovering') {
+      <section class="recovery-progress-banner" role="status" aria-live="polite">
+        <div class="recovery-progress-heading">
+          <span class="spinner" aria-hidden="true"></span>
+          <div>
+            <strong>Recovery in progress</strong>
+            <span>
+              Step {{ s.recovery_step || 1 }} of {{ s.recovery_total_steps || recoveryStages.length }}
+              · {{ recoveryModeLabel(s.recovery_mode) }}
+            </span>
+          </div>
+          @if (s.recovery_substep && s.recovery_substep_total) {
+            <span class="recovery-substep">
+              {{ s.recovery_substep }} / {{ s.recovery_substep_total }}
+            </span>
+          }
+        </div>
+        <p>{{ s.recovery_detail || 'Preparing recovery…' }}</p>
+        <div
+          class="recovery-progress-track"
+          role="progressbar"
+          [attr.aria-valuenow]="s.recovery_step"
+          aria-valuemin="0"
+          [attr.aria-valuemax]="s.recovery_total_steps || recoveryStages.length"
+        >
+          <span [style.width.%]="recoveryPercent()"></span>
+        </div>
+        <ol class="recovery-stage-list" aria-label="Recovery stages">
+          @for (stage of recoveryStages; track $index) {
+            <li [class.complete]="$index + 1 < s.recovery_step" [class.current]="$index + 1 === s.recovery_step">
+              <span class="stage-marker" aria-hidden="true">
+                @if ($index + 1 < s.recovery_step) { <app-icon name="check" [size]="11" /> }
+              </span>
+              <span>{{ stage }}</span>
+            </li>
+          }
+        </ol>
+        <p class="recovery-safety-note">
+          Durable data and history are restored exactly where recorded; transient Python variables are reconstructed best-effort.
+        </p>
+      </section>
+    } @else if (s.recovery_status === 'partial' || s.recovery_status === 'failed') {
+      <div class="conn-banner expired" role="alert">
+        <app-icon name="alert-triangle" aria-hidden="true" />
+        <span><strong>Recovery {{ s.recovery_status }}:</strong> {{ s.recovery_detail }}</span>
+        @if (s.recovery_status === 'partial') {
+          <button class="btn btn-ghost btn-xs" (click)="acceptPartialRecovery()">Continue partial</button>
+          <button class="btn btn-ghost btn-xs" (click)="retryRecovery('smart')">Retry smart</button>
+          <button class="btn btn-ghost btn-xs" (click)="retryRecovery('literal_replay')">Retry replay</button>
+        } @else {
+          <button class="btn btn-ghost btn-xs" (click)="retryRecovery('smart')">Retry smart</button>
+          <button class="btn btn-ghost btn-xs" (click)="retryRecovery('literal_replay')">Retry replay</button>
+        }
+      </div>
+    }
+  }
+
   <!-- Fatal error banner with actions -->
   @if (isError() && lastError()) {
     <div class="error-banner" role="alert">
@@ -118,12 +189,12 @@
     <!-- Timeline -->
     @if (showTimeline() && turnAnchors().length > 0) {
       <nav class="timeline" aria-label="Turn timeline">
-        <div class="timeline-header">Turns</div>
+        <div class="timeline-header">Timeline</div>
         <div class="timeline-list">
-          @for (a of turnAnchors(); track a.turn) {
-            <button type="button" class="timeline-item" (click)="jumpToTurn(a.turn)"
-              [attr.aria-label]="'Jump to turn ' + a.turn">
-              <span class="timeline-turn">Turn {{ a.turn }}</span>
+          @for (a of turnAnchors(); track a.id) {
+            <button type="button" class="timeline-item" [class.recovery]="a.id.startsWith('recovery-')"
+              (click)="jumpToAnchor(a.selector)" [attr.aria-label]="'Jump to ' + a.label">
+              <span class="timeline-turn">{{ a.label }}</span>
             </button>
           }
         </div>
@@ -138,7 +209,7 @@
           <button type="button" class="conversation-compact-toggle" (click)="toggleOlderConversation()">
             Show {{ hiddenChatItemCount() }} earlier items
           </button>
-        } @else if (olderConversationExpanded() && chatItems().length > COMPACT_AFTER_ITEMS) {
+        } @else if (olderConversationExpanded() && displayChatItems().length > COMPACT_AFTER_ITEMS) {
           <button type="button" class="conversation-compact-toggle" (click)="toggleOlderConversation()">
             Collapse earlier conversation
           </button>
@@ -223,6 +294,26 @@
                 <code class="error-fix">{{ item.error.suggested_fix }}</code>
               }
             </div>
+          }
+          @if (item.kind === 'recovery' && item.recovery) {
+            <article class="recovery-chat-item" [attr.data-recovery-id]="item.recovery.id" [attr.data-turn]="item.turn">
+              <div class="recovery-chat-icon" aria-hidden="true"><app-icon name="refresh" [size]="17" /></div>
+              <div class="recovery-chat-body">
+                <div class="recovery-chat-heading">
+                  <strong>Session recovered</strong>
+                  <span>{{ recoveryModeLabel(item.recovery.mode) }}</span>
+                  <time>{{ item.recovery.timestamp | date:'HH:mm:ss' }}</time>
+                </div>
+                <p>
+                  Attempt {{ item.recovery.attempt_number }} resumed from
+                  @if (item.recovery.checkpoint_turn !== null) { turn {{ item.recovery.checkpoint_turn }} } @else { retained state }.
+                  {{ item.recovery.detail }}
+                </p>
+                @if (item.recovery.accepted_partial) {
+                  <span class="partial-badge">Partial recovery accepted</span>
+                }
+              </div>
+            </article>
           }
         }
 
@@ -457,7 +548,7 @@
         [value]="userInput()"
         (input)="userInput.set($any($event.target).value)"
         (keydown)="onKeyDown($event)"
-        [disabled]="isError() || isStopped() || isRunning() || waitingForAgent() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing()"
+        [disabled]="isError() || isStopped() || isRunning() || waitingForAgent() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing() || isRecovering()"
         [attr.aria-label]="'Message input'"
         placeholder="{{
           isError()          ? 'Session ended with an error — see error log' :
@@ -479,7 +570,7 @@
         <button
           class="btn btn-primary send-btn"
           (click)="sendMessage()"
-          [disabled]="!userInput().trim() || isError() || isStopped() || isRunning() || waitingForAgent() || isInitializing()"
+          [disabled]="!userInput().trim() || isError() || isStopped() || isRunning() || waitingForAgent() || isInitializing() || isRecovering()"
           aria-label="Send message">
           <app-icon name="send" />
           <span>Send</span>
@@ -634,3 +725,81 @@
   }
 
 </div>
+
+@if (recoveryDialog(); as kind) {
+  <div class="overlay" (click)="closeRecoveryDialog()" role="dialog" aria-modal="true" aria-label="Session recovery">
+    <div class="context-dialog" (click)="$event.stopPropagation()">
+      <h3>{{ kind === 'fork' ? 'Fork session' : kind === 'retry' ? 'Retry recovery' : 'Resume session' }}</h3>
+      <p>
+        A fresh Singularity process will be created. AnnData, transcript, action history, memory state, and files are restored;
+        arbitrary Python globals and external process state cannot be restored directly.
+      </p>
+      @if (recoveryError()) { <div class="error-banner">{{ recoveryError() }}</div> }
+      <div class="form-grid">
+        @if (kind === 'fork') {
+          <label>New session name</label>
+          <input [(ngModel)]="recoveryForm.name" maxlength="120" required />
+          <label>LLM backend</label>
+          <select [ngModel]="recoveryForm.llm_backend" (ngModelChange)="onRecoveryBackendChange($event)">
+            @for (be of configSvc.backends(); track be.id) {
+              @if (be.available || be.id === 'ollama' || be.id === 'openrouter') {
+                <option [value]="be.id">{{ be.display_name }}</option>
+              }
+            }
+          </select>
+          @if (recoveryForm.llm_backend === 'ollama') {
+            <label>Ollama model</label>
+            <select [(ngModel)]="recoveryForm.ollama_model">
+              @for (model of configSvc.ollamaModels()?.models || []; track model) {
+                <option [value]="model">{{ model }}</option>
+              }
+            </select>
+          }
+          @if (recoveryForm.llm_backend === 'openrouter') {
+            <label>OpenRouter model</label>
+            <select [(ngModel)]="recoveryForm.model_name">
+              @for (model of configSvc.openRouterCatalogue()?.models || []; track model.canonical_slug) {
+                <option [value]="model.canonical_slug">{{ model.name }} · {{ model.canonical_slug }}</option>
+              }
+            </select>
+          }
+        }
+        <div class="recovery-field-label">
+          <label for="session-recovery-method">Recovery method</label>
+          <button
+            type="button"
+            class="help-tip"
+            appTooltip="Smart rebuild (recommended) loads checkpointed AnnData and asks the agent to reconstruct only needed transient variables. Literal replay starts from the original dataset and reruns every recorded code block, including failed attempts, so external side effects may repeat."
+            tooltipPosition="right"
+            aria-label="About smart rebuild and literal replay recovery modes"
+          >?</button>
+        </div>
+        <select id="session-recovery-method" [(ngModel)]="recoveryForm.recovery_mode">
+          <option value="smart">Smart agent rebuild (recommended)</option>
+          <option value="literal_replay">Literal replay of every recorded code attempt</option>
+        </select>
+        <label>Run mode</label>
+        <select [(ngModel)]="recoveryForm.target_mode">
+          <option value="interactive">Interactive</option>
+          <option value="auto">Auto</option>
+        </select>
+        @if (recoveryForm.target_mode === 'auto') {
+          <label>Additional turns</label>
+          <input type="number" min="1" max="10000" [(ngModel)]="recoveryForm.additional_turns" />
+        }
+      </div>
+      @if (recoveryForm.recovery_mode === 'literal_replay') {
+        <label class="confirm-warning">
+          <input type="checkbox" [(ngModel)]="recoveryForm.acknowledge_replay_risk" />
+          I understand that filesystem, network, and external-service side effects may repeat.
+        </label>
+      }
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" (click)="closeRecoveryDialog()" [disabled]="recoverySubmitting()">Cancel</button>
+        <button class="btn btn-primary" (click)="submitRecovery()" [disabled]="recoverySubmitting()">
+          {{ recoverySubmitting() ? 'Starting recovery…' : (kind === 'fork' ? 'Create fork' : kind === 'retry' ? 'Retry recovery' : 'Resume') }}
+        </button>
+      </div>
+    </div>
+  </div>
+}

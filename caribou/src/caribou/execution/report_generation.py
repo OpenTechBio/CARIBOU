@@ -84,6 +84,22 @@ class AgentReportMemory:
             },
         }
 
+    def export_checkpoint(self) -> Dict[str, object]:
+        return {
+            "schema_version": "caribou.memory_checkpoint.agent_report.v1",
+            "restorable": True,
+            "global_messages": list(self._global_messages),
+            "agent_prompt": self._agent_prompt,
+            "agent_reports": list(self._agent_reports),
+        }
+
+    def restore_checkpoint(self, value: Dict[str, object]) -> None:
+        if value.get("schema_version") != "caribou.memory_checkpoint.agent_report.v1":
+            raise ValueError("unsupported agent-report memory checkpoint")
+        self._global_messages = [dict(item) for item in value["global_messages"]]  # type: ignore[arg-type]
+        self._agent_prompt = str(value["agent_prompt"])
+        self._agent_reports = [dict(item) for item in value["agent_reports"]]  # type: ignore[arg-type]
+
 
 def _write_session_report(
     console: Console,
