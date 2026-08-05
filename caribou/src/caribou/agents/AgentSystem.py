@@ -91,9 +91,10 @@ class AgentSystem:
     Loads and holds the entire agent system configuration from a JSON file,
     including the global policy and the network of agents.
     """
-    def __init__(self, global_policy: str, agents: Dict[str, Agent]):
+    def __init__(self, global_policy: str, agents: Dict[str, Agent], evaluator_agent_name: Optional[str] = None):
         self.global_policy = global_policy
         self.agents = agents
+        self.evaluator_agent_name = evaluator_agent_name
 
     @classmethod
     def load_from_json(cls, file_path: str) -> 'AgentSystem':
@@ -106,8 +107,9 @@ class AgentSystem:
             config = json.load(f)
 
         global_policy = config.get('global_policy', '')
+        evaluator_agent_name = config.get('evaluator_agent') or None
         agents: Dict[str, Agent] = {}
-        
+
         for agent_name, agent_data in config.get('agents', {}).items():
             commands: Dict[str, Command] = {}
             for cmd_name, cmd_data in agent_data.get('neighbors', {}).items():
@@ -164,13 +166,28 @@ class AgentSystem:
                 is_rag_enabled=is_rag_enabled
             )
             agents[agent_name] = agent
-        
+
+        if evaluator_agent_name is not None and evaluator_agent_name not in agents:
+            raise ValueError(
+                f"evaluator_agent '{evaluator_agent_name}' does not match any agent "
+                f"defined in {file_path}"
+            )
+
         print("Agent system loaded successfully.")
-        return cls(global_policy, agents)
+        return cls(global_policy, agents, evaluator_agent_name=evaluator_agent_name)
 
     def get_agent(self, name: str) -> Optional[Agent]:
         """Retrieves an agent by its unique name."""
         return self.agents.get(name)
+
+    def get_evaluator_agent(self) -> Optional[Agent]:
+        """Returns the agent designated as this system's evaluator via the
+        top-level 'evaluator_agent' blueprint field, if any. Used by the
+        /evaluate command and its web-UI equivalent to review a run without
+        requiring a separate evaluator blueprint."""
+        if self.evaluator_agent_name is None:
+            return None
+        return self.agents.get(self.evaluator_agent_name)
     
     def get_all_agents(self) -> Dict[str, Agent]:
         """Returns a dictionary of all agents in the system."""

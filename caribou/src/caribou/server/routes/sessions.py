@@ -7,9 +7,11 @@ from typing import List
 import aiofiles
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from caribou.execution.evaluation import EvaluationContextTooLarge
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
+    EvaluationResult,
     MessageRecord,
     SessionCreateRequest,
     SessionResponse,
@@ -123,3 +125,22 @@ async def get_memory_state(session_id: str) -> dict:
         raise HTTPException(404, "Session not found")
     state = session_manager.get_context_breakdown(session_id)
     return state
+
+
+@router.post("/{session_id}/evaluate", response_model=EvaluationResult)
+async def evaluate_session(session_id: str) -> EvaluationResult:
+    """Send this session's full transcript to an evaluator agent for review."""
+    s = session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.llm_client is None or s.agent_system is None:
+        raise HTTPException(
+            400,
+            "Session is not running — start (or restart) the run before evaluating it.",
+        )
+    try:
+        return await session_manager.evaluate_session(session_id)
+    except EvaluationContextTooLarge as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc)) from exc

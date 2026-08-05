@@ -15,12 +15,14 @@ export interface BlueprintContent {
   global_policy: string;
   agents: Record<string, AgentConfig>;
   is_package_default: boolean;
+  evaluator_agent: string | null;
 }
 
 export interface SaveBlueprintRequest {
   name: string;
   global_policy: string;
   agents: Record<string, AgentConfig>;
+  evaluator_agent: string | null;
 }
 
 // Local editor state types (not sent over the wire)

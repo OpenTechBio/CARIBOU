@@ -445,6 +445,31 @@
           </div>
         </section>
       }
+
+      <section class="sidebar-section">
+        <h3>
+          <span>Evaluation</span>
+          <button class="btn btn-ghost btn-xs" (click)="evaluate()"
+            [disabled]="!canEvaluate() || evaluating()"
+            [title]="canEvaluate() ? 'Send the full run transcript to an evaluator agent' : 'Start (or restart) the run before evaluating it'">
+            {{ evaluating() ? 'Evaluating…' : 'Evaluate' }}
+          </button>
+        </h3>
+        @if (evaluationError()) {
+          <div class="eval-error">{{ evaluationError() }}</div>
+        }
+        @if (evaluationResult(); as ev) {
+          <div class="eval-result">
+            <div class="meta-list eval-meta">
+              <span class="ml">Evaluator</span><span>{{ ev.evaluator_agent }}</span>
+              <span class="ml">Turn</span><span>{{ ev.turn }}</span>
+            </div>
+            <p class="eval-assessment">{{ ev.assessment }}</p>
+          </div>
+        } @else if (!evaluationError()) {
+          <div class="empty">No evaluation yet.</div>
+        }
+      </section>
     </aside>
   </div>
 

@@ -31,6 +31,7 @@ export interface Session {
   artifact_count: number;
   message_count: number;
   memory: MemoryConfig | null;
+  can_evaluate: boolean;
 }
 
 export interface ResolvedModelInfo {
@@ -215,4 +216,14 @@ export interface MemoryState {
   global_message_count?: number;
   has_agent_prompt?: boolean;
   context_breakdown: ContextBreakdown;
+}
+
+export interface EvaluationResult {
+  session_id: string;
+  turn: number;
+  evaluator_agent: string;
+  evaluator_source: string;
+  model: string;
+  assessment: string;
+  created_at: string;
 }

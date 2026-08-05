@@ -127,4 +127,5 @@ class _Session:
             artifact_count=len(self.artifacts),
             message_count=len(self.messages),
             memory=memory,
+            can_evaluate=self.llm_client is not None and self.agent_system is not None,
         )

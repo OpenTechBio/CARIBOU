@@ -385,6 +385,7 @@ def _load_blueprint_content(name: str) -> BlueprintContent:
         global_policy=global_policy,
         agents=agents,
         is_package_default=_is_package_default(name),
+        evaluator_agent=raw.get("evaluator_agent"),
     )
 
 
@@ -404,7 +405,11 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
             },
             **({"code_samples": agent.code_samples} if agent.code_samples else {}),
         }
-    return {"global_policy": req.global_policy, "agents": agents_dict}
+    return {
+        "global_policy": req.global_policy,
+        "evaluator_agent": req.evaluator_agent,
+        "agents": agents_dict,
+    }
 
 
 def _validate_blueprint(req: SaveBlueprintRequest) -> None:
@@ -428,6 +433,11 @@ def _validate_blueprint(req: SaveBlueprintRequest) -> None:
                     422,
                     f"Agent '{agent_name}' command '{cmd_name}' references unknown agent '{cmd.target_agent}'.",
                 )
+    if req.evaluator_agent is not None and req.evaluator_agent not in agent_keys:
+        raise HTTPException(
+            422,
+            f"evaluator_agent '{req.evaluator_agent}' does not match any defined agent.",
+        )
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -476,7 +486,10 @@ async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintCon
         raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
     _validate_blueprint(req)
     req = SaveBlueprintRequest(
-        name=name, global_policy=req.global_policy, agents=req.agents
+        name=name,
+        global_policy=req.global_policy,
+        agents=req.agents,
+        evaluator_agent=req.evaluator_agent,
     )
     _atomic_write(user_path, _to_disk_dict(req))
     return _load_blueprint_content(name)

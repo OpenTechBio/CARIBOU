@@ -2,7 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 import {
-  Artifact, CodeEvent, Message, MemoryState, Session, SessionCreateRequest
+  Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -73,6 +73,10 @@ export class SessionService {
 
   getMemoryState(id: string): Observable<MemoryState> {
     return this.http.get<MemoryState>(`api/sessions/${id}/memory`);
+  }
+
+  evaluate(id: string): Observable<EvaluationResult> {
+    return this.http.post<EvaluationResult>(`api/sessions/${id}/evaluate`, {});
   }
 
   updateLocal(session: Session): void {

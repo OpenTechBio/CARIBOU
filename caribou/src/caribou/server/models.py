@@ -131,6 +131,16 @@ class CodeEventRecord(BaseModel):
     duration_ms: int = 0
 
 
+class EvaluationResult(BaseModel):
+    session_id: str
+    turn: int
+    evaluator_agent: str
+    evaluator_source: str
+    model: str
+    assessment: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class SessionResponse(BaseModel):
     id: str
     status: SessionStatus
@@ -149,6 +159,10 @@ class SessionResponse(BaseModel):
     artifact_count: int
     message_count: int
     memory: Optional[MemoryConfigResponse] = None
+    # False after a server restart until the runner is relaunched — restored
+    # sessions don't carry a live llm_client/agent_system (see
+    # session_persistence.py), so /evaluate would 400 even though current_turn > 0.
+    can_evaluate: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +213,14 @@ class BlueprintContent(BaseModel):
     global_policy: str
     agents: Dict[str, AgentConfig]
     is_package_default: bool
+    evaluator_agent: Optional[str] = None
 
 
 class SaveBlueprintRequest(BaseModel):
     name: str
     global_policy: str
     agents: Dict[str, AgentConfig]
+    evaluator_agent: Optional[str] = None
 
 
 class ServerStatus(BaseModel):

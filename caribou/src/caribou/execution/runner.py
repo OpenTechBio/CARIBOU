@@ -44,7 +44,11 @@ try:
         _write_session_report,
         _generate_agent_report,
     )
-    from caribou.execution.ui_helpers import _render_todos
+    from caribou.execution.user_commands import (
+        USER_COMMANDS,
+        UserCommandContext,
+        dispatch_user_command,
+    )
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -673,6 +677,19 @@ def run_agent_session(
         )
         return True
 
+    if not is_auto:
+        try:
+            import readline
+
+            def _complete_user_command(text: str, state: int) -> Optional[str]:
+                options = [name for name in USER_COMMANDS if name.startswith(text)]
+                return options[state] if state < len(options) else None
+
+            readline.set_completer(_complete_user_command)
+            readline.parse_and_bind("tab: complete")
+        except ImportError:
+            pass  # readline isn't available on this platform; no tab-completion.
+
     while True:
         stop_reason = session_stop_reason()
         if stop_reason is not None:
@@ -965,6 +982,11 @@ def run_agent_session(
                 session_end_reason = stop_reason
                 break
 
+        # Agent delegation command (e.g. "delegate_to_coder"), emitted by the
+        # LLM's own generated message and matched against the blueprint's
+        # Agent.commands. Unrelated to the human-typed REPL commands (/todo,
+        # /evaluate, ...) dispatched later in the interactive prompt loop via
+        # caribou.execution.user_commands — no human input is involved here.
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
             _action_fired = True
@@ -1374,87 +1396,37 @@ def run_agent_session(
             if stop_reason is not None:
                 session_end_reason = stop_reason
                 break
-            prompt_text = "\n[bold]Next message ('benchmark' to run selected benchmark, 'exit' to quit)[/bold]"
+            prompt_text = "\n[bold]Next message ('/help' for commands, 'exit' to quit)[/bold]"
             try:
                 user_input = Prompt.ask(prompt_text, default="").strip()
             except (EOFError, KeyboardInterrupt):
                 user_input = "exit"
 
-            if user_input.lower() in {"exit", "quit"}:
+            if user_input.lower() in {"exit", "quit", "/exit", "/quit"}:
                 console.print("[bold yellow]Exiting session.[/bold yellow]")
                 session_end_reason = "user_exit"
                 break
 
-            # --- Quick commands for TODO management ---
-            if user_input.lower().startswith("/todo"):
-                todo_text = user_input[len("/todo") :].strip()
-                if todo_text:
-                    todo_item = artifacts.add_todo(todo_text, "user", turn)
-                    todo_message = (
-                        f"TODO added (#{todo_item.id}) by user: {todo_item.text}"
-                    )
-                    history.append({"role": "system", "content": todo_message})
-                    if memory_manager:
-                        memory_manager.add_message("system", todo_message)
-                    console.print(
-                        f"[green]Added TODO #[/green]{todo_item.id}: {todo_item.text}"
-                    )
-                else:
-                    console.print("[yellow]Usage: /todo <task>[/yellow]")
+            # --- User-typed REPL commands (not agent delegation, see comment
+            # above the detect_delegation() call earlier in this function) ---
+            command_ctx = UserCommandContext(
+                console=console,
+                run_id=run_id,
+                turn=turn,
+                history=history,
+                artifacts=artifacts,
+                agent_system=agent_system,
+                current_agent=current_agent,
+                llm_client=llm_client,
+                model_name=model_name,
+                memory_manager=memory_manager,
+                report_memory=report_memory,
+                benchmark_modules=benchmark_modules,
+                sandbox_manager=sandbox_manager,
+                output_dir=output_dir,
+            )
+            if dispatch_user_command(user_input, command_ctx):
                 continue
-
-            if user_input.lower().startswith("/done"):
-                parts = user_input.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    todo_id = int(parts[1])
-                    completed_item = artifacts.complete_todo(todo_id)
-                    if completed_item:
-                        todo_message = f"TODO completed (#{completed_item.id}) by user"
-                        history.append({"role": "system", "content": todo_message})
-                        if memory_manager:
-                            memory_manager.add_message("system", todo_message)
-                        console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
-                    else:
-                        console.print(
-                            f"[yellow]No TODO found with id {todo_id}[/yellow]"
-                        )
-                else:
-                    console.print("[yellow]Usage: /done <id>[/yellow]")
-                continue
-
-            if user_input.lower() in {"/todos", "todos"}:
-                todo_items = [
-                    {
-                        "id": t.id,
-                        "text": t.text,
-                        "status": t.status,
-                        "added_by": t.added_by,
-                        "turn": t.turn,
-                    }
-                    for t in artifacts.list_todos()
-                ]
-                _render_todos(console, todo_items)
-                continue
-
-            if user_input.lower() == "benchmark":
-                if benchmark_modules:
-                    bench_output_dir = (
-                        output_dir if output_dir else get_default_runs_dir()
-                    )
-                    for bm_module in benchmark_modules:
-                        run_benchmark(
-                            console,
-                            sandbox_manager,
-                            bm_module,
-                            is_auto=False,
-                            output_dir=bench_output_dir,
-                        )
-                    continue
-                else:
-                    console.print(
-                        "[yellow]No benchmark modules were specified at startup.[/yellow]"
-                    )
-                    continue
 
             if user_input:
                 if memory_manager:

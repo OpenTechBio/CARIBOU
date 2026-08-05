@@ -26,11 +26,17 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from caribou.config import ENV_FILE
+from caribou.execution.evaluation import (
+    build_evaluation_payload,
+    resolve_evaluator_agent,
+    run_evaluation,
+)
 from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
     ArtifactType,
     CodeEventRecord,
+    EvaluationResult,
     MemoryStrategy,
     MessageRecord,
     SessionCreateRequest,
@@ -258,6 +264,55 @@ class SessionManager:
                 "total_full_history_tokens": total_tokens,
             },
         }
+
+    async def evaluate_session(self, session_id: str) -> EvaluationResult:
+        """Send this session's full transcript to an evaluator agent and
+        return its assessment. Shares its resolution/call logic with the
+        CLI's /evaluate command (execution/user_commands.py) via
+        caribou.execution.evaluation — callers must have already confirmed
+        the session exists and has been started (llm_client/agent_system set).
+        """
+        session = self._sessions[session_id]
+
+        evaluator_agent, source = resolve_evaluator_agent(session.agent_system)
+
+        history = list(session.initial_history) + [
+            {"role": m.role, "content": m.content} for m in session.messages
+        ]
+        payload = build_evaluation_payload(
+            run_id=session.id,
+            turn=session.current_turn,
+            active_agent=session.current_agent,
+            history=history,
+        )
+
+        # The LLM call blocks; run it off the event loop like every other
+        # provider call in this module (see build_llm_client's callers).
+        assessment = await asyncio.to_thread(
+            run_evaluation,
+            evaluator_agent=evaluator_agent,
+            llm_client=session.llm_client,
+            model_name=session.model_name,
+            payload=payload,
+        )
+
+        result = EvaluationResult(
+            session_id=session.id,
+            turn=session.current_turn,
+            evaluator_agent=evaluator_agent.name,
+            evaluator_source=source,
+            model=session.model_name,
+            assessment=assessment,
+        )
+
+        report_dir = session.output_dir / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = (
+            report_dir / f"evaluation_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+        )
+        report_path.write_text(result.model_dump_json(indent=2))
+
+        return result
 
     async def delete_session(self, session_id: str) -> None:
         async with self._lock:

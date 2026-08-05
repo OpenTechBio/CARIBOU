@@ -11,7 +11,7 @@ import { AgentStreamService } from '../../core/services/agent-stream.service';
 import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
-import { Message, Artifact, MemoryState } from '../../core/models/session.model';
+import { Message, Artifact, MemoryState, EvaluationResult } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
   CodeResultData, ErrorData, StatusChangeData
@@ -94,6 +94,9 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   artifactSearch = signal('');
   memoryState = signal<MemoryState | null>(null);
   memoryStateError = signal(false);
+  evaluating = signal(false);
+  evaluationResult = signal<EvaluationResult | null>(null);
+  evaluationError = signal<string | null>(null);
   showConnectionBanner = computed(() => {
     const s = this.stream.connectionState();
     return s === 'reconnecting' || s === 'expired';
@@ -128,6 +131,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isInitialInteractiveTurn = computed(() =>
     this.session()?.mode === 'interactive' && (this.session()?.current_turn ?? 0) <= 1
   );
+  // Mirrors the server's own readiness check — false after a server restart
+  // until the runner is relaunched, even if current_turn > 0 (see
+  // can_evaluate in session_state.py's to_response()).
+  canEvaluate = computed(() => this.session()?.can_evaluate ?? false);
   waitingLabel = computed(() =>
     this.isInitialInteractiveTurn() ? 'Getting environment set up…' : 'Waiting for agent…'
   );
@@ -565,6 +572,24 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (!this.isRunning() || this.session()?.mode !== 'interactive') return;
     this.cancellingResponse.set(true);
     this.stream.cancelResponse();
+  }
+
+  evaluate(): void {
+    const id = this.session()?.id;
+    if (!id || !this.canEvaluate() || this.evaluating()) return;
+    this.evaluating.set(true);
+    this.evaluationError.set(null);
+    this.sessionSvc.evaluate(id).subscribe({
+      next: (result) => {
+        this.evaluating.set(false);
+        this.evaluationResult.set(result);
+      },
+      error: (err) => {
+        this.evaluating.set(false);
+        this.evaluationError.set(err?.error?.detail ?? 'Evaluation failed.');
+        this.toasts.show({ kind: 'error', title: 'Evaluation failed', ttlMs: 4000 });
+      },
+    });
   }
 
   retryReconnect(): void {

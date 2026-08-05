@@ -40,6 +40,7 @@ export class BlueprintEditorComponent implements OnInit {
   isPackageDefault = signal(false);
   blueprintName = signal('');
   globalPolicy = signal('');
+  evaluatorAgent = signal<string | null>(null);
   agents = signal<AgentEntry[]>([]);
 
   // Tabs
@@ -71,7 +72,7 @@ export class BlueprintEditorComponent implements OnInit {
   });
 
   // Validation
-  validationErrors = computed(() => this._validate(this.agents(), this.blueprintName()));
+  validationErrors = computed(() => this._validate(this.agents(), this.blueprintName(), this.evaluatorAgent()));
 
   packageBlueprints = computed(() => this.allBlueprints().filter(b => !this._isUserBlueprint(b.name)));
   userBlueprints = computed(() => this.allBlueprints().filter(b => this._isUserBlueprint(b.name)));
@@ -100,6 +101,7 @@ export class BlueprintEditorComponent implements OnInit {
         this.isPackageDefault.set(bp.is_package_default);
         this.blueprintName.set(bp.name);
         this.globalPolicy.set(bp.global_policy);
+        this.evaluatorAgent.set(bp.evaluator_agent);
         const entries = this._toAgentEntries(bp.agents);
         this.agents.set(entries);
         this._resetImportState(entries.length);
@@ -117,6 +119,7 @@ export class BlueprintEditorComponent implements OnInit {
     this.isPackageDefault.set(false);
     this.blueprintName.set('');
     this.globalPolicy.set('');
+    this.evaluatorAgent.set(null);
     this.agents.set([]);
     this._resetImportState(0);
     this.activeTab.set('form');
@@ -176,6 +179,7 @@ export class BlueprintEditorComponent implements OnInit {
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
       agents: this._toAgentConfigMap(this.agents()),
+      evaluator_agent: this.evaluatorAgent(),
     };
 
     this.saving.set(true);
@@ -452,6 +456,7 @@ export class BlueprintEditorComponent implements OnInit {
     return JSON.stringify({
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
+      evaluator_agent: this.evaluatorAgent(),
       agents: this._toAgentConfigMap(this.agents()),
     }, null, 2);
   }
@@ -461,6 +466,7 @@ export class BlueprintEditorComponent implements OnInit {
       const parsed = JSON.parse(raw);
       if (parsed.name !== undefined) this.blueprintName.set(parsed.name);
       if (parsed.global_policy !== undefined) this.globalPolicy.set(parsed.global_policy);
+      if (parsed.evaluator_agent !== undefined) this.evaluatorAgent.set(parsed.evaluator_agent);
       if (parsed.agents && typeof parsed.agents === 'object') {
         const entries = this._toAgentEntries(parsed.agents);
         this.agents.set(entries);
@@ -472,7 +478,7 @@ export class BlueprintEditorComponent implements OnInit {
     }
   }
 
-  private _validate(agents: AgentEntry[], name: string): string[] {
+  private _validate(agents: AgentEntry[], name: string, evaluatorAgent: string | null): string[] {
     const errors: string[] = [];
     if (!name.trim()) errors.push('Blueprint name is required.');
     if (name.includes('/') || name.includes('\\') || name.endsWith('.json')) {
@@ -491,6 +497,9 @@ export class BlueprintEditorComponent implements OnInit {
           errors.push(`Agent '${agent.key}': command '${cmd.key}' references unknown agent '${cmd.target_agent}'.`);
         }
       }
+    }
+    if (evaluatorAgent && !keys.has(evaluatorAgent)) {
+      errors.push(`Evaluator agent '${evaluatorAgent}' does not match any defined agent.`);
     }
     return errors;
   }
