@@ -15,11 +15,15 @@ modules:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
+import queue
 import shutil
 import textwrap
+import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -32,10 +36,14 @@ from caribou.server.models import (
     ArtifactType,
     CodeEventRecord,
     MemoryStrategy,
+    RecoveryMode,
+    RecoveryStatus,
     MessageRecord,
     SessionCreateRequest,
+    SessionForkRequest,
     SessionMode,
     SessionResponse,
+    SessionResumeRequest,
     SessionStatus,
 )
 from caribou.server.session_persistence import (
@@ -57,9 +65,20 @@ from caribou.server.session_state import (
     _Session,
     trim_events,
 )
+from caribou.execution.session_recovery import (
+    bootstrap_anndata,
+    capture_checkpoint,
+    checkpoint_dataset_path,
+    copy_output_tree,
+    literal_replay,
+    load_checkpoint,
+    publish_checkpoint_pointer,
+    smart_rebuild,
+)
 
 # Backwards-compatible re-exports for callers that reach into this module.
 _SESSIONS_DIR = SESSIONS_DIR
+RECOVERY_TOTAL_STEPS = 8
 
 
 def _create_session_logger(session_id: str, session_dir_path) -> logging.Logger:
@@ -133,6 +152,7 @@ class SessionManager:
 
         session = _Session(
             id=session_id,
+            name=(config.name or "").strip() or session_id[:8],
             config=config,
             status=SessionStatus.initializing,
             current_agent="",
@@ -149,6 +169,15 @@ class SessionManager:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             resolved_model=resolve_model_info(config),
+            attempts=[
+                {
+                    "attempt_number": 1,
+                    "kind": "initial",
+                    "started_at": datetime.utcnow().isoformat(),
+                    "mode": config.mode.value,
+                    "llm_backend": config.llm_backend,
+                }
+            ],
         )
 
         async with self._lock:
@@ -177,6 +206,673 @@ class SessionManager:
 
     def list_sessions(self) -> List[SessionResponse]:
         return [s.to_response() for s in self._sessions.values()]
+
+    async def resume_session(
+        self, session_id: str, request: SessionResumeRequest
+    ) -> SessionResponse:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.status != SessionStatus.stopped:
+            raise ValueError("Only a stopped session can be resumed")
+        self._validate_recovery_request(request)
+        if session.recovery_task and not session.recovery_task.done():
+            raise ValueError("Session recovery is already in progress")
+
+        self._apply_target_mode(session, request)
+        session.attempt_number += 1
+        session.attempts.append(
+            {
+                "attempt_number": session.attempt_number,
+                "kind": "resume",
+                "started_at": datetime.utcnow().isoformat(),
+                "source_checkpoint_id": session.checkpoint_id,
+                "recovery_mode": request.recovery_mode.value,
+            }
+        )
+        session.recovery_mode = request.recovery_mode
+        session.recovery_status = RecoveryStatus.recovering
+        session.recovery_phase = "checkpoint"
+        session.recovery_step = 1
+        session.recovery_total_steps = RECOVERY_TOTAL_STEPS
+        session.recovery_substep = None
+        session.recovery_substep_total = None
+        session.recovery_detail = "Loading the latest safe checkpoint."
+        session.status = SessionStatus.recovering
+        self._save_session(session)
+        session.recovery_task = asyncio.create_task(
+            self._recover_session(session, request)
+        )
+        return session.to_response()
+
+    async def fork_session(
+        self, source_id: str, request: SessionForkRequest
+    ) -> SessionResponse:
+        source = self._sessions.get(source_id)
+        if source is None:
+            raise KeyError("Session not found")
+        if not request.name.strip():
+            raise ValueError("Fork name cannot be blank")
+        self._validate_recovery_request(request)
+        child_id = str(uuid4())
+        config_updates: Dict[str, Any] = {
+            "name": request.name.strip(),
+            "llm_backend": request.llm_backend or source.config.llm_backend,
+            "initial_prompt": None,
+        }
+        if request.model_name and request.model_name.strip():
+            config_updates["model_name"] = request.model_name.strip()
+        if request.ollama_model and request.ollama_model.strip():
+            config_updates["ollama_model"] = request.ollama_model.strip()
+        child_config = source.config.model_copy(update=config_updates)
+        child = _Session(
+            id=child_id,
+            name=request.name.strip(),
+            config=child_config,
+            status=SessionStatus.recovering,
+            current_agent=source.current_agent,
+            current_turn=source.current_turn,
+            messages=[],
+            artifacts=[],
+            code_events=[],
+            output_dir=SESSIONS_DIR / child_id / "outputs",
+            events=[],
+            event_condition=asyncio.Condition(),
+            stop_flag=threading.Event(),
+            cancel_response_flag=threading.Event(),
+            user_input_queue=queue.Queue(),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            resolved_model=resolve_model_info(child_config),
+            parent_session_id=source.id,
+            attempt_number=1,
+            recovery_mode=request.recovery_mode,
+            recovery_status=RecoveryStatus.awaiting_checkpoint,
+            recovery_detail="Waiting for the source session's next safe turn boundary.",
+            recovery_phase="awaiting_checkpoint",
+            recovery_step=1,
+            recovery_total_steps=RECOVERY_TOTAL_STEPS,
+            attempts=[
+                {
+                    "attempt_number": 1,
+                    "kind": "fork",
+                    "started_at": datetime.utcnow().isoformat(),
+                    "source_session_id": source.id,
+                    "recovery_mode": request.recovery_mode.value,
+                }
+            ],
+        )
+        # Validate/resolve mode before publishing the child so invalid requests
+        # cannot leave an orphaned recovering session in the registry.
+        self._apply_target_mode(child, request)
+        child.output_dir.mkdir(parents=True, exist_ok=True)
+        async with self._lock:
+            self._deleted_session_ids.discard(child_id)
+            self._sessions[child_id] = child
+        child.logger = _create_session_logger(child_id, child.output_dir.parent)
+        self._save_session(child)
+        child.recovery_task = asyncio.create_task(
+            self._complete_fork(source, child, request)
+        )
+        return child.to_response()
+
+    async def retry_recovery(
+        self, session_id: str, request: SessionResumeRequest
+    ) -> SessionResponse:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.recovery_status not in {RecoveryStatus.partial, RecoveryStatus.failed}:
+            raise ValueError("Only partial or failed recovery can be retried")
+        self._validate_recovery_request(request)
+        if session.sandbox_manager is not None:
+            try:
+                await asyncio.to_thread(session.sandbox_manager.stop_container)
+            except Exception:
+                pass
+            session.sandbox_manager = None
+        self._finish_latest_attempt(session, "recovery_failed")
+        session.attempt_number += 1
+        session.attempts.append(
+            {
+                "attempt_number": session.attempt_number,
+                "kind": "recovery_retry",
+                "started_at": datetime.utcnow().isoformat(),
+                "source_checkpoint_id": session.checkpoint_id,
+                "recovery_mode": request.recovery_mode.value,
+            }
+        )
+        session.recovery_mode = request.recovery_mode
+        session.recovery_status = RecoveryStatus.recovering
+        session.recovery_phase = "checkpoint"
+        session.recovery_step = 1
+        session.recovery_total_steps = RECOVERY_TOTAL_STEPS
+        session.recovery_substep = None
+        session.recovery_substep_total = None
+        session.recovery_detail = "Reloading the latest safe checkpoint for a clean retry."
+        session.status = SessionStatus.recovering
+        self._apply_target_mode(session, request)
+        self._save_session(session)
+        session.recovery_task = asyncio.create_task(
+            self._recover_session(session, request)
+        )
+        return session.to_response()
+
+    async def accept_partial_recovery(self, session_id: str) -> SessionResponse:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.recovery_status != RecoveryStatus.partial or session.sandbox_manager is None:
+            raise ValueError("Session has no usable partial recovery to accept")
+        session.recovery_status = RecoveryStatus.accepted_partial
+        session.recovery_detail = (
+            "Partial recovery accepted. Transient variables may still be missing."
+        )
+        session.recovery_phase = "completed"
+        session.recovery_step = RECOVERY_TOTAL_STEPS
+        session.recovery_total_steps = RECOVERY_TOTAL_STEPS
+        self._save_session(session)
+        self._emit_recovery_completed(session, accepted_partial=True)
+        await self._launch_recovered_runner(session)
+        return session.to_response()
+
+    @staticmethod
+    def _validate_recovery_request(request: SessionResumeRequest) -> None:
+        if request.recovery_mode == RecoveryMode.literal_replay and not request.acknowledge_replay_risk:
+            raise ValueError(
+                "Literal replay requires acknowledgement that external side effects may repeat"
+            )
+
+    def _set_recovery_progress(
+        self,
+        session: _Session,
+        *,
+        phase: str,
+        detail: str,
+        step: int,
+        substep: Optional[int] = None,
+        substep_total: Optional[int] = None,
+    ) -> None:
+        self._on_event(
+            session,
+            {
+                "type": "recovery_progress",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {
+                    "phase": phase,
+                    "detail": detail,
+                    "step": step,
+                    "total_steps": RECOVERY_TOTAL_STEPS,
+                    "substep": substep,
+                    "substep_total": substep_total,
+                    "mode": session.recovery_mode.value if session.recovery_mode else None,
+                    "attempt_number": session.attempt_number,
+                },
+            },
+        )
+
+    def _emit_recovery_completed(
+        self, session: _Session, *, accepted_partial: bool = False
+    ) -> None:
+        self._on_event(
+            session,
+            {
+                "type": "recovery_completed",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {
+                    "mode": session.recovery_mode.value if session.recovery_mode else "best_effort",
+                    "attempt_number": session.attempt_number,
+                    "checkpoint_id": session.checkpoint_id,
+                    "checkpoint_turn": session.checkpoint_turn,
+                    "detail": session.recovery_detail,
+                    "accepted_partial": accepted_partial,
+                },
+            },
+        )
+
+    @staticmethod
+    def _apply_target_mode(session: _Session, request: SessionResumeRequest) -> None:
+        target = request.target_mode or session.config.mode
+        updates: Dict[str, Any] = {"mode": target, "initial_prompt": None}
+        if target == SessionMode.auto:
+            if request.additional_turns is None:
+                raise ValueError("Auto recovery requires an additional-turn budget")
+            updates["max_turns"] = session.current_turn + request.additional_turns
+        else:
+            updates["max_turns"] = None
+        session.config = session.config.model_copy(update=updates)
+
+    async def _complete_fork(
+        self, source: _Session, child: _Session, request: SessionForkRequest
+    ) -> None:
+        try:
+            if self._is_deleted(child.id):
+                return
+            starting_checkpoint = source.checkpoint_id
+            if source.status in {
+                SessionStatus.running,
+                SessionStatus.initializing,
+                SessionStatus.recovering,
+            }:
+                async with source.event_condition:
+                    await asyncio.wait_for(
+                        source.event_condition.wait_for(
+                            lambda: source.checkpoint_id != starting_checkpoint
+                            or source.status in {SessionStatus.stopped, SessionStatus.error}
+                            or self._is_deleted(source.id)
+                            or self._is_deleted(child.id)
+                        ),
+                        timeout=900,
+                    )
+            if self._is_deleted(child.id):
+                return
+            checkpoint = load_checkpoint(source.output_dir)
+            if checkpoint is None:
+                legacy_history = [
+                    {"role": item.role, "content": item.content}
+                    for item in source.messages
+                    if item.role in {"user", "assistant", "system"}
+                ]
+                checkpoint = await asyncio.to_thread(
+                    capture_checkpoint,
+                    session=source,
+                    history=legacy_history,
+                    runner_state={
+                        "schema_version": "caribou.web_runner_checkpoint_state.v1",
+                        "current_agent_name": source.current_agent or "unknown",
+                        "turns_completed": source.current_turn,
+                        "next_turn": source.current_turn + 1,
+                        "consecutive_exec_failures": 0,
+                        "consecutive_no_action": 0,
+                        "action_space_past_actions": [],
+                    },
+                )
+                child.recovery_detail = (
+                    "Legacy source had no durable checkpoint; using best-effort retained evidence."
+                )
+            self._set_recovery_progress(
+                child,
+                phase="copying_checkpoint",
+                detail="Copying the safe checkpoint, outputs, and recorded session history.",
+                step=1,
+            )
+            await asyncio.to_thread(copy_output_tree, source.output_dir, child.output_dir)
+            if self._is_deleted(child.id):
+                return
+            source_checkpoint_dir = (
+                source.output_dir.parent / ".checkpoints" / checkpoint["checkpoint_id"]
+            )
+            child_root = child.output_dir.parent / ".checkpoints"
+            child_checkpoint_dir = child_root / checkpoint["checkpoint_id"]
+            child_root.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                shutil.copytree,
+                source_checkpoint_dir,
+                child_checkpoint_dir,
+                dirs_exist_ok=True,
+            )
+            await asyncio.to_thread(
+                publish_checkpoint_pointer,
+                child.output_dir,
+                checkpoint["checkpoint_id"],
+            )
+            child.checkpoint_id = checkpoint["checkpoint_id"]
+            child.forked_from_checkpoint_id = checkpoint["checkpoint_id"]
+            child.checkpoint_turn = checkpoint["turn"]
+            child.checkpoint_healthy = bool(checkpoint.get("complete"))
+            child.current_turn = checkpoint["turn"]
+            child.messages = [
+                MessageRecord(
+                    session_id=child.id,
+                    turn=item.turn,
+                    role=item.role,
+                    agent_name=item.agent_name,
+                    content=item.content,
+                    is_delegation=item.is_delegation,
+                )
+                for item in source.messages
+                if item.turn <= checkpoint["turn"]
+            ]
+            child.artifacts = []
+            for item in source.artifacts:
+                if item.turn > checkpoint["turn"]:
+                    continue
+                try:
+                    relative_path = Path(item.local_path).relative_to(source.output_dir)
+                except (TypeError, ValueError):
+                    relative_path = Path(item.filename)
+                child.artifacts.append(
+                    ArtifactRecord(
+                        session_id=child.id,
+                        turn=item.turn,
+                        type=item.type,
+                        filename=item.filename,
+                        mime_type=item.mime_type,
+                        size_bytes=item.size_bytes,
+                        created_at=item.created_at,
+                        local_path=str(child.output_dir / relative_path),
+                    )
+                )
+            child.code_events = [
+                CodeEventRecord(
+                    session_id=child.id,
+                    turn=item.turn,
+                    agent_name=item.agent_name,
+                    source=item.source,
+                    stdout=item.stdout,
+                    stderr=item.stderr,
+                    success=item.success,
+                    duration_ms=item.duration_ms,
+                )
+                for item in source.code_events
+                if item.turn <= checkpoint["turn"]
+            ]
+            retained_event_types = {
+                "message_complete",
+                "system_message",
+                "recovery_completed",
+                "agent_switch",
+                "code_submitted",
+                "code_result",
+                "artifact",
+                "error",
+            }
+            child.events = []
+            for source_event in source.events:
+                if (
+                    source_event.get("type") not in retained_event_types
+                    or int(source_event.get("turn", 0) or 0) > checkpoint["turn"]
+                    or (
+                        source_event.get("type") == "error"
+                        and bool((source_event.get("data") or {}).get("fatal"))
+                    )
+                ):
+                    continue
+                child_event = copy.deepcopy(source_event)
+                child_event["session_id"] = child.id
+                child.events.append(child_event)
+            child.recovery_status = RecoveryStatus.recovering
+            child.status = SessionStatus.recovering
+            self._save_session(child)
+            await self._recover_session(child, request)
+        except Exception as exc:
+            child.status = SessionStatus.stopped
+            child.recovery_status = RecoveryStatus.failed
+            child.recovery_detail = str(exc)
+            self._finish_latest_attempt(child, "recovery_failed")
+            self._save_session(child)
+
+    async def _recover_session(
+        self, session: _Session, request: SessionResumeRequest
+    ) -> None:
+        try:
+            if self._is_deleted(session.id):
+                return
+            self._set_recovery_progress(
+                session,
+                phase="checkpoint",
+                detail="Loading and validating the latest safe checkpoint.",
+                step=1,
+            )
+            checkpoint = load_checkpoint(session.output_dir)
+            if checkpoint is None:
+                history = [
+                    {"role": item.role, "content": item.content}
+                    for item in session.messages
+                    if item.role in {"user", "assistant", "system"}
+                ]
+                checkpoint = await asyncio.to_thread(
+                    capture_checkpoint,
+                    session=session,
+                    history=history,
+                    runner_state={
+                        "schema_version": "caribou.web_runner_checkpoint_state.v1",
+                        "current_agent_name": session.current_agent or "unknown",
+                        "turns_completed": session.current_turn,
+                        "next_turn": session.current_turn + 1,
+                        "consecutive_exec_failures": 0,
+                        "consecutive_no_action": 0,
+                        "action_space_past_actions": [],
+                    },
+                )
+                session.recovery_detail = (
+                    "Legacy session: durable runtime evidence is incomplete; recovery is best-effort."
+                )
+            self._set_recovery_progress(
+                session,
+                phase="retiring_runtime",
+                detail="Closing the previous sandbox and clearing transient runtime state.",
+                step=2,
+            )
+            if session.sandbox_manager is not None:
+                try:
+                    await asyncio.to_thread(session.sandbox_manager.stop_container)
+                except Exception:
+                    pass
+            if self._is_deleted(session.id):
+                return
+            load_dotenv(dotenv_path=ENV_FILE, override=True)
+            from caribou.agents.AgentSystem import AgentSystem
+
+            self._set_recovery_progress(
+                session,
+                phase="loading_configuration",
+                detail="Loading the agent system and selected LLM backend.",
+                step=3,
+            )
+            agent_system = AgentSystem.load_from_json(
+                str(find_blueprint(session.config.agent_system))
+            )
+            state = dict(checkpoint.get("runner_state") or {})
+            current_name = state.get("current_agent_name") or next(iter(agent_system.agents))
+            driver = agent_system.get_agent(current_name) or agent_system.get_agent(
+                next(iter(agent_system.agents))
+            )
+            session.agent_system = agent_system
+            session.driver_agent = driver
+            session.current_agent = driver.name
+            llm_client, model_name = build_llm_client(session.config)
+            session.llm_client = llm_client
+            session.model_name = model_name
+            session.resolved_model = resolve_model_info(
+                session.config, resolved_model_name=model_name
+            )
+            dataset_source = (
+                Path(session.config.dataset_path)
+                if request.recovery_mode == RecoveryMode.literal_replay
+                else checkpoint_dataset_path(session.output_dir, checkpoint)
+            )
+            runtime_config = session.config.model_copy(
+                update={"dataset_path": str(dataset_source)}
+            )
+            self._set_recovery_progress(
+                session,
+                phase="starting_sandbox",
+                detail=(
+                    f"Starting a fresh {session.config.sandbox_type.value} sandbox; "
+                    "container startup can take a little while."
+                ),
+                step=4,
+            )
+            sandbox_manager = await asyncio.to_thread(
+                build_sandbox, runtime_config, session.output_dir
+            )
+            if self._is_deleted(session.id):
+                try:
+                    await asyncio.to_thread(sandbox_manager.stop_container)
+                except Exception:
+                    pass
+                return
+            session.sandbox_manager = sandbox_manager
+            session.analysis_context = textwrap.dedent(f"""\
+                Primary dataset path: **{SANDBOX_DATA_PATH}**
+
+                RECOVERED SESSION: durable AnnData, transcript, action history, and files were restored.
+                Arbitrary Python globals, open handles, GPU objects, and external process state were not directly restored.
+                Save all generated outputs to /workspace/outputs/.
+            """).strip()
+            self._set_recovery_progress(
+                session,
+                phase="restoring_history",
+                detail="Restoring transcript, memory state, runner position, and copied files.",
+                step=5,
+            )
+            history = [dict(item) for item in checkpoint.get("history", [])]
+            if not history or history[0].get("role") != "system":
+                history = [
+                    {"role": "system", "content": f"**GLOBAL POLICY**: {agent_system.global_policy}\n"},
+                    {"role": "system", "content": driver.get_full_prompt(None) + "\n\n" + session.analysis_context},
+                    *history,
+                ]
+            session.initial_history = history[:2]
+            session.resume_history = history
+            session.resume_runner_state = state
+            session.resume_memory_state = checkpoint.get("memory")
+
+            loop = asyncio.get_running_loop()
+
+            def emit(progress: Dict[str, Any]) -> None:
+                phase = str(progress.get("phase") or "verifying_recovery")
+                substep = int(progress.get("step", 0) or 0) or None
+                substep_total = int(progress.get("total", 0) or 0) or None
+                if phase == "literal_replay":
+                    detail = (
+                        f"Replaying recorded code attempt {substep} of {substep_total}, "
+                        "including attempts that originally failed."
+                    )
+                else:
+                    detail = (
+                        f"Agent-guided environment rebuild attempt {substep} of "
+                        f"{substep_total}."
+                    )
+                loop.call_soon_threadsafe(
+                    lambda: self._set_recovery_progress(
+                        session,
+                        phase=phase,
+                        detail=detail,
+                        step=7,
+                        substep=substep,
+                        substep_total=substep_total,
+                    )
+                )
+
+            if request.recovery_mode == RecoveryMode.smart:
+                self._set_recovery_progress(
+                    session,
+                    phase="restoring_dataset",
+                    detail="Loading checkpointed AnnData and verifying the recovered dataset.",
+                    step=6,
+                )
+                boot_ok, boot_detail = await asyncio.to_thread(
+                    bootstrap_anndata, session.sandbox_manager
+                )
+                if not boot_ok:
+                    raise RuntimeError(f"Checkpointed AnnData could not be loaded: {boot_detail}")
+                recovered, detail = await asyncio.to_thread(
+                    smart_rebuild,
+                    sandbox=session.sandbox_manager,
+                    llm_client=llm_client,
+                    model_name=model_name,
+                    current_agent_prompt=driver.get_full_prompt(None),
+                    checkpoint=checkpoint,
+                    emit=emit,
+                )
+            else:
+                self._set_recovery_progress(
+                    session,
+                    phase="preparing_replay",
+                    detail=(
+                        "Preparing the original dataset and the complete recorded code ledger "
+                        "for literal replay."
+                    ),
+                    step=6,
+                )
+                if not checkpoint.get("actions"):
+                    boot_ok, boot_detail = await asyncio.to_thread(
+                        bootstrap_anndata, session.sandbox_manager
+                    )
+                    if not boot_ok:
+                        raise RuntimeError(
+                            f"Original AnnData could not be loaded: {boot_detail}"
+                        )
+                recovered, detail = await asyncio.to_thread(
+                    literal_replay,
+                    sandbox=session.sandbox_manager,
+                    checkpoint=checkpoint,
+                    emit=emit,
+                )
+            session.recovery_detail = detail
+            if self._is_deleted(session.id):
+                try:
+                    await asyncio.to_thread(session.sandbox_manager.stop_container)
+                except Exception:
+                    pass
+                return
+            if not recovered:
+                session.status = SessionStatus.stopped
+                session.recovery_status = RecoveryStatus.partial
+                session.recovery_phase = "partial"
+                self._save_session(session)
+                return
+            self._set_recovery_progress(
+                session,
+                phase="finalizing",
+                detail="Recovery checks passed; starting the recovered session runner.",
+                step=8,
+            )
+            session.recovery_status = RecoveryStatus.recovered
+            session.recovery_phase = "completed"
+            self._save_session(session)
+            self._emit_recovery_completed(session)
+            await self._launch_recovered_runner(session)
+        except Exception as exc:
+            session.status = SessionStatus.stopped
+            session.recovery_status = RecoveryStatus.failed
+            session.recovery_detail = str(exc)
+            session.recovery_phase = "failed"
+            self._finish_latest_attempt(session, "recovery_failed")
+            self._save_session(session)
+
+    async def _launch_recovered_runner(self, session: _Session) -> None:
+        session.stop_flag.clear()
+        session.cancel_response_flag.clear()
+        session.user_input_queue = queue.Queue()
+        history = [dict(item) for item in (session.resume_history or session.initial_history)]
+        recovery_notice = {
+            "role": "system",
+            "content": (
+                f"RECOVERY NOTICE (attempt {session.attempt_number}): a fresh sandbox was "
+                f"created using {session.recovery_mode.value if session.recovery_mode else 'best-effort'} recovery. "
+                "The checkpointed AnnData, files, transcript, and recorded memory were restored. "
+                "Arbitrary Python globals, open handles, GPU objects, and external process state "
+                "were not directly restored; verify or rebuild transient state before relying on it. "
+                f"Recovery result: {session.recovery_detail or 'ready'}."
+            ),
+        }
+        history.append(recovery_notice)
+        self._on_event(
+            session,
+            {
+                "type": "system_message",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {
+                    "content": recovery_notice["content"],
+                    "category": "Recovery notice",
+                },
+            },
+        )
+        await self._launch_runner(
+            session,
+            history,
+            resume_state=session.resume_runner_state,
+            start_waiting=session.config.mode == SessionMode.interactive,
+        )
 
     async def stop_session(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
@@ -265,8 +961,16 @@ class SessionManager:
             session = self._sessions.pop(session_id, None)
         if session:
             session.stop_flag.set()
+            if (
+                session.recovery_task
+                and not session.recovery_task.done()
+                and session.recovery_status == RecoveryStatus.awaiting_checkpoint
+            ):
+                session.recovery_task.cancel()
             if session.runner_task and not session.runner_task.done():
                 session.runner_task.cancel()
+            async with session.event_condition:
+                session.event_condition.notify_all()
             if session.logger:
                 session.logger.info("Session deleted — closing log")
                 _close_session_logger(session.logger)
@@ -397,7 +1101,14 @@ class SessionManager:
 
         return await self._launch_runner(session, history)
 
-    async def _launch_runner(self, session: _Session, history: List[Dict]) -> bool:
+    async def _launch_runner(
+        self,
+        session: _Session,
+        history: List[Dict],
+        *,
+        resume_state: Optional[Dict[str, Any]] = None,
+        start_waiting: bool = False,
+    ) -> bool:
         """Launch a session runner."""
         from caribou.server.streaming_runner import run_session_async
 
@@ -433,6 +1144,13 @@ class SessionManager:
                 summarization_threshold=st,
                 chunk_size_to_summarize=cs,
             )
+            if session.resume_memory_state and session.resume_memory_state.get("restorable"):
+                memory_manager.restore_checkpoint(session.resume_memory_state)
+                if resume_state and history:
+                    memory_manager.add_message(
+                        history[-1].get("role", "system"),
+                        history[-1].get("content", ""),
+                    )
             session.memory_manager = memory_manager
             if session.logger:
                 session.logger.info(
@@ -448,6 +1166,8 @@ class SessionManager:
             base_globals = [history[0]] if history else []
             agent_prompt_content = history[1]["content"] if len(history) > 1 else ""
             report_memory = AgentReportMemory(base_globals, agent_prompt_content)
+            if session.resume_memory_state and session.resume_memory_state.get("restorable"):
+                report_memory.restore_checkpoint(session.resume_memory_state)
             session.memory_manager = report_memory
             if session.logger:
                 session.logger.info("Agent report memory enabled")
@@ -459,6 +1179,26 @@ class SessionManager:
                 max_turns,
                 len(history),
                 memory_strategy.value,
+            )
+
+        loop = asyncio.get_running_loop()
+
+        def _checkpoint_callback(
+            checkpoint_history: List[Dict], checkpoint_state: Dict[str, Any]
+        ) -> None:
+            try:
+                checkpoint = capture_checkpoint(
+                    session=session,
+                    history=checkpoint_history,
+                    runner_state=checkpoint_state,
+                )
+            except Exception as exc:
+                loop.call_soon_threadsafe(
+                    self._checkpoint_failed, session, str(exc)
+                )
+                return
+            loop.call_soon_threadsafe(
+                self._checkpoint_published, session, checkpoint
             )
 
         async def _guarded_runner() -> None:
@@ -485,6 +1225,9 @@ class SessionManager:
                     logger=session.logger,
                     memory_manager=memory_manager,
                     report_memory=report_memory,
+                    checkpoint_callback=_checkpoint_callback,
+                    resume_state=resume_state,
+                    start_waiting=start_waiting,
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.
@@ -500,6 +1243,37 @@ class SessionManager:
 
         session.runner_task = asyncio.create_task(_guarded_runner())
         return True
+
+    def _checkpoint_published(
+        self, session: _Session, checkpoint: Dict[str, Any]
+    ) -> None:
+        self._on_event(
+            session,
+            {
+                "type": "checkpoint_created",
+                "session_id": session.id,
+                "turn": checkpoint["turn"],
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {
+                    "checkpoint_id": checkpoint["checkpoint_id"],
+                    "healthy": checkpoint["complete"],
+                    "capture_error": checkpoint.get("capture_error"),
+                },
+            },
+        )
+
+    def _checkpoint_failed(self, session: _Session, detail: str) -> None:
+        session.checkpoint_healthy = False
+        self._on_event(
+            session,
+            {
+                "type": "checkpoint_failed",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {"detail": detail},
+            },
+        )
 
     def append_event(self, session: _Session, event: Dict[str, Any]) -> None:
         """Synchronously append event and update derived state."""
@@ -539,6 +1313,32 @@ class SessionManager:
                 session.status = SessionStatus(status_str)
             except ValueError:
                 pass
+            if session.status in {SessionStatus.stopped, SessionStatus.error}:
+                self._finish_latest_attempt(session, session.status.value)
+
+        elif t == "recovery_progress":
+            session.recovery_phase = data.get("phase")
+            session.recovery_detail = data.get("detail", session.recovery_detail)
+            session.recovery_step = int(data.get("step", session.recovery_step) or 0)
+            session.recovery_total_steps = int(
+                data.get("total_steps", session.recovery_total_steps) or 0
+            )
+            session.recovery_substep = data.get("substep")
+            session.recovery_substep_total = data.get("substep_total")
+
+        elif t == "system_message":
+            message_id = data.setdefault("id", str(uuid4()))
+            session.messages.append(
+                MessageRecord(
+                    id=message_id,
+                    session_id=session.id,
+                    turn=event.get("turn", session.current_turn),
+                    role="system",
+                    agent_name=data.get("category", "System"),
+                    content=data.get("content", ""),
+                    timestamp=datetime.fromisoformat(event["timestamp"]),
+                )
+            )
 
         elif t == "message_complete":
             msg_data = data.get("message", {})
@@ -586,6 +1386,19 @@ class SessionManager:
                 local_path=art.get("local_path", ""),
             )
             session.artifacts.append(record)
+
+    @staticmethod
+    def _finish_latest_attempt(session: _Session, outcome: str) -> None:
+        """Close the current provenance record once; completed attempts stay immutable."""
+
+        if not session.attempts:
+            return
+        latest = session.attempts[-1]
+        if latest.get("attempt_number") != session.attempt_number or latest.get("ended_at"):
+            return
+        latest["ended_at"] = datetime.utcnow().isoformat()
+        latest["outcome"] = outcome
+        latest["final_turn"] = session.current_turn
 
     async def _initialize_session(self, session: _Session) -> None:
         """
@@ -658,6 +1471,20 @@ class SessionManager:
                 {"role": "system", "content": f"**GLOBAL POLICY**: {agent_sys.global_policy}\n"},
                 {"role": "system", "content": system_prompt},
             ]
+            _emit_init(
+                "system_message",
+                {
+                    "content": session.initial_history[0]["content"],
+                    "category": "Global policy",
+                },
+            )
+            _emit_init(
+                "system_message",
+                {
+                    "content": session.initial_history[1]["content"],
+                    "category": "Agent prompt",
+                },
+            )
 
             # --- Sandbox ---
             _emit_init("status_change", {"status": "initializing", "reason": "starting_sandbox"})
@@ -676,6 +1503,26 @@ class SessionManager:
             session.sandbox_manager = sandbox_manager
             if log:
                 log.info("Sandbox ready | elapsed: %sms", int((time.monotonic() - sandbox_started) * 1000))
+
+            try:
+                await asyncio.to_thread(
+                    capture_checkpoint,
+                    session=session,
+                    history=session.initial_history,
+                    runner_state={
+                        "schema_version": "caribou.web_runner_checkpoint_state.v1",
+                        "current_agent_name": session.current_agent,
+                        "turns_completed": 0,
+                        "next_turn": 1,
+                        "consecutive_exec_failures": 0,
+                        "consecutive_no_action": 0,
+                        "action_space_past_actions": [],
+                    },
+                )
+            except Exception as checkpoint_exc:
+                session.checkpoint_healthy = False
+                if log:
+                    log.warning("Baseline checkpoint failed: %s", checkpoint_exc)
 
             session.status = SessionStatus.idle
             _emit_init("status_change", {"status": "idle", "reason": "ready"})

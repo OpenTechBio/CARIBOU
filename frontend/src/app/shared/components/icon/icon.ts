@@ -81,6 +81,7 @@ const ICONS: Record<string, IconDef> = {
 
   // --- Misc actions ---
   'copy-plus':  { body: `<line x1="15" x2="15" y1="12" y2="18"/><line x1="12" x2="18" y1="15" y2="15"/><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>` },
+  'git-fork':   { body: `<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a6 6 0 0 1-6 6"/><path d="M6 9a6 6 0 0 0 6 6"/>` },
   'link':       { body: `<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>` },
   'external-link': { body: `<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/>` },
   'clock':      { body: `<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>` },

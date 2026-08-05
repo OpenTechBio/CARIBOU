@@ -13,6 +13,7 @@
 }
 
 .settings-body { display: flex; flex-direction: column; gap: 1.5rem; }
+.local-preferences { margin-bottom: 1.5rem; }
 
 .card {
   background: var(--bg);
@@ -202,3 +203,38 @@
 }
 
 .loading { color: var(--text-muted); font-size: 0.9rem; }
+
+.developer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+
+  input { position: absolute; opacity: 0; pointer-events: none; }
+  strong { display: block; color: var(--text); font-size: 0.84rem; }
+  small { display: block; color: var(--text-muted); font-size: 0.74rem; }
+
+  .toggle-track {
+    width: 36px;
+    height: 20px;
+    padding: 2px;
+    flex-shrink: 0;
+    background: var(--border);
+    border-radius: 999px;
+    transition: background 0.15s;
+  }
+
+  .toggle-thumb {
+    display: block;
+    width: 16px;
+    height: 16px;
+    background: var(--bg);
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 20, 40, 0.25);
+    transition: transform 0.15s;
+  }
+
+  input:checked + .toggle-track { background: var(--primary); }
+  input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
+  input:focus-visible + .toggle-track { outline: 2px solid var(--primary); outline-offset: 2px; }
+}

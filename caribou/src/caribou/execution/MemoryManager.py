@@ -275,3 +275,24 @@ class MemoryManager:
             "total_full_history_tokens": breakdown["total_full_history_tokens"],
             "context_breakdown": breakdown,
         }
+
+    def export_checkpoint(self) -> Dict:
+        """Return the complete JSON-safe episodic state required for recovery."""
+        return {
+            "schema_version": "caribou.memory_checkpoint.episodic.v1",
+            "restorable": True,
+            "config": dict(self.config),
+            "full_history": list(self._full_history),
+            "summarized_log": list(self._summarized_log),
+            "pivotal_code": list(self._pivotal_code),
+            "pinned_messages": list(self._pinned_messages),
+        }
+
+    def restore_checkpoint(self, value: Dict) -> None:
+        if value.get("schema_version") != "caribou.memory_checkpoint.episodic.v1":
+            raise ValueError("unsupported episodic memory checkpoint")
+        self.config = dict(value["config"])
+        self._full_history = [dict(item) for item in value["full_history"]]
+        self._summarized_log = [dict(item) for item in value["summarized_log"]]
+        self._pivotal_code = [dict(item) for item in value["pivotal_code"]]
+        self._pinned_messages = [dict(item) for item in value["pinned_messages"]]
