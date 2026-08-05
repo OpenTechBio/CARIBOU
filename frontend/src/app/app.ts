@@ -1,6 +1,7 @@
-import { Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { Component, OnInit, inject } from '@angular/core';
+import { Router, RouterOutlet } from '@angular/router';
 import { ToastHostComponent } from './shared/components/toast-host/toast-host';
+import { requestedSessionId } from './core/utils/app-navigation';
 
 @Component({
   selector: 'app-root',
@@ -12,4 +13,13 @@ import { ToastHostComponent } from './shared/components/toast-host/toast-host';
   `,
   styles: [':host { display: block; height: 100%; }']
 })
-export class App {}
+export class App implements OnInit {
+  private router = inject(Router);
+
+  ngOnInit(): void {
+    const sessionId = requestedSessionId();
+    if (sessionId) {
+      void this.router.navigate(['/session', sessionId], { replaceUrl: true });
+    }
+  }
+}

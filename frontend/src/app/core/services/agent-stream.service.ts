@@ -4,7 +4,8 @@ import {
   AgentEvent, AgentEventType, AgentEventEnvelope,
   TokenEventData, MessageCompleteData, AgentSwitchData,
   CodeSubmittedData, CodeResultData, ArtifactEventData,
-  StatusChangeData, ErrorData
+  StatusChangeData, ErrorData, RecoveryProgressData, RecoveryCompletedData,
+  SystemMessageData
 } from '../models/events.model';
 import { SessionService } from './session.service';
 import { SessionStatus } from '../models/session.model';
@@ -48,6 +49,9 @@ export class AgentStreamService implements OnDestroy {
   readonly codeResult$ = this.ofType<CodeResultData>('code_result');
   readonly artifacts$ = this.ofType<ArtifactEventData>('artifact');
   readonly statusChanges$ = this.ofType<StatusChangeData>('status_change');
+  readonly recoveryProgress$ = this.ofType<RecoveryProgressData>('recovery_progress');
+  readonly recoveryCompleted$ = this.ofType<RecoveryCompletedData>('recovery_completed');
+  readonly systemMessages$ = this.ofType<SystemMessageData>('system_message');
   readonly errors$ = this.ofType<ErrorData>('error');
 
   // Current streaming state
@@ -221,6 +225,35 @@ export class AgentStreamService implements OnDestroy {
         const session = this.sessionSvc.currentSession();
         if (session) {
           this.sessionSvc.updateLocal({ ...session, status: d.status as SessionStatus });
+        }
+        break;
+      }
+      case 'recovery_progress': {
+        const d = event.data as RecoveryProgressData;
+        const session = this.sessionSvc.currentSession();
+        if (session) {
+          this.sessionSvc.updateLocal({
+            ...session,
+            recovery_phase: d.phase,
+            recovery_detail: d.detail,
+            recovery_step: d.step,
+            recovery_total_steps: d.total_steps,
+            recovery_substep: d.substep,
+            recovery_substep_total: d.substep_total,
+          });
+        }
+        break;
+      }
+      case 'recovery_completed': {
+        const d = event.data as RecoveryCompletedData;
+        const session = this.sessionSvc.currentSession();
+        if (session) {
+          this.sessionSvc.updateLocal({
+            ...session,
+            recovery_status: d.accepted_partial ? 'accepted_partial' : 'recovered',
+            recovery_phase: 'completed',
+            recovery_step: session.recovery_total_steps,
+          });
         }
         break;
       }

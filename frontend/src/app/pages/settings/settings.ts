@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { ConfigService } from '../../core/services/config.service';
+import { PreferencesService } from '../../core/services/preferences.service';
 import { OllamaModelsResponse } from '../../core/models/session.model';
 import { IconComponent } from '../../shared/components/icon/icon';
 
@@ -28,6 +29,7 @@ export class SettingsComponent implements OnInit {
   private http = inject(HttpClient);
   private router = inject(Router);
   configSvc = inject(ConfigService);
+  prefsSvc = inject(PreferencesService);
 
   settings = signal<ServerSettings | null>(null);
   ollamaModels = signal<OllamaModelsResponse | null>(null);

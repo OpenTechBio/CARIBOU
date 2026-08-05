@@ -7,14 +7,17 @@ import { SessionService } from '../../core/services/session.service';
 import { ConfigService } from '../../core/services/config.service';
 import { DatasetService } from '../../core/services/dataset.service';
 import { ToastService } from '../../core/services/toast.service';
-import { Session, SessionCreateRequest, Dataset } from '../../core/models/session.model';
+import {
+  Session, SessionCreateRequest, SessionForkRequest, Dataset
+} from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
+import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
 
 type DatasetSource = 'existing' | 'upload' | 'hpc';
 type SortKey = 'newest' | 'oldest' | 'status' | 'turns';
-type StatusFilter = 'all' | 'running' | 'idle' | 'stopped' | 'error' | 'initializing';
+type StatusFilter = 'all' | 'running' | 'idle' | 'stopped' | 'error' | 'initializing' | 'recovering';
 
 const DEFAULT_AGENT_SYSTEM = 'caribou_fully_connected_v2';
 
@@ -103,6 +106,16 @@ export class DashboardComponent implements OnInit {
   hpcValidating = signal(false);
   startingOllama = signal(false);
   ollamaStartError = signal<string | null>(null);
+  forkSource = signal<Session | null>(null);
+  forkSubmitting = signal(false);
+  forkError = signal<string | null>(null);
+  forkForm: SessionForkRequest = {
+    name: '',
+    recovery_mode: 'smart',
+    target_mode: 'interactive',
+    additional_turns: 20,
+    acknowledge_replay_risk: false,
+  };
 
   // Preset flow
   presets = PRESETS;
@@ -121,6 +134,7 @@ export class DashboardComponent implements OnInit {
   }
 
   form: SessionCreateRequest = {
+    name: '',
     mode: 'interactive',
     run_mode: 'full_system',
     agent_system: '',
@@ -165,6 +179,7 @@ export class DashboardComponent implements OnInit {
       items = items.filter(
         (s) =>
           s.id.toLowerCase().includes(q) ||
+          s.name.toLowerCase().includes(q) ||
           s.agent_system.toLowerCase().includes(q) ||
           s.llm_backend.toLowerCase().includes(q) ||
           (s.resolved_model?.model ?? '').toLowerCase().includes(q) ||
@@ -196,6 +211,7 @@ export class DashboardComponent implements OnInit {
       stopped: 0,
       error: 0,
       initializing: 0,
+      recovering: 0,
     };
     for (const s of this.sessionSvc.sessions()) {
       counts.all++;
@@ -268,6 +284,9 @@ export class DashboardComponent implements OnInit {
   }
 
   private validateForm(): string | null {
+    if (!this.form.name?.trim()) {
+      return 'Enter a session name.';
+    }
     if (this.form.llm_backend === 'ollama') {
       const ollama = this.configSvc.ollamaModels();
       if (ollama?.status === 'no_models') {
@@ -308,6 +327,7 @@ export class DashboardComponent implements OnInit {
     }
     const request: SessionCreateRequest = {
       ...this.form,
+      name: this.form.name?.trim(),
       max_turns: this.form.mode === 'auto' ? this.form.max_turns : undefined,
     };
     this.creating.set(true);
@@ -416,26 +436,79 @@ export class DashboardComponent implements OnInit {
 
   duplicateSession(s: Session, event: Event): void {
     event.stopPropagation();
-    this.applyDefaults();
-    this.form.agent_system = s.agent_system;
-    this.form.llm_backend = s.llm_backend;
-    this.form.model_name = s.resolved_model?.model ?? '';
-    this.form.sandbox_type = s.sandbox_type;
-    this.form.mode = s.mode;
-    this.form.run_mode = s.run_mode;
-    this.form.dataset_path = s.dataset_path;
-    this.form.max_turns = s.max_turns ?? 20;
-    this.form.initial_prompt = '';
-    // Skip preset step; go straight to confirm form
-    this.wizardStep.set('form');
-    this.selectedPreset.set('custom');
-    this.showCreateDialog.set(true);
-    this.toasts.show({
-      kind: 'info',
-      title: 'Copied session config',
-      detail: 'Edit fields and confirm to create a new session with the same setup.',
-      ttlMs: 4500,
+    this.forkError.set(null);
+    this.forkForm = {
+      name: `${s.name || s.id.slice(0, 8)} fork`,
+      llm_backend: s.llm_backend,
+      model_name: s.llm_backend === 'openrouter' ? s.resolved_model?.model ?? '' : undefined,
+      ollama_model: s.llm_backend === 'ollama' ? s.resolved_model?.model ?? '' : undefined,
+      recovery_mode: 'smart',
+      target_mode: s.mode === 'auto' ? 'interactive' : s.mode,
+      additional_turns: 20,
+      acknowledge_replay_risk: false,
+    };
+    this.forkSource.set(s);
+    if (s.llm_backend === 'openrouter' && !this.configSvc.openRouterCatalogue()) {
+      this.loadOpenRouterModels();
+    }
+  }
+
+  cancelFork(): void {
+    if (!this.forkSubmitting()) this.forkSource.set(null);
+  }
+
+  submitFork(): void {
+    const source = this.forkSource();
+    if (!source || !this.forkForm.name.trim()) {
+      this.forkError.set('A name is required for the fork.');
+      return;
+    }
+    if (this.forkForm.recovery_mode === 'literal_replay' && !this.forkForm.acknowledge_replay_risk) {
+      this.forkError.set('Acknowledge the literal replay side-effect warning.');
+      return;
+    }
+    if (this.forkForm.target_mode === 'auto' && !(this.forkForm.additional_turns! > 0)) {
+      this.forkError.set('Enter an additional-turn budget for Auto mode.');
+      return;
+    }
+    const forkTab = reserveNewTab();
+    this.forkSubmitting.set(true);
+    this.forkError.set(null);
+    this.sessionSvc.forkSession(source.id, { ...this.forkForm, name: this.forkForm.name.trim() }).subscribe({
+      next: child => {
+        this.forkSubmitting.set(false);
+        this.forkSource.set(null);
+        if (!navigateTabToSession(forkTab, child.id)) {
+          this.toasts.show({
+            kind: 'warn',
+            title: 'New tab blocked',
+            detail: 'The fork was opened in this tab instead.',
+            ttlMs: 6000,
+          });
+          void this.router.navigate(['/session', child.id]);
+        }
+      },
+      error: err => {
+        forkTab?.close();
+        this.forkSubmitting.set(false);
+        this.forkError.set(err?.error?.detail ?? 'Unable to fork this session.');
+      },
     });
+  }
+
+  onForkBackendChange(backend: string): void {
+    this.forkForm.llm_backend = backend;
+    this.forkForm.model_name = undefined;
+    this.forkForm.ollama_model = undefined;
+    if (backend === 'openrouter') {
+      this.configSvc.getOpenRouterModels().subscribe(catalogue => {
+        this.forkForm.model_name = catalogue.models[0]?.canonical_slug;
+      });
+    } else if (backend === 'ollama') {
+      this.configSvc.getOllamaModels().subscribe(result => {
+        this.forkForm.ollama_model = result.default_model || result.models[0];
+      });
+    }
   }
 
   toggleSelectMode(): void {

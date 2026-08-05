@@ -171,3 +171,37 @@ def test_interactive_delegation_waits_for_user_before_next_agent_turn(tmp_path: 
     stop_flag.set()
     thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def test_turn_checkpoint_contains_complete_failed_action_ledger(tmp_path: Path, monkeypatch):
+    rag_stub = ModuleType("caribou.execution.rag_client")
+    rag_stub.get_rag_client = lambda _console: None
+    monkeypatch.setitem(__import__("sys").modules, "caribou.execution.rag_client", rag_stub)
+
+    class FailingSandbox:
+        def exec_code(self, _code, timeout):
+            return {"status": "error", "stdout": "", "stderr": "expected failure"}
+
+    analyst = FakeAgent("analyst")
+    checkpoints = []
+    run_session_sync(
+        session_id="session-ledger",
+        agent_system=FakeAgentSystem({"analyst": analyst}),
+        driver_agent=analyst,
+        analysis_context="analysis",
+        llm_client=FakeLLM(["```python\nraise ValueError('boom')\n```"]),
+        sandbox_manager=FailingSandbox(),
+        history=[{"role": "user", "content": "start"}],
+        is_auto=True,
+        max_turns=1,
+        model_name="fake",
+        output_dir=tmp_path,
+        emit=lambda _event: None,
+        stop_flag=threading.Event(),
+        checkpoint_callback=lambda history, state: checkpoints.append((history, state)),
+    )
+
+    ledger = checkpoints[-1][1]["action_ledger"]
+    assert ledger[0]["source"] == "raise ValueError('boom')"
+    assert ledger[0]["recorded_result"]["success"] is False
+    assert ledger[0]["recorded_result"]["stderr"] == "expected failure"

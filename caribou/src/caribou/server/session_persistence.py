@@ -11,6 +11,7 @@ import json
 import logging
 import queue
 import threading
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict
@@ -20,6 +21,8 @@ from caribou.server.models import (
     CodeEventRecord,
     MessageRecord,
     ResolvedModelInfo,
+    RecoveryMode,
+    RecoveryStatus,
     SessionCreateRequest,
     SessionStatus,
 )
@@ -53,8 +56,10 @@ def save_session(
         path = session_file(session.id, sessions_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
+            "schema_version": "caribou.web_session.v2",
             "id": session.id,
-            "config": session.config.model_dump(),
+            "name": session.name,
+            "config": session.config.model_dump(mode="json"),
             "resolved_model": (
                 session.resolved_model.model_dump()
                 if session.resolved_model is not None
@@ -69,10 +74,36 @@ def save_session(
             "artifacts": [a.model_dump() for a in session.artifacts],
             "code_events": [c.model_dump() for c in session.code_events],
             "events": session.events,
+            "parent_session_id": session.parent_session_id,
+            "forked_from_checkpoint_id": session.forked_from_checkpoint_id,
+            "attempt_number": session.attempt_number,
+            "attempts": session.attempts,
+            "recovery_mode": (
+                session.recovery_mode.value if session.recovery_mode is not None else None
+            ),
+            "recovery_status": session.recovery_status.value,
+            "recovery_detail": session.recovery_detail,
+            "recovery_phase": session.recovery_phase,
+            "recovery_step": session.recovery_step,
+            "recovery_total_steps": session.recovery_total_steps,
+            "recovery_substep": session.recovery_substep,
+            "recovery_substep_total": session.recovery_substep_total,
+            "checkpoint_id": session.checkpoint_id,
+            "checkpoint_turn": session.checkpoint_turn,
+            "checkpoint_healthy": session.checkpoint_healthy,
         }
         if is_deleted(session.id):
             return
-        path.write_text(json.dumps(data, indent=2, default=str))
+        temporary = path.with_suffix(".json.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, default=str)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if is_deleted(session.id):
+            temporary.unlink(missing_ok=True)
+            return
+        os.replace(temporary, path)
     except Exception as exc:
         # Persistence failure must never crash the server, but do log it.
         _log.warning("Failed to persist session %s: %s", session.id, exc)
@@ -97,12 +128,14 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
             )
             raw_status = data.get("status", "stopped")
             # Sessions that were mid-run when the server died are now stopped
-            if raw_status in ("running", "initializing"):
+            interrupted_recovery = raw_status == "recovering"
+            if raw_status in ("running", "initializing", "recovering"):
                 raw_status = "stopped"
             status = SessionStatus(raw_status)
 
             session = _Session(
                 id=data["id"],
+                name=data.get("name") or data["id"][:8],
                 config=config,
                 status=status,
                 current_agent=data.get("current_agent", ""),
@@ -120,6 +153,33 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 updated_at=datetime.fromisoformat(data["updated_at"]),
                 model_name=(resolved_model.model if resolved_model is not None else ""),
                 resolved_model=resolved_model,
+                parent_session_id=data.get("parent_session_id"),
+                forked_from_checkpoint_id=data.get("forked_from_checkpoint_id"),
+                attempt_number=max(1, int(data.get("attempt_number", 1))),
+                recovery_mode=(
+                    RecoveryMode(data["recovery_mode"])
+                    if data.get("recovery_mode")
+                    else None
+                ),
+                recovery_status=(
+                    RecoveryStatus.failed
+                    if interrupted_recovery
+                    else RecoveryStatus(data.get("recovery_status", "none"))
+                ),
+                recovery_detail=(
+                    "Recovery was interrupted by a server restart. Retry either recovery mode."
+                    if interrupted_recovery
+                    else data.get("recovery_detail")
+                ),
+                recovery_phase=data.get("recovery_phase"),
+                recovery_step=int(data.get("recovery_step", 0) or 0),
+                recovery_total_steps=int(data.get("recovery_total_steps", 0) or 0),
+                recovery_substep=data.get("recovery_substep"),
+                recovery_substep_total=data.get("recovery_substep_total"),
+                checkpoint_id=data.get("checkpoint_id"),
+                checkpoint_turn=data.get("checkpoint_turn"),
+                checkpoint_healthy=bool(data.get("checkpoint_healthy", False)),
+                attempts=list(data.get("attempts", [])),
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):
