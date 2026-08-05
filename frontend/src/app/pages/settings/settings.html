@@ -11,6 +11,28 @@
     <p class="loading">Loading…</p>
   }
 
+  <div class="settings-body local-preferences">
+    <section class="card">
+      <h2>Developer</h2>
+      <p class="section-desc">
+        Developer mode exposes internal system prompts, runner guidance, retrieved context, and
+        action-state messages in session chat. It is stored only in this browser.
+      </p>
+      <label class="developer-toggle">
+        <input
+          type="checkbox"
+          [checked]="prefsSvc.prefs().developerMode"
+          (change)="prefsSvc.patch({ developerMode: $any($event.target).checked })"
+        />
+        <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+        <span>
+          <strong>Show system messages</strong>
+          <small>Useful for debugging agent context and recovery behavior.</small>
+        </span>
+      </label>
+    </section>
+  </div>
+
   @if (settings(); as s) {
     <div class="settings-body">
       <!-- Storage paths -->

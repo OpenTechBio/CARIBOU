@@ -1,4 +1,4 @@
-export type SessionStatus = 'initializing' | 'idle' | 'running' | 'stopped' | 'error';
+export type SessionStatus = 'initializing' | 'idle' | 'running' | 'stopped' | 'error' | 'recovering';
 export type SessionMode = 'interactive' | 'auto';
 export type RunMode = 'full_system' | 'single_agent' | 'one_shot';
 export type SandboxType = 'singularity' | 'docker' | 'offline';
@@ -15,6 +15,7 @@ export interface MemoryConfig {
 
 export interface Session {
   id: string;
+  name: string;
   status: SessionStatus;
   mode: SessionMode;
   run_mode: RunMode;
@@ -31,6 +32,43 @@ export interface Session {
   artifact_count: number;
   message_count: number;
   memory: MemoryConfig | null;
+  parent_session_id: string | null;
+  forked_from_checkpoint_id: string | null;
+  attempt_number: number;
+  recovery_mode: RecoveryMode | null;
+  recovery_status: RecoveryStatus;
+  recovery_detail: string | null;
+  recovery_phase: string | null;
+  recovery_step: number;
+  recovery_total_steps: number;
+  recovery_substep: number | null;
+  recovery_substep_total: number | null;
+  checkpoint_turn: number | null;
+  checkpoint_healthy: boolean;
+}
+
+export type RecoveryMode = 'smart' | 'literal_replay';
+export type RecoveryStatus =
+  | 'none'
+  | 'awaiting_checkpoint'
+  | 'recovering'
+  | 'recovered'
+  | 'partial'
+  | 'failed'
+  | 'accepted_partial';
+
+export interface SessionResumeRequest {
+  recovery_mode: RecoveryMode;
+  target_mode?: SessionMode;
+  additional_turns?: number;
+  acknowledge_replay_risk?: boolean;
+}
+
+export interface SessionForkRequest extends SessionResumeRequest {
+  name: string;
+  llm_backend?: string;
+  model_name?: string;
+  ollama_model?: string;
 }
 
 export interface ResolvedModelInfo {
@@ -40,6 +78,7 @@ export interface ResolvedModelInfo {
 }
 
 export interface SessionCreateRequest {
+  name?: string;
   mode: SessionMode;
   run_mode: RunMode;
   agent_system: string;

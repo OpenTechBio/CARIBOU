@@ -91,7 +91,7 @@ async def get_status() -> ServerStatus:
             [
                 s
                 for s in session_manager.list_sessions()
-                if s.status.value in ("initializing", "idle", "running")
+                if s.status.value in ("initializing", "idle", "running", "recovering")
             ]
         ),
     )

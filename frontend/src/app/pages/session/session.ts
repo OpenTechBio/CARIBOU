@@ -3,24 +3,30 @@ import {
   ElementRef, AfterViewChecked, computed, HostListener, effect
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { Subscription, interval } from 'rxjs';
 import { SessionService } from '../../core/services/session.service';
+import { ConfigService } from '../../core/services/config.service';
 import { AgentStreamService } from '../../core/services/agent-stream.service';
 import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
-import { Message, Artifact, MemoryState } from '../../core/models/session.model';
+import {
+  Message, Artifact, MemoryState, RecoveryMode, SessionForkRequest, SessionResumeRequest
+} from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
-  CodeResultData, ErrorData, StatusChangeData
+  CodeResultData, ErrorData, StatusChangeData, RecoveryCompletedData,
+  SystemMessageData
 } from '../../core/models/events.model';
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
+import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
 
 export interface ErrorRecord {
   code: string;
@@ -38,12 +44,13 @@ export interface StatusEntry {
 }
 
 interface ChatItem {
-  kind: 'message' | 'delegation' | 'code' | 'error';
+  kind: 'message' | 'delegation' | 'code' | 'error' | 'recovery';
   turn?: number;
   message?: Message;
   delegation?: { from: string; to: string; command: string };
   codeEvent?: { submitted: CodeSubmittedData; result?: CodeResultData };
   error?: ErrorRecord;
+  recovery?: RecoveryCompletedData & { id: string; timestamp: string };
 }
 
 const COMPACT_AFTER_ITEMS = 40;
@@ -74,6 +81,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   sessionSvc = inject(SessionService);
+  configSvc = inject(ConfigService);
   stream = inject(AgentStreamService);
   private toasts = inject(ToastService);
   private prefsSvc = inject(PreferencesService);
@@ -101,6 +109,16 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   reconnectCountdownSec = signal(0);
   showShortcutHelp = signal(false);
   showContext = signal(false);
+  recoveryDialog = signal<'resume' | 'fork' | 'retry' | null>(null);
+  recoverySubmitting = signal(false);
+  recoveryError = signal<string | null>(null);
+  recoveryForm: SessionForkRequest = {
+    name: '',
+    recovery_mode: 'smart',
+    target_mode: 'interactive',
+    additional_turns: 20,
+    acknowledge_replay_risk: false,
+  };
   autoScrollEnabled = signal(true);
   showJumpToLatest = signal(false);
   sessionElapsedSec = signal(0);
@@ -124,6 +142,23 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isStopped = computed(() => this.status() === 'stopped');
   isError = computed(() => this.status() === 'error');
   isInitializing = computed(() => this.status() === 'initializing');
+  isRecovering = computed(() => this.status() === 'recovering');
+  developerMode = computed(() => this.prefsSvc.prefs().developerMode);
+  recoveryStages = [
+    'Safe checkpoint',
+    'Previous runtime',
+    'Agent & model',
+    'Fresh sandbox',
+    'History & memory',
+    'Dataset setup',
+    'Environment rebuild',
+    'Start session',
+  ];
+  recoveryPercent = computed(() => {
+    const s = this.session();
+    if (!s?.recovery_total_steps) return 4;
+    return Math.max(4, Math.min(100, (s.recovery_step / s.recovery_total_steps) * 100));
+  });
   isThinking = computed(() => this.isRunning() && !this.stream.isStreaming() && !this.awaitingCodeResult());
   isInitialInteractiveTurn = computed(() =>
     this.session()?.mode === 'interactive' && (this.session()?.current_turn ?? 0) <= 1
@@ -138,9 +173,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     const errs = this.errorLog();
     return errs.length ? errs[errs.length - 1] : null;
   });
-  runState = computed<'idle' | 'thinking' | 'generating' | 'executing' | 'stopped' | 'error' | 'initializing'>(() => {
+  runState = computed<'idle' | 'thinking' | 'generating' | 'executing' | 'stopped' | 'error' | 'initializing' | 'recovering'>(() => {
     if (this.isError()) return 'error';
     if (this.isInitializing()) return 'initializing';
+    if (this.isRecovering()) return 'recovering';
     if (this.status() === 'stopped') return 'stopped';
     if (this.awaitingCodeResult()) return 'executing';
     if (this.stream.isStreaming()) return 'generating';
@@ -153,32 +189,50 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       case 'thinking':     return 'Agent thinking';
       case 'executing':    return 'Running code';
       case 'initializing': return 'Initializing';
+      case 'recovering':   return 'Recovering';
       case 'stopped':      return 'Stopped';
       case 'error':        return 'Errored';
       default:             return 'Idle';
     }
   });
+  displayChatItems = computed(() =>
+    this.chatItems().filter(item =>
+      this.developerMode() || item.kind !== 'message' || item.message?.role !== 'system'
+    )
+  );
+  hasRecoveryMilestone = computed(() =>
+    this.chatItems().some(item => item.kind === 'recovery')
+  );
   hiddenChatItemCount = computed(() => {
-    const count = this.chatItems().length;
+    const count = this.displayChatItems().length;
     return !this.olderConversationExpanded() && count > COMPACT_AFTER_ITEMS
       ? count - VISIBLE_RECENT_ITEMS
       : 0;
   });
   visibleChatItems = computed(() => {
-    const items = this.chatItems();
+    const items = this.displayChatItems();
     const hidden = this.hiddenChatItemCount();
     return hidden ? items.slice(hidden) : items;
   });
   /** Turn -> chatItem index (first item at that turn). Used for jump-to-turn. */
   turnAnchors = computed(() => {
-    const anchors: { turn: number; index: number }[] = [];
-    const items = this.chatItems();
+    const anchors: { id: string; turn: number; label: string; selector: string }[] = [];
+    const items = this.displayChatItems();
     const seen = new Set<number>();
-    items.forEach((item, i) => {
+    items.forEach(item => {
       const turn = item.turn ?? item.message?.turn ?? 0;
+      if (item.kind === 'recovery' && item.recovery) {
+        anchors.push({
+          id: item.recovery.id,
+          turn,
+          label: `Recovery · ${this.recoveryModeLabel(item.recovery.mode)}`,
+          selector: `[data-recovery-id="${item.recovery.id}"]`,
+        });
+        return;
+      }
       if (turn && !seen.has(turn)) {
         seen.add(turn);
-        anchors.push({ turn, index: i });
+        anchors.push({ id: `turn-${turn}`, turn, label: `Turn ${turn}`, selector: `[data-turn="${turn}"]` });
       }
     });
     return anchors;
@@ -284,7 +338,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
           const prefix = status === 'stopped' ? '(done)' : '(error)';
           document.title = `${prefix} ${this.originalTitle}`;
         }
-      } else if (status === 'running' || status === 'initializing' || status === 'idle') {
+      } else if (status === 'running' || status === 'initializing' || status === 'recovering' || status === 'idle') {
         this.lastCompletedStatus = null;
         document.title = this.originalTitle;
       }
@@ -320,11 +374,20 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     this.sessionSvc.getSession(id).subscribe({
       next: () => {
+        // Validate the REST resource before opening a socket. Otherwise a stale
+        // deep link briefly enters the WebSocket "expired" state before routing
+        // back to the dashboard.
+        this.stream.connect(id);
         this.sessionSvc.getMessages(id).subscribe(msgs => {
           // Only replace chat when server has more/newer messages than cache.
           if (msgs.length >= this.chatItems().filter(c => c.kind === 'message').length) {
             const items: ChatItem[] = msgs.map(m => ({ kind: 'message' as const, message: m, turn: m.turn }));
-            this.chatItems.set(items);
+            const eventItems = this.chatItems().filter(item => item.kind !== 'message');
+            this.chatItems.set(
+              [...items, ...eventItems].sort(
+                (a, b) => (a.turn ?? a.message?.turn ?? 0) - (b.turn ?? b.message?.turn ?? 0)
+              )
+            );
             this.shouldScrollToBottom = true;
           }
         });
@@ -332,7 +395,19 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.sessionStartTs = Date.now();
         this.fetchMemoryState(id);
       },
-      error: () => {
+      error: (error: HttpErrorResponse) => {
+        if (error.status === 404) {
+          this.stream.disconnect();
+          this.sessionSvc.clearCurrentSession();
+          this.toasts.show({
+            kind: 'warn',
+            title: 'Session not found',
+            detail: 'That session no longer exists. Returning to the dashboard.',
+            ttlMs: 6000,
+          });
+          void this.router.navigate(['/'], { replaceUrl: true });
+          return;
+        }
         this.toasts.show({
           kind: 'error',
           title: 'Failed to load session',
@@ -342,11 +417,11 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       },
     });
 
-    this.stream.connect(id);
+    this.configSvc.loadAll().subscribe();
 
     // Sub-second timer so elapsed/ETA update live.
     this.subs.add(interval(1000).subscribe(() => {
-      if (this.sessionStartTs && (this.isRunning() || this.isInitializing())) {
+      if (this.sessionStartTs && (this.isRunning() || this.isInitializing() || this.isRecovering())) {
         this.sessionElapsedSec.set(Math.floor((Date.now() - this.sessionStartTs) / 1000));
       }
       const at = this.stream.nextRetryAt();
@@ -355,6 +430,9 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       } else {
         this.reconnectCountdownSec.set(0);
       }
+    }));
+    this.subs.add(interval(2000).subscribe(() => {
+      if (this.isRecovering()) this.sessionSvc.getSession(id).subscribe();
     }));
 
     this.subs.add(this.stream.messageComplete$.subscribe(ev => {
@@ -456,6 +534,39 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         }
         return [...log, { status: d.status, reason: d.reason ?? null, timestamp: ev.timestamp, count: 1 }];
       });
+    }));
+
+    this.subs.add(this.stream.systemMessages$.subscribe(ev => {
+      const d = ev.data as SystemMessageData;
+      this.upsertMessage({
+        id: d.id,
+        session_id: ev.session_id,
+        turn: ev.turn,
+        role: 'system',
+        agent_name: d.category || 'System',
+        content: d.content,
+        timestamp: ev.timestamp,
+        is_delegation: false,
+      });
+    }));
+
+    this.subs.add(this.stream.recoveryCompleted$.subscribe(ev => {
+      const d = ev.data as RecoveryCompletedData;
+      const id = `recovery-${ev.timestamp.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      this.chatItems.update(items => {
+        if (items.some(item => item.kind === 'recovery' && item.recovery?.id === id)) {
+          return items;
+        }
+        return [
+          ...items,
+          {
+            kind: 'recovery',
+            turn: ev.turn,
+            recovery: { ...d, id, timestamp: ev.timestamp },
+          },
+        ];
+      });
+      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
     }));
   }
 
@@ -561,6 +672,132 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.stream.stop();
   }
 
+  openResume(): void {
+    const s = this.session();
+    if (!s || s.status !== 'stopped') return;
+    this.recoveryForm = {
+      name: s.name,
+      recovery_mode: 'smart',
+      target_mode: s.mode === 'auto' ? 'interactive' : s.mode,
+      additional_turns: 20,
+      acknowledge_replay_risk: false,
+    };
+    this.recoveryError.set(null);
+    this.recoveryDialog.set('resume');
+  }
+
+  openFork(): void {
+    const s = this.session();
+    if (!s) return;
+    this.recoveryForm = {
+      name: `${s.name || s.id.slice(0, 8)} fork`,
+      llm_backend: s.llm_backend,
+      model_name: s.llm_backend === 'openrouter' ? s.resolved_model?.model ?? '' : undefined,
+      ollama_model: s.llm_backend === 'ollama' ? s.resolved_model?.model ?? '' : undefined,
+      recovery_mode: 'smart',
+      target_mode: s.mode === 'auto' ? 'interactive' : s.mode,
+      additional_turns: 20,
+      acknowledge_replay_risk: false,
+    };
+    if (s.llm_backend === 'openrouter' && !this.configSvc.openRouterCatalogue()) {
+      this.configSvc.getOpenRouterModels().subscribe();
+    }
+    this.recoveryError.set(null);
+    this.recoveryDialog.set('fork');
+  }
+
+  closeRecoveryDialog(): void {
+    if (!this.recoverySubmitting()) this.recoveryDialog.set(null);
+  }
+
+  submitRecovery(): void {
+    const s = this.session();
+    const kind = this.recoveryDialog();
+    if (!s || !kind) return;
+    if (kind === 'fork' && !this.recoveryForm.name.trim()) {
+      this.recoveryError.set('A name is required for the fork.');
+      return;
+    }
+    if (this.recoveryForm.recovery_mode === 'literal_replay' && !this.recoveryForm.acknowledge_replay_risk) {
+      this.recoveryError.set('Acknowledge that literal replay can repeat external side effects.');
+      return;
+    }
+    if (this.recoveryForm.target_mode === 'auto' && !(this.recoveryForm.additional_turns! > 0)) {
+      this.recoveryError.set('Enter an additional-turn budget for Auto mode.');
+      return;
+    }
+    const forkTab = kind === 'fork' ? reserveNewTab() : null;
+    this.recoverySubmitting.set(true);
+    const request: SessionResumeRequest = {
+      recovery_mode: this.recoveryForm.recovery_mode,
+      target_mode: this.recoveryForm.target_mode,
+      additional_turns: this.recoveryForm.target_mode === 'auto' ? this.recoveryForm.additional_turns : undefined,
+      acknowledge_replay_risk: this.recoveryForm.acknowledge_replay_risk,
+    };
+    const operation = kind === 'resume'
+      ? this.sessionSvc.resumeSession(s.id, request)
+      : kind === 'retry'
+        ? this.sessionSvc.retryRecovery(s.id, request)
+        : this.sessionSvc.forkSession(s.id, { ...request, name: this.recoveryForm.name.trim(), llm_backend: this.recoveryForm.llm_backend, model_name: this.recoveryForm.model_name, ollama_model: this.recoveryForm.ollama_model });
+    operation.subscribe({
+      next: result => {
+        this.recoverySubmitting.set(false);
+        this.recoveryDialog.set(null);
+        if (kind === 'fork') {
+          if (!navigateTabToSession(forkTab, result.id)) {
+            this.toasts.show({
+              kind: 'warn',
+              title: 'New tab blocked',
+              detail: 'The fork was opened in this tab instead.',
+              ttlMs: 6000,
+            });
+            void this.router.navigate(['/session', result.id]);
+          }
+        } else {
+          this.stream.connect(s.id);
+        }
+      },
+      error: err => {
+        forkTab?.close();
+        this.recoverySubmitting.set(false);
+        this.recoveryError.set(err?.error?.detail ?? `Unable to ${kind} this session.`);
+      },
+    });
+  }
+
+  retryRecovery(mode: RecoveryMode): void {
+    const s = this.session();
+    if (!s) return;
+    this.recoveryForm.recovery_mode = mode;
+    this.recoveryForm.acknowledge_replay_risk = mode !== 'literal_replay';
+    this.recoveryError.set(null);
+    this.recoveryDialog.set('retry');
+  }
+
+  onRecoveryBackendChange(backend: string): void {
+    this.recoveryForm.llm_backend = backend;
+    this.recoveryForm.model_name = undefined;
+    this.recoveryForm.ollama_model = undefined;
+    if (backend === 'openrouter') {
+      this.configSvc.getOpenRouterModels().subscribe(catalogue => {
+        this.recoveryForm.model_name = catalogue.models[0]?.canonical_slug;
+      });
+    } else if (backend === 'ollama') {
+      this.configSvc.getOllamaModels().subscribe(result => {
+        this.recoveryForm.ollama_model = result.default_model || result.models[0];
+      });
+    }
+  }
+
+  acceptPartialRecovery(): void {
+    const s = this.session();
+    if (!s) return;
+    this.sessionSvc.acceptPartialRecovery(s.id).subscribe({
+      next: () => this.stream.connect(s.id),
+      error: err => this.recoveryError.set(err?.error?.detail ?? 'Unable to continue partial recovery.'),
+    });
+  }
+
   cancelResponse(): void {
     if (!this.isRunning() || this.session()?.mode !== 'interactive') return;
     this.cancellingResponse.set(true);
@@ -607,13 +844,21 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     return ms >= this.prefsSvc.prefs().slowCodeThresholdMs;
   }
 
-  jumpToTurn(turn: number): void {
-    const el = document.querySelector(`[data-turn="${turn}"]`);
-    if (el) {
+  jumpToAnchor(selector: string): void {
+    this.olderConversationExpanded.set(true);
+    setTimeout(() => {
+      const el = document.querySelector(selector);
+      if (!el) return;
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       this.autoScrollEnabled.set(false);
       this.showJumpToLatest.set(true);
-    }
+    });
+  }
+
+  recoveryModeLabel(mode: string | null | undefined): string {
+    if (mode === 'smart') return 'Smart rebuild';
+    if (mode === 'literal_replay') return 'Literal replay';
+    return 'Best effort';
   }
 
   jumpToLatest(): void {

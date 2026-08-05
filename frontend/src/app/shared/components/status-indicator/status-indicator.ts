@@ -16,6 +16,7 @@ import { SessionStatus } from '../../../core/models/session.model';
       padding: 0.15rem 0.45rem;
       border-radius: 4px;
       &.status-initializing { background: #EAF0F8; color: #31446B; border: 1px solid #C0CEDE; }
+      &.status-recovering   { background: #EAF0F8; color: #31446B; border: 1px solid #C0CEDE; animation: pulse 1.5s ease-in-out infinite; }
       &.status-idle         { background: #EEF6F0; color: #2A5C3A; border: 1px solid #B8DCC4; }
       &.status-running      { background: #FDF6D0; color: #5A4800; border: 1px solid #E0CC80; animation: pulse 1.5s ease-in-out infinite; }
       &.status-stopped      { background: #F2F0EA; color: #6B6555; border: 1px solid #D4CEB8; }
