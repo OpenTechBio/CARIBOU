@@ -14,6 +14,8 @@ from caribou.server.models import (
     EvaluationResult,
     MessageRecord,
     SessionCreateRequest,
+    SessionForkRequest,
+    SessionResumeRequest,
     SessionResponse,
 )
 from caribou.server.session_manager import session_manager
@@ -25,6 +27,52 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 @router.post("", response_model=SessionResponse, status_code=201)
 async def create_session(body: SessionCreateRequest) -> SessionResponse:
     return await session_manager.create_session(body)
+
+
+def _lifecycle_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(404, str(exc).strip("'"))
+    return HTTPException(409, str(exc))
+
+
+@router.post("/{session_id}/resume", response_model=SessionResponse, status_code=202)
+async def resume_session(
+    session_id: str, body: SessionResumeRequest
+) -> SessionResponse:
+    try:
+        return await session_manager.resume_session(session_id, body)
+    except (KeyError, ValueError) as exc:
+        raise _lifecycle_error(exc) from exc
+
+
+@router.post("/{session_id}/fork", response_model=SessionResponse, status_code=202)
+async def fork_session(session_id: str, body: SessionForkRequest) -> SessionResponse:
+    try:
+        return await session_manager.fork_session(session_id, body)
+    except (KeyError, ValueError) as exc:
+        raise _lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{session_id}/recovery/retry", response_model=SessionResponse, status_code=202
+)
+async def retry_recovery(
+    session_id: str, body: SessionResumeRequest
+) -> SessionResponse:
+    try:
+        return await session_manager.retry_recovery(session_id, body)
+    except (KeyError, ValueError) as exc:
+        raise _lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{session_id}/recovery/accept-partial", response_model=SessionResponse
+)
+async def accept_partial_recovery(session_id: str) -> SessionResponse:
+    try:
+        return await session_manager.accept_partial_recovery(session_id)
+    except (KeyError, ValueError) as exc:
+        raise _lifecycle_error(exc) from exc
 
 
 @router.get("", response_model=List[SessionResponse])

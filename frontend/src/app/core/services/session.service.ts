@@ -2,7 +2,8 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 import {
-  Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest
+  Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
+  SessionForkRequest, SessionResumeRequest
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -24,6 +25,30 @@ export class SessionService {
         this.sessions.update(all => [s, ...all]);
         this.currentSession.set(s);
       })
+    );
+  }
+
+  resumeSession(id: string, request: SessionResumeRequest): Observable<Session> {
+    return this.http.post<Session>(`api/sessions/${id}/resume`, request).pipe(
+      tap(s => this.updateLocal(s))
+    );
+  }
+
+  forkSession(id: string, request: SessionForkRequest): Observable<Session> {
+    return this.http.post<Session>(`api/sessions/${id}/fork`, request).pipe(
+      tap(s => this.sessions.update(all => [s, ...all]))
+    );
+  }
+
+  retryRecovery(id: string, request: SessionResumeRequest): Observable<Session> {
+    return this.http.post<Session>(`api/sessions/${id}/recovery/retry`, request).pipe(
+      tap(s => this.updateLocal(s))
+    );
+  }
+
+  acceptPartialRecovery(id: string): Observable<Session> {
+    return this.http.post<Session>(`api/sessions/${id}/recovery/accept-partial`, {}).pipe(
+      tap(s => this.updateLocal(s))
     );
   }
 
@@ -82,5 +107,9 @@ export class SessionService {
   updateLocal(session: Session): void {
     this.currentSession.set(session);
     this.sessions.update(all => all.map(s => s.id === session.id ? session : s));
+  }
+
+  clearCurrentSession(): void {
+    this.currentSession.set(null);
   }
 }

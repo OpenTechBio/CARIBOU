@@ -17,6 +17,9 @@ export type AgentEventType =
   | 'artifact'
   | 'status_change'
   | 'metrics_result'
+  | 'recovery_progress'
+  | 'recovery_completed'
+  | 'system_message'
   | 'error'
   | 'pong';
 
@@ -68,6 +71,32 @@ export interface ErrorData {
   suggested_fix?: string | null;
 }
 
+export interface RecoveryProgressData {
+  phase: string;
+  detail: string;
+  step: number;
+  total_steps: number;
+  substep: number | null;
+  substep_total: number | null;
+  mode: string | null;
+  attempt_number: number;
+}
+
+export interface RecoveryCompletedData {
+  mode: string;
+  attempt_number: number;
+  checkpoint_id: string | null;
+  checkpoint_turn: number | null;
+  detail: string | null;
+  accepted_partial: boolean;
+}
+
+export interface SystemMessageData {
+  id: string;
+  content: string;
+  category: string;
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -76,5 +105,8 @@ export type AgentEvent =
   | AgentEventEnvelope<CodeResultData>
   | AgentEventEnvelope<ArtifactEventData>
   | AgentEventEnvelope<StatusChangeData>
+  | AgentEventEnvelope<RecoveryProgressData>
+  | AgentEventEnvelope<RecoveryCompletedData>
+  | AgentEventEnvelope<SystemMessageData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

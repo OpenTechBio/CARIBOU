@@ -21,6 +21,8 @@ from caribou.server.models import (
     MemoryConfigResponse,
     MessageRecord,
     ResolvedModelInfo,
+    RecoveryMode,
+    RecoveryStatus,
     SessionCreateRequest,
     SessionResponse,
     SessionStatus,
@@ -72,6 +74,7 @@ class _Session:
     user_input_queue: queue.Queue
     created_at: datetime
     updated_at: datetime
+    name: str = ""
     # Set once sandbox + runner are wired up
     sandbox_manager: Any = None
     llm_client: Any = None
@@ -84,6 +87,25 @@ class _Session:
     runner_task: Optional[asyncio.Task] = None
     logger: Any = None
     memory_manager: Any = None
+    parent_session_id: Optional[str] = None
+    forked_from_checkpoint_id: Optional[str] = None
+    attempt_number: int = 1
+    recovery_mode: Optional[RecoveryMode] = None
+    recovery_status: RecoveryStatus = RecoveryStatus.none
+    recovery_detail: Optional[str] = None
+    recovery_phase: Optional[str] = None
+    recovery_step: int = 0
+    recovery_total_steps: int = 0
+    recovery_substep: Optional[int] = None
+    recovery_substep_total: Optional[int] = None
+    checkpoint_id: Optional[str] = None
+    checkpoint_turn: Optional[int] = None
+    checkpoint_healthy: bool = False
+    recovery_task: Optional[asyncio.Task] = None
+    attempts: List[Dict[str, Any]] = field(default_factory=list)
+    resume_history: Optional[List[Dict[str, str]]] = None
+    resume_runner_state: Optional[Dict[str, Any]] = None
+    resume_memory_state: Optional[Dict[str, Any]] = None
 
     def to_response(self) -> SessionResponse:
         memory = None
@@ -111,6 +133,7 @@ class _Session:
             )
         return SessionResponse(
             id=self.id,
+            name=self.name or self.id[:8],
             status=self.status,
             mode=self.config.mode,
             run_mode=self.config.run_mode,
@@ -128,4 +151,17 @@ class _Session:
             message_count=len(self.messages),
             memory=memory,
             can_evaluate=self.llm_client is not None and self.agent_system is not None,
+            parent_session_id=self.parent_session_id,
+            forked_from_checkpoint_id=self.forked_from_checkpoint_id,
+            attempt_number=self.attempt_number,
+            recovery_mode=self.recovery_mode,
+            recovery_status=self.recovery_status,
+            recovery_detail=self.recovery_detail,
+            recovery_phase=self.recovery_phase,
+            recovery_step=self.recovery_step,
+            recovery_total_steps=self.recovery_total_steps,
+            recovery_substep=self.recovery_substep,
+            recovery_substep_total=self.recovery_substep_total,
+            checkpoint_turn=self.checkpoint_turn,
+            checkpoint_healthy=self.checkpoint_healthy,
         )

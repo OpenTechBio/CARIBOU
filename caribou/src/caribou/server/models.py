@@ -19,6 +19,7 @@ class SessionStatus(str, Enum):
     running = "running"
     stopped = "stopped"
     error = "error"
+    recovering = "recovering"
 
 
 class SessionMode(str, Enum):
@@ -57,6 +58,21 @@ class MemoryStrategy(str, Enum):
     none = "none"
 
 
+class RecoveryMode(str, Enum):
+    smart = "smart"
+    literal_replay = "literal_replay"
+
+
+class RecoveryStatus(str, Enum):
+    none = "none"
+    awaiting_checkpoint = "awaiting_checkpoint"
+    recovering = "recovering"
+    recovered = "recovered"
+    partial = "partial"
+    failed = "failed"
+    accepted_partial = "accepted_partial"
+
+
 class MemoryConfigResponse(BaseModel):
     strategy: str = "full"
     working_history_size: Optional[int] = None
@@ -65,6 +81,7 @@ class MemoryConfigResponse(BaseModel):
 
 
 class SessionCreateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     mode: SessionMode
     run_mode: RunMode = RunMode.full_system
     agent_system: str
@@ -143,6 +160,7 @@ class EvaluationResult(BaseModel):
 
 class SessionResponse(BaseModel):
     id: str
+    name: str
     status: SessionStatus
     mode: SessionMode
     run_mode: RunMode
@@ -163,6 +181,33 @@ class SessionResponse(BaseModel):
     # sessions don't carry a live llm_client/agent_system (see
     # session_persistence.py), so /evaluate would 400 even though current_turn > 0.
     can_evaluate: bool = False
+    parent_session_id: Optional[str] = None
+    forked_from_checkpoint_id: Optional[str] = None
+    attempt_number: int = 1
+    recovery_mode: Optional[RecoveryMode] = None
+    recovery_status: RecoveryStatus = RecoveryStatus.none
+    recovery_detail: Optional[str] = None
+    recovery_phase: Optional[str] = None
+    recovery_step: int = 0
+    recovery_total_steps: int = 0
+    recovery_substep: Optional[int] = None
+    recovery_substep_total: Optional[int] = None
+    checkpoint_turn: Optional[int] = None
+    checkpoint_healthy: bool = False
+
+
+class SessionResumeRequest(BaseModel):
+    recovery_mode: RecoveryMode = RecoveryMode.smart
+    target_mode: Optional[SessionMode] = None
+    additional_turns: Optional[int] = Field(default=None, ge=1, le=10_000)
+    acknowledge_replay_risk: bool = False
+
+
+class SessionForkRequest(SessionResumeRequest):
+    name: str = Field(min_length=1, max_length=120)
+    llm_backend: Optional[str] = None
+    model_name: Optional[str] = None
+    ollama_model: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
