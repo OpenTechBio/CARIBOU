@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from caribou.core.python_environments import ResolvedPythonEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -89,6 +91,7 @@ class SessionCreateRequest(BaseModel):
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
     sandbox_type: SandboxType = SandboxType.singularity
+    python_environment_path: Optional[str] = None
     dataset_path: str
     reference_dataset_path: Optional[str] = None
     max_turns: Optional[int] = None
@@ -158,6 +161,7 @@ class SessionResponse(BaseModel):
     llm_backend: str
     resolved_model: Optional[ResolvedModelInfo] = None
     sandbox_type: SandboxType
+    python_environment: ResolvedPythonEnvironment
     dataset_path: str
     max_turns: Optional[int]
     current_turn: int
@@ -194,6 +198,10 @@ class SessionForkRequest(SessionResumeRequest):
     llm_backend: Optional[str] = None
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
+
+
+class PythonEnvironmentPathRequest(BaseModel):
+    path: str
 
 
 # ---------------------------------------------------------------------------

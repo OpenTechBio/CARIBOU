@@ -30,6 +30,11 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from caribou.config import ENV_FILE
+from caribou.core.python_environments import (
+    assert_environment_unchanged,
+    resolved_host_environment,
+    validate_python_environment_path,
+)
 from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
@@ -146,6 +151,15 @@ class SessionManager:
         import queue
         import threading
 
+        requested_python_environment = None
+        if config.python_environment_path:
+            requested_python_environment = resolved_host_environment(
+                validate_python_environment_path(config.python_environment_path)
+            )
+            config = config.model_copy(
+                update={"python_environment_path": requested_python_environment.path}
+            )
+
         session_id = str(uuid4())
         output_dir = SESSIONS_DIR / session_id / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +183,11 @@ class SessionManager:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             resolved_model=resolve_model_info(config),
+            **(
+                {"python_environment": requested_python_environment}
+                if requested_python_environment is not None
+                else {}
+            ),
             attempts=[
                 {
                     "attempt_number": 1,
@@ -284,6 +303,7 @@ class SessionManager:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             resolved_model=resolve_model_info(child_config),
+            python_environment=source.python_environment.model_copy(deep=True),
             parent_session_id=source.id,
             attempt_number=1,
             recovery_mode=request.recovery_mode,
@@ -707,7 +727,23 @@ class SessionManager:
                 except Exception:
                     pass
                 return
+            try:
+                assert_environment_unchanged(
+                    session.python_environment,
+                    getattr(
+                        sandbox_manager,
+                        "python_environment",
+                        session.python_environment,
+                    ),
+                )
+            except Exception:
+                await asyncio.to_thread(sandbox_manager.stop_container)
+                raise
             session.sandbox_manager = sandbox_manager
+            session.python_environment = getattr(
+                sandbox_manager, "python_environment", session.python_environment
+            )
+            self._save_session(session)
             session.analysis_context = textwrap.dedent(f"""\
                 Primary dataset path: **{SANDBOX_DATA_PATH}**
 
@@ -1500,7 +1536,23 @@ class SessionManager:
                 except Exception:
                     pass
                 return
+            try:
+                assert_environment_unchanged(
+                    session.python_environment,
+                    getattr(
+                        sandbox_manager,
+                        "python_environment",
+                        session.python_environment,
+                    ),
+                )
+            except Exception:
+                await asyncio.to_thread(sandbox_manager.stop_container)
+                raise
             session.sandbox_manager = sandbox_manager
+            session.python_environment = getattr(
+                sandbox_manager, "python_environment", session.python_environment
+            )
+            self._save_session(session)
             if log:
                 log.info("Sandbox ready | elapsed: %sms", int((time.monotonic() - sandbox_started) * 1000))
 

@@ -8,7 +8,7 @@ import { ConfigService } from '../../core/services/config.service';
 import { DatasetService } from '../../core/services/dataset.service';
 import { ToastService } from '../../core/services/toast.service';
 import {
-  Session, SessionCreateRequest, SessionForkRequest, Dataset
+  Session, SessionCreateRequest, SessionForkRequest, Dataset, PythonEnvironmentCandidate
 } from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 import { IconComponent } from '../../shared/components/icon/icon';
@@ -109,6 +109,11 @@ export class DashboardComponent implements OnInit {
   forkSource = signal<Session | null>(null);
   forkSubmitting = signal(false);
   forkError = signal<string | null>(null);
+  pythonEnvironmentChoice = signal('bundled');
+  manualPythonEnvironmentPath = signal('');
+  validatedPythonEnvironment = signal<PythonEnvironmentCandidate | null>(null);
+  pythonEnvironmentError = signal<string | null>(null);
+  pythonEnvironmentLoading = signal(false);
   forkForm: SessionForkRequest = {
     name: '',
     recovery_mode: 'smart',
@@ -246,6 +251,11 @@ export class DashboardComponent implements OnInit {
     this.createError.set(null);
     this.wizardStep.set('preset');
     this.selectedPreset.set('scrna-explore');
+    this.pythonEnvironmentChoice.set('bundled');
+    this.form.python_environment_path = undefined;
+    this.manualPythonEnvironmentPath.set('');
+    this.validatedPythonEnvironment.set(null);
+    this.pythonEnvironmentError.set(null);
     this.showCreateDialog.set(true);
   }
 
@@ -312,6 +322,12 @@ export class DashboardComponent implements OnInit {
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       return 'Validate the HPC dataset path before creating a session.';
     }
+    if (
+      this.pythonEnvironmentChoice() === 'manual' &&
+      !this.validatedPythonEnvironment()
+    ) {
+      return 'Validate the host Python environment path before creating a session.';
+    }
     if (!this.form.agent_system || !this.form.llm_backend || !this.form.dataset_path) {
       return 'Blueprint, backend, and dataset are required.';
     }
@@ -362,6 +378,61 @@ export class DashboardComponent implements OnInit {
         this.openRouterError.set(null);
       }
     }
+  }
+
+  onPythonEnvironmentChange(value: string): void {
+    this.pythonEnvironmentChoice.set(value);
+    this.pythonEnvironmentError.set(null);
+    this.validatedPythonEnvironment.set(null);
+    if (value === 'bundled' || value === 'manual') {
+      this.form.python_environment_path = undefined;
+    } else {
+      this.form.python_environment_path = value;
+    }
+  }
+
+  onManualPythonEnvironmentInput(value: string): void {
+    this.manualPythonEnvironmentPath.set(value);
+    this.validatedPythonEnvironment.set(null);
+    this.form.python_environment_path = undefined;
+    this.pythonEnvironmentError.set(null);
+  }
+
+  validateManualPythonEnvironment(): void {
+    const path = this.manualPythonEnvironmentPath().trim();
+    if (!path) {
+      this.pythonEnvironmentError.set('Enter an absolute environment prefix.');
+      return;
+    }
+    this.pythonEnvironmentLoading.set(true);
+    this.pythonEnvironmentError.set(null);
+    this.configSvc.validatePythonEnvironment(path).subscribe({
+      next: (candidate) => {
+        this.pythonEnvironmentLoading.set(false);
+        this.validatedPythonEnvironment.set(candidate);
+        this.form.python_environment_path = candidate.path;
+      },
+      error: (err) => {
+        this.pythonEnvironmentLoading.set(false);
+        this.validatedPythonEnvironment.set(null);
+        this.form.python_environment_path = undefined;
+        this.pythonEnvironmentError.set(
+          err?.error?.detail ?? 'The environment prefix is not usable.',
+        );
+      },
+    });
+  }
+
+  refreshPythonEnvironments(): void {
+    this.pythonEnvironmentLoading.set(true);
+    this.pythonEnvironmentError.set(null);
+    this.configSvc.getPythonEnvironments().subscribe({
+      next: () => this.pythonEnvironmentLoading.set(false),
+      error: () => {
+        this.pythonEnvironmentLoading.set(false);
+        this.pythonEnvironmentError.set('Could not query environments on the server host.');
+      },
+    });
   }
 
   loadOpenRouterModels(refresh = false): void {

@@ -5,6 +5,24 @@ export type SandboxType = 'singularity' | 'docker' | 'offline';
 export type ArtifactType = 'plot' | 'data' | 'code' | 'report';
 
 export type MemoryStrategy = 'full' | 'episodic' | 'agent_report' | 'none';
+export type PythonEnvironmentKind = 'conda' | 'venv' | 'pyenv' | 'unknown';
+
+export interface PythonEnvironmentCandidate {
+  name: string;
+  path: string;
+  python_executable: string;
+  kind: PythonEnvironmentKind;
+  sources: string[];
+}
+
+export interface ResolvedPythonEnvironment {
+  mode: 'bundled' | 'host';
+  path: string | null;
+  python_executable: string;
+  kind: PythonEnvironmentKind | null;
+  python_version: string | null;
+  fingerprint: string | null;
+}
 
 export interface MemoryConfig {
   strategy: string;
@@ -23,6 +41,7 @@ export interface Session {
   llm_backend: string;
   resolved_model: ResolvedModelInfo | null;
   sandbox_type: SandboxType;
+  python_environment: ResolvedPythonEnvironment;
   dataset_path: string;
   max_turns: number | null;
   current_turn: number;
@@ -86,6 +105,7 @@ export interface SessionCreateRequest {
   model_name?: string;
   ollama_model?: string;
   sandbox_type: SandboxType;
+  python_environment_path?: string;
   dataset_path: string;
   reference_dataset_path?: string;
   max_turns?: number;

@@ -12,6 +12,12 @@ import tarfile
 import time
 from typing import Dict, List
 import requests
+from caribou.core.python_environments import (
+    PythonEnvironmentKind,
+    ResolvedPythonEnvironment,
+    resolved_host_environment,
+    validate_python_environment_path,
+)
 # --- Third-Party Imports ---
 try:
     import docker
@@ -85,6 +91,13 @@ class SandboxManager:
     def __init__(self):
         self.client = None
         self.container = None
+        self._python_environment_candidate = None
+        self.python_environment = ResolvedPythonEnvironment(
+            mode="bundled",
+            python_executable="/usr/local/envs/rapids/bin/python",
+            kind=PythonEnvironmentKind.conda,
+        )
+        self.last_start_error = None
         try:
             docker_host = os.environ.get("DOCKER_HOST")
             if docker_host:
@@ -96,6 +109,12 @@ class SandboxManager:
             logging.error(f"Error initializing Docker client: {e}", exc_info=True)
             logging.error("Ensure Docker Desktop/Engine is running and DOCKER_HOST is set if needed.")
             sys.exit(1)
+
+    def set_python_environment(self, path):
+        """Select a read-only host prefix for the analysis kernel."""
+        candidate = validate_python_environment_path(path)
+        self._python_environment_candidate = candidate
+        self.python_environment = resolved_host_environment(candidate)
 
     def _get_container_logs(self, tail=50):
         """Retrieves recent logs from the managed container."""
@@ -175,6 +194,7 @@ class SandboxManager:
 
     def start_container(self, rebuild=False):
         """Starts the Docker container with the FastAPI service."""
+        self.last_start_error = None
         # Handle rebuild request
         if rebuild:
             _print_message("Rebuild requested.")
@@ -199,9 +219,21 @@ class SandboxManager:
         # Start the container
         _print_message(f"Starting container '[cyan]{CONTAINER_NAME}[/cyan]' with API service...", style="cyan")
         try:
+            candidate = self._python_environment_candidate
             # Check if the image exists locally, build if not
             try:
-                self.client.images.get(IMAGE_TAG)
+                image = self.client.images.get(IMAGE_TAG)
+                labels = (image.attrs.get("Config", {}).get("Labels", {}) or {})
+                if (
+                    candidate is not None
+                    and labels.get("org.caribou.host-python-environment") != "1"
+                ):
+                    _print_message(
+                        "Docker image predates host Python environment support; rebuilding once...",
+                        style="yellow",
+                    )
+                    if not self.build_image():
+                        return False
             except docker.errors.ImageNotFound:
                 _print_message(f"Image '[cyan]{IMAGE_TAG}[/cyan]' not found locally. Building...", style="yellow")
                 if not self.build_image():
@@ -218,6 +250,28 @@ class SandboxManager:
                 'auto_remove': False, # Keep container for inspection on failure
                 'ports': port_map,    # Map the API port
             }
+            if candidate is not None:
+                run_options["volumes"] = {
+                    candidate.path: {
+                        "bind": candidate.path,
+                        "mode": "ro",
+                    }
+                }
+                runtime_path = (
+                    f"{candidate.path}/bin:/usr/local/envs/rapids/bin:"
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                )
+                environment = {
+                    "CARIBOU_PYTHON_EXECUTABLE": candidate.python_executable,
+                    "CARIBOU_PYTHON_ENV_KIND": candidate.kind.value,
+                    "PATH": runtime_path,
+                    "PYTHONNOUSERSITE": "1",
+                }
+                if candidate.kind is PythonEnvironmentKind.conda:
+                    environment["CONDA_PREFIX"] = candidate.path
+                elif candidate.kind is PythonEnvironmentKind.venv:
+                    environment["VIRTUAL_ENV"] = candidate.path
+                run_options["environment"] = environment
             logging.debug(f"Docker run options: {run_options}")
 
             # Run the container
@@ -245,12 +299,56 @@ class SandboxManager:
                  _print_message(logs if logs else "(Could not retrieve logs)", is_error=True)
                  _print_message("----------------------", is_error=True)
                  self.container = None # Clear internal ref
+                 self.last_start_error = (
+                     "Selected Python environment could not start the Docker analysis "
+                     f"kernel. Container status: {status}. {logs.strip()}"
+                     if candidate is not None
+                     else f"Docker container exited during startup (status: {status})."
+                 )
                  return False
+
+            if candidate is not None:
+                version_result = current_container.exec_run(
+                    [
+                        candidate.python_executable,
+                        "-c",
+                        "import platform; print('__CARIBOU_PYTHON_VERSION__=' + platform.python_version())",
+                    ]
+                )
+                if version_result.exit_code != 0:
+                    detail = version_result.output.decode("utf-8", errors="replace").strip()
+                    self.last_start_error = (
+                        "Selected Python environment is incompatible with the Docker "
+                        f"image: {detail or 'Python failed to start.'}"
+                    )
+                    self.stop_container(remove=True, container_obj=current_container)
+                    return False
+                output = version_result.output.decode("utf-8", errors="replace")
+                version = next(
+                    (
+                        line.partition("=")[2].strip()
+                        for line in output.splitlines()
+                        if line.startswith("__CARIBOU_PYTHON_VERSION__=")
+                    ),
+                    None,
+                )
+                if not version:
+                    self.last_start_error = (
+                        "Selected Python environment started but did not return a "
+                        "valid compatibility handshake."
+                    )
+                    self.stop_container(remove=True, container_obj=current_container)
+                    return False
+                self.python_environment = resolved_host_environment(
+                    candidate,
+                    python_version=version,
+                )
 
             _print_message(f"Container running. API should be accessible at http://localhost:{API_PORT_HOST}", style="green")
             return True # Container started successfully
 
         except Exception as e:
+            self.last_start_error = f"Docker sandbox startup failed: {e}"
             _print_message(f"Error during container start: {e}", style="bold red", is_error=True)
             logging.exception("Container start error details:")
             # Ensure cleanup if self.container was assigned
