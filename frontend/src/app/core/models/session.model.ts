@@ -88,6 +88,8 @@ export interface SessionForkRequest extends SessionResumeRequest {
   llm_backend?: string;
   model_name?: string;
   ollama_model?: string;
+  /** Omitted inherits the source; null explicitly selects the bundled environment. */
+  python_environment_path?: string | null;
 }
 
 export interface ResolvedModelInfo {

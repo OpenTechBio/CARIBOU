@@ -33,6 +33,8 @@ async def create_session(body: SessionCreateRequest) -> SessionResponse:
 def _lifecycle_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(404, str(exc).strip("'"))
+    if isinstance(exc, PythonEnvironmentError):
+        return HTTPException(400, str(exc))
     return HTTPException(409, str(exc))
 
 

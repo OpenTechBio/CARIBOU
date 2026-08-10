@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 from caribou.config import ENV_FILE
 from caribou.core.python_environments import (
     assert_environment_unchanged,
+    bundled_python_environment,
     resolved_host_environment,
     validate_python_environment_path,
 )
@@ -283,6 +284,17 @@ class SessionManager:
             config_updates["model_name"] = request.model_name.strip()
         if request.ollama_model and request.ollama_model.strip():
             config_updates["ollama_model"] = request.ollama_model.strip()
+        selected_python_environment = source.python_environment.model_copy(deep=True)
+        if "python_environment_path" in request.model_fields_set:
+            if request.python_environment_path is None:
+                config_updates["python_environment_path"] = None
+                selected_python_environment = bundled_python_environment()
+            else:
+                candidate = validate_python_environment_path(
+                    request.python_environment_path
+                )
+                config_updates["python_environment_path"] = candidate.path
+                selected_python_environment = resolved_host_environment(candidate)
         child_config = source.config.model_copy(update=config_updates)
         child = _Session(
             id=child_id,
@@ -303,7 +315,7 @@ class SessionManager:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             resolved_model=resolve_model_info(child_config),
-            python_environment=source.python_environment.model_copy(deep=True),
+            python_environment=selected_python_environment,
             parent_session_id=source.id,
             attempt_number=1,
             recovery_mode=request.recovery_mode,

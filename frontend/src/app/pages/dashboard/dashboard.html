@@ -467,12 +467,6 @@
             @if (pythonEnvironmentError(); as error) {
               <p class="path-error">{{ error }}</p>
             }
-            @if (form.python_environment_path) {
-              <p class="dim">
-                Mounted read-only. This is an unversioned developer environment and may not be
-                portable across container images.
-              </p>
-            }
           </div>
 
           <label>Mode</label>
@@ -714,6 +708,63 @@
             }
           </select>
         }
+
+        <label>Python environment</label>
+        <div class="hpc-path">
+          <div class="hpc-input-row">
+            <select
+              [ngModel]="forkPythonEnvironmentChoice()"
+              (ngModelChange)="onForkPythonEnvironmentChange($event)"
+            >
+              <option value="inherit">
+                Inherit current · {{ source.python_environment.mode === 'host'
+                  ? (source.python_environment.kind + ' · ' + source.python_environment.path)
+                  : 'bundled container environment' }}
+              </option>
+              <option value="bundled">Bundled container environment</option>
+              @for (environment of configSvc.pythonEnvironments(); track environment.path) {
+                <option [value]="environment.path">
+                  {{ environment.name }} · {{ environment.kind }} · {{ environment.path }}
+                </option>
+              }
+              <option value="manual">Enter an absolute path…</option>
+            </select>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              (click)="refreshForkPythonEnvironments()"
+              [disabled]="forkPythonEnvironmentLoading()"
+            >
+              {{ forkPythonEnvironmentLoading() ? 'Checking…' : 'Refresh' }}
+            </button>
+          </div>
+          @if (forkPythonEnvironmentChoice() === 'manual') {
+            <div class="hpc-input-row">
+              <input
+                type="text"
+                placeholder="/absolute/path/to/environment"
+                [value]="forkManualPythonEnvironmentPath()"
+                (input)="onForkManualPythonEnvironmentInput($any($event.target).value)"
+              />
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                (click)="validateForkManualPythonEnvironment()"
+                [disabled]="forkPythonEnvironmentLoading()"
+              >
+                Validate
+              </button>
+            </div>
+          }
+          @if (forkValidatedPythonEnvironment(); as environment) {
+            <p class="path-valid">
+              Using {{ environment.kind }} environment at {{ environment.path }}
+            </p>
+          }
+          @if (forkPythonEnvironmentError(); as error) {
+            <p class="path-error">{{ error }}</p>
+          }
+        </div>
 
         <div class="recovery-field-label">
           <label for="dashboard-fork-recovery">Recovery</label>

@@ -198,6 +198,8 @@ class SessionForkRequest(SessionResumeRequest):
     llm_backend: Optional[str] = None
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
+    # Omitted means inherit; explicit null selects the bundled environment.
+    python_environment_path: Optional[str] = None
 
 
 class PythonEnvironmentPathRequest(BaseModel):

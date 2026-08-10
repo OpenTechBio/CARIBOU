@@ -114,6 +114,11 @@ export class DashboardComponent implements OnInit {
   validatedPythonEnvironment = signal<PythonEnvironmentCandidate | null>(null);
   pythonEnvironmentError = signal<string | null>(null);
   pythonEnvironmentLoading = signal(false);
+  forkPythonEnvironmentChoice = signal('inherit');
+  forkManualPythonEnvironmentPath = signal('');
+  forkValidatedPythonEnvironment = signal<PythonEnvironmentCandidate | null>(null);
+  forkPythonEnvironmentError = signal<string | null>(null);
+  forkPythonEnvironmentLoading = signal(false);
   forkForm: SessionForkRequest = {
     name: '',
     recovery_mode: 'smart',
@@ -508,6 +513,10 @@ export class DashboardComponent implements OnInit {
   duplicateSession(s: Session, event: Event): void {
     event.stopPropagation();
     this.forkError.set(null);
+    this.forkPythonEnvironmentChoice.set('inherit');
+    this.forkManualPythonEnvironmentPath.set('');
+    this.forkValidatedPythonEnvironment.set(null);
+    this.forkPythonEnvironmentError.set(null);
     this.forkForm = {
       name: `${s.name || s.id.slice(0, 8)} fork`,
       llm_backend: s.llm_backend,
@@ -540,6 +549,13 @@ export class DashboardComponent implements OnInit {
     }
     if (this.forkForm.target_mode === 'auto' && !(this.forkForm.additional_turns! > 0)) {
       this.forkError.set('Enter an additional-turn budget for Auto mode.');
+      return;
+    }
+    if (
+      this.forkPythonEnvironmentChoice() === 'manual' &&
+      !this.forkValidatedPythonEnvironment()
+    ) {
+      this.forkError.set('Validate the host Python environment path before creating the fork.');
       return;
     }
     const forkTab = reserveNewTab();
@@ -580,6 +596,63 @@ export class DashboardComponent implements OnInit {
         this.forkForm.ollama_model = result.default_model || result.models[0];
       });
     }
+  }
+
+  onForkPythonEnvironmentChange(value: string): void {
+    this.forkPythonEnvironmentChoice.set(value);
+    this.forkPythonEnvironmentError.set(null);
+    this.forkValidatedPythonEnvironment.set(null);
+    if (value === 'inherit' || value === 'manual') {
+      this.forkForm.python_environment_path = undefined;
+    } else if (value === 'bundled') {
+      this.forkForm.python_environment_path = null;
+    } else {
+      this.forkForm.python_environment_path = value;
+    }
+  }
+
+  onForkManualPythonEnvironmentInput(value: string): void {
+    this.forkManualPythonEnvironmentPath.set(value);
+    this.forkValidatedPythonEnvironment.set(null);
+    this.forkForm.python_environment_path = undefined;
+    this.forkPythonEnvironmentError.set(null);
+  }
+
+  validateForkManualPythonEnvironment(): void {
+    const path = this.forkManualPythonEnvironmentPath().trim();
+    if (!path) {
+      this.forkPythonEnvironmentError.set('Enter an absolute environment prefix.');
+      return;
+    }
+    this.forkPythonEnvironmentLoading.set(true);
+    this.forkPythonEnvironmentError.set(null);
+    this.configSvc.validatePythonEnvironment(path).subscribe({
+      next: (candidate) => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkValidatedPythonEnvironment.set(candidate);
+        this.forkForm.python_environment_path = candidate.path;
+      },
+      error: (err) => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkValidatedPythonEnvironment.set(null);
+        this.forkForm.python_environment_path = undefined;
+        this.forkPythonEnvironmentError.set(
+          err?.error?.detail ?? 'The environment prefix is not usable.',
+        );
+      },
+    });
+  }
+
+  refreshForkPythonEnvironments(): void {
+    this.forkPythonEnvironmentLoading.set(true);
+    this.forkPythonEnvironmentError.set(null);
+    this.configSvc.getPythonEnvironments().subscribe({
+      next: () => this.forkPythonEnvironmentLoading.set(false),
+      error: () => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkPythonEnvironmentError.set('Could not query environments on the server host.');
+      },
+    });
   }
 
   toggleSelectMode(): void {
