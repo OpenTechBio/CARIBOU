@@ -47,6 +47,14 @@ class ResolvedPythonEnvironment(BaseModel):
     fingerprint: str | None = None
 
 
+def bundled_python_environment() -> ResolvedPythonEnvironment:
+    return ResolvedPythonEnvironment(
+        mode="bundled",
+        python_executable="/usr/local/envs/rapids/bin/python",
+        kind=PythonEnvironmentKind.conda,
+    )
+
+
 class PythonEnvironmentError(ValueError):
     """A requested host environment is structurally invalid on the host."""
 
