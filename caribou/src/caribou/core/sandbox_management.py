@@ -11,6 +11,12 @@ from pathlib import Path
 import json
 
 from caribou.config import CARIBOU_HOME
+from caribou.core.python_environments import (
+    PythonEnvironmentKind,
+    ResolvedPythonEnvironment,
+    resolved_host_environment,
+    validate_python_environment_path,
+)
 from caribou.sandbox.benchmarking_sandbox_management import (
     SandboxManager as _BackendManager,
     CONTAINER_NAME as _SANDBOX_HANDLE,
@@ -49,7 +55,14 @@ def _nvidia_gpu_available() -> bool:
         return False
 
 
-def init_docker(script_dir:str, subprocess, console, force_refresh:bool=False):
+def init_docker(
+    script_dir: str,
+    subprocess,
+    console,
+    force_refresh: bool = False,
+    *,
+    python_environment_path: str | Path | None = None,
+):
     # --- optional force‑refresh logic --------------------------------------
     if force_refresh:
         console.print("[yellow]Forcing Docker sandbox refresh…[/yellow]")
@@ -66,7 +79,13 @@ def init_docker(script_dir:str, subprocess, console, force_refresh:bool=False):
     EXECUTE_ENDPOINT = f"http://localhost:{_API_PORT}/execute"
     STATUS_ENDPOINT = f"http://localhost:{_API_PORT}/status"
 
-    return _BackendManager, _SANDBOX_HANDLE, COPY_CMD, EXECUTE_ENDPOINT, STATUS_ENDPOINT
+    class _ConfiguredDockerBackend(_BackendManager):
+        def __init__(self):
+            super().__init__()
+            if python_environment_path:
+                self.set_python_environment(python_environment_path)
+
+    return _ConfiguredDockerBackend, _SANDBOX_HANDLE, COPY_CMD, EXECUTE_ENDPOINT, STATUS_ENDPOINT
 
 
 
@@ -99,6 +118,7 @@ def init_singularity_exec(
     readiness_timeout: float = 30.0,
     gpu_enabled: bool | None = None,
     celltypist_cache_enabled: bool = True,
+    python_environment_path: str | Path | None = None,
 ):
     """Configure the REPL, optionally using an existing hash-pinned SIF."""
     import caribou.sandbox.benchmarking_sandbox_management_singularity as sing
@@ -111,6 +131,11 @@ def init_singularity_exec(
     default_sif_path = Path(sing.SIF_PATH).expanduser().resolve()
     SIF_PATH = Path(sif_path).expanduser().resolve() if sif_path else default_sif_path
     expected_sha256 = _normalise_sha256(sif_sha256) if sif_sha256 else None
+    python_environment = (
+        validate_python_environment_path(python_environment_path)
+        if python_environment_path
+        else None
+    )
 
     if force_refresh and no_pull:
         raise ValueError("force_refresh and no_pull cannot be used together")
@@ -166,6 +191,16 @@ def init_singularity_exec(
             self._proc = None
             self._host_output_path: Optional[Path] = None
             self._stdout_buffer = bytearray()
+            self.last_start_error: str | None = None
+            self.python_environment = (
+                resolved_host_environment(python_environment)
+                if python_environment is not None
+                else ResolvedPythonEnvironment(
+                    mode="bundled",
+                    python_executable="/usr/local/envs/rapids/bin/python",
+                    kind=PythonEnvironmentKind.conda,
+                )
+            )
 
         def set_data(self, all_resources: List[Tuple[Path, str]], host_output_path: Path):
             """Configures all necessary bind mounts, including the output directory."""
@@ -273,6 +308,7 @@ def init_singularity_exec(
         # Container lifecycle
         # ------------------------------------------------------------------
         def start_container(self):
+            self.last_start_error = None
             if self._proc:
                 if self._proc.poll() is None:
                     return True  # already running
@@ -299,15 +335,28 @@ def init_singularity_exec(
             else:
                 console.print("[dim]No GPU detected, running in CPU-only mode[/dim]")
 
-            cmd.extend([
+            environment_binds: list[str] = []
+            python_executable = "python"
+            if python_environment is not None:
+                environment_binds = [
+                    "--bind",
+                    f"{python_environment.path}:{python_environment.path}:ro",
+                ]
+                python_executable = python_environment.python_executable
+
+            container_options = [
                 "--containall",
                 "--cleanenv",
                 "--net",
                 "--network",
                 "none",
                 *self._binds,
+                *environment_binds,
                 str(SIF_PATH),
-                "python",
+            ]
+            cmd.extend([
+                *container_options,
+                python_executable,
                 "/opt/offline_kernel.py",
                 "--repl",
             ])
@@ -327,7 +376,35 @@ def init_singularity_exec(
                 # This SIF remains a legacy fixture, independent of the host Conda prefix.
                 "SINGULARITYENV_PATH": "/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "SINGULARITYENV_PYTHONUNBUFFERED": "1",
+                "SINGULARITYENV_PYTHONNOUSERSITE": "1",
+                "APPTAINERENV_PYTHONUNBUFFERED": "1",
+                "APPTAINERENV_PYTHONNOUSERSITE": "1",
             })
+            if python_environment is not None:
+                runtime_path = (
+                    f"{python_environment.path}/bin:/usr/local/envs/rapids/bin:"
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                )
+                child_env.update(
+                    {
+                        "SINGULARITYENV_PATH": runtime_path,
+                        "APPTAINERENV_PATH": runtime_path,
+                    }
+                )
+                if python_environment.kind is PythonEnvironmentKind.conda:
+                    child_env.update(
+                        {
+                            "SINGULARITYENV_CONDA_PREFIX": python_environment.path,
+                            "APPTAINERENV_CONDA_PREFIX": python_environment.path,
+                        }
+                    )
+                elif python_environment.kind is PythonEnvironmentKind.venv:
+                    child_env.update(
+                        {
+                            "SINGULARITYENV_VIRTUAL_ENV": python_environment.path,
+                            "APPTAINERENV_VIRTUAL_ENV": python_environment.path,
+                        }
+                    )
             if celltypist_cache_enabled:
                 child_env.update(
                     {
@@ -335,6 +412,59 @@ def init_singularity_exec(
                         "SINGULARITYENV_CELLTYPIST_HOME": "/workspace/celltypist_models",
                         "SINGULARITYENV_CELLTYPIST_FOLDER": "/workspace/celltypist_models",
                     }
+                )
+
+            if python_environment is not None:
+                preflight_cmd = [
+                    sing.require_sing_bin(),
+                    "exec",
+                    *(["--nv"] if use_gpu else []),
+                    *container_options,
+                    python_executable,
+                    "-c",
+                    "import platform; print('__CARIBOU_PYTHON_VERSION__=' + platform.python_version())",
+                ]
+                try:
+                    preflight = subprocess.run(
+                        preflight_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=readiness_timeout,
+                        check=False,
+                        env=child_env,
+                    )
+                except Exception as exc:
+                    self.last_start_error = (
+                        "Selected Python environment could not be checked inside "
+                        f"the Apptainer image: {exc}"
+                    )
+                    console.print(f"[red]{self.last_start_error}[/red]")
+                    return False
+                if preflight.returncode != 0:
+                    detail = (preflight.stderr or preflight.stdout or "").strip()
+                    self.last_start_error = (
+                        "Selected Python environment is incompatible with the "
+                        f"Apptainer image: {detail or 'Python failed to start.'}"
+                    )
+                    console.print(f"[red]{self.last_start_error}[/red]")
+                    return False
+                version = next(
+                    (
+                        line.partition("=")[2].strip()
+                        for line in preflight.stdout.splitlines()
+                        if line.startswith("__CARIBOU_PYTHON_VERSION__=")
+                    ),
+                    None,
+                )
+                if not version:
+                    self.last_start_error = (
+                        "Selected Python environment started but did not return a "
+                        "valid compatibility handshake."
+                    )
+                    console.print(f"[red]{self.last_start_error}[/red]")
+                    return False
+                self.python_environment = resolved_host_environment(
+                    python_environment, python_version=version
                 )
 
             self._proc = subprocess.Popen(
@@ -350,6 +480,10 @@ def init_singularity_exec(
             self._stdout_buffer.clear()
             ready_line, reason = self._read_process_line(time.monotonic() + readiness_timeout)
             if reason != "line" or ready_line is None or ready_line.strip() != "__REPL_READY__":
+                self.last_start_error = (
+                    f"Python analysis REPL failed to start ({reason}): "
+                    f"{ready_line or 'no startup output'}"
+                )
                 console.print(
                     f"[red]REPL failed to start. Reason: {reason}; got: {ready_line or ''}[/red]"
                 )

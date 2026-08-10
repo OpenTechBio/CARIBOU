@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from caribou.config import CARIBOU_HOME
+from caribou.core.python_environments import (
+    PythonEnvironmentKind,
+    ResolvedPythonEnvironment,
+)
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
@@ -83,6 +87,13 @@ class _Session:
     initial_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
     resolved_model: Optional[ResolvedModelInfo] = None
+    python_environment: ResolvedPythonEnvironment = field(
+        default_factory=lambda: ResolvedPythonEnvironment(
+            mode="bundled",
+            python_executable="/usr/local/envs/rapids/bin/python",
+            kind=PythonEnvironmentKind.conda,
+        )
+    )
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
     logger: Any = None
@@ -141,6 +152,7 @@ class _Session:
             llm_backend=self.config.llm_backend,
             resolved_model=self.resolved_model,
             sandbox_type=self.config.sandbox_type,
+            python_environment=self.python_environment,
             dataset_path=self.config.dataset_path,
             max_turns=self.config.max_turns,
             current_turn=self.current_turn,

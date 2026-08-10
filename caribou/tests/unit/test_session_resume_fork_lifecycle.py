@@ -15,6 +15,7 @@ from caribou.server.models import (
 )
 from caribou.server.session_manager import SessionManager
 from caribou.server.session_state import _Session
+from caribou.core.python_environments import ResolvedPythonEnvironment
 
 
 def _stopped_session(tmp_path: Path) -> _Session:
@@ -71,6 +72,12 @@ def _manager(session: _Session) -> SessionManager:
 def test_resume_keeps_identity_and_creates_a_new_attempt(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         session = _stopped_session(tmp_path)
+        session.python_environment = ResolvedPythonEnvironment(
+            mode="host",
+            path="/shared/envs/analysis",
+            python_executable="/shared/envs/analysis/bin/python",
+            kind="conda",
+        )
         manager = _manager(session)
         completed = asyncio.Event()
 
@@ -90,6 +97,7 @@ def test_resume_keeps_identity_and_creates_a_new_attempt(tmp_path: Path, monkeyp
         assert session.attempt_number == 2
         assert session.attempts[-1]["kind"] == "resume"
         assert session.attempts[-1]["source_checkpoint_id"] == "checkpoint-source"
+        assert response.python_environment.mode == "host"
 
     asyncio.run(run())
 
@@ -99,6 +107,12 @@ def test_fork_records_lineage_and_preserves_model_when_not_overridden(
 ) -> None:
     async def run() -> None:
         session = _stopped_session(tmp_path)
+        session.python_environment = ResolvedPythonEnvironment(
+            mode="host",
+            path="/shared/envs/analysis",
+            python_executable="/shared/envs/analysis/bin/python",
+            kind="conda",
+        )
         manager = _manager(session)
         completed = asyncio.Event()
 
@@ -127,6 +141,7 @@ def test_fork_records_lineage_and_preserves_model_when_not_overridden(
         assert child.config.model_name == "provider/source-model"
         assert child.recovery_status == RecoveryStatus.awaiting_checkpoint
         assert child.attempts[-1]["kind"] == "fork"
+        assert child.python_environment == session.python_environment
 
     asyncio.run(run())
 
