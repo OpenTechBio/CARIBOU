@@ -540,12 +540,55 @@
       <section class="sidebar-section">
         <h3>
           <span>Evaluation</span>
+          <button class="btn btn-ghost btn-xs" (click)="openEvaluatorModelEditor()">
+            Change model
+          </button>
           <button class="btn btn-ghost btn-xs" (click)="evaluate()"
             [disabled]="!canEvaluate() || evaluating()"
             [title]="canEvaluate() ? 'Send the full run transcript to an evaluator agent' : 'Start (or restart) the run before evaluating it'">
             {{ evaluating() ? 'Evaluating…' : 'Evaluate' }}
           </button>
         </h3>
+        @if (session()?.evaluator_model; as evaluatorModel) {
+          <div class="meta-list eval-meta">
+            <span class="ml">Model</span>
+            <span>{{ evaluatorModel.resolved_model?.provider }} / {{ evaluatorModel.resolved_model?.model }}</span>
+            <span class="ml">Revision</span><span>{{ evaluatorModel.revision }}</span>
+          </div>
+        }
+        @if (editingEvaluatorModel()) {
+          <div class="eval-result">
+            <label>Binding</label>
+            <select [(ngModel)]="evaluatorModelForm.mode">
+              <option value="inherit_worker">Same as worker</option>
+              <option value="explicit">Configure separately</option>
+            </select>
+            @if (evaluatorModelForm.mode === 'explicit') {
+              <label>Backend</label>
+              <select [(ngModel)]="evaluatorModelForm.llm_backend">
+                @for (be of configSvc.backends(); track be.id) {
+                  <option [value]="be.id">{{ be.display_name }}</option>
+                }
+              </select>
+              <label>Exact model ID</label>
+              <input [(ngModel)]="evaluatorModelForm.model_name" />
+            }
+            <label>Reason <span class="field-note">optional</span></label>
+            <textarea
+              [ngModel]="evaluatorModelReason()"
+              (ngModelChange)="evaluatorModelReason.set($event)"
+              maxlength="1000"
+              rows="2"
+            ></textarea>
+            @if (evaluatorModelError()) {
+              <div class="eval-error">{{ evaluatorModelError() }}</div>
+            }
+            <button class="btn btn-ghost btn-xs" (click)="editingEvaluatorModel.set(false)">Cancel</button>
+            <button class="btn btn-primary btn-xs" (click)="saveEvaluatorModel()" [disabled]="evaluatorModelSaving()">
+              {{ evaluatorModelSaving() ? 'Saving…' : 'Save model' }}
+            </button>
+          </div>
+        }
         @if (evaluationError()) {
           <div class="eval-error">{{ evaluationError() }}</div>
         }
@@ -554,6 +597,7 @@
             <div class="meta-list eval-meta">
               <span class="ml">Evaluator</span><span>{{ ev.evaluator_agent }}</span>
               <span class="ml">Turn</span><span>{{ ev.turn }}</span>
+              <span class="ml">Model</span><span>{{ ev.provider }} / {{ ev.model }}</span>
             </div>
             <p class="eval-assessment">{{ ev.assessment }}</p>
           </div>
@@ -788,6 +832,8 @@
               }
             </select>
           }
+          <label>Model change reason <span class="field-note">optional</span></label>
+          <textarea [(ngModel)]="recoveryForm.model_change_reason" maxlength="1000" rows="2"></textarea>
         }
         <div class="recovery-field-label">
           <label for="session-recovery-method">Recovery method</label>

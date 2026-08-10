@@ -8,6 +8,7 @@ those events to the browser.
 This is a parallel implementation to execution/runner.py — it shares the
 same helpers and execution model but replaces Console output with events.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,7 @@ MAX_CONSECUTIVE_EXEC_FAILURES = 5
 # ---------------------------------------------------------------------------
 # Token streaming helper
 # ---------------------------------------------------------------------------
+
 
 def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
     """
@@ -58,6 +60,7 @@ def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
 # Sync runner (runs inside a ThreadPoolExecutor thread)
 # ---------------------------------------------------------------------------
 
+
 def run_session_sync(
     *,
     session_id: str,
@@ -75,6 +78,7 @@ def run_session_sync(
     stop_flag: threading.Event,
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    control_message_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
     memory_manager: Any = None,
     report_memory: Any = None,
@@ -94,7 +98,6 @@ def run_session_sync(
     from caribou.execution.message_utils import (
         _code_preview,
         _count_code_blocks,
-        _extract_artifacts_from_msg,
         detect_delegation,
         detect_end_session,
         detect_rag,
@@ -112,13 +115,15 @@ def run_session_sync(
     emitted_artifacts: Set[str] = set()
 
     def _emit(event_type: str, data: Dict, turn: int = 0) -> None:
-        emit({
-            "type": event_type,
-            "session_id": session_id,
-            "turn": turn,
-            "timestamp": datetime.utcnow().isoformat(),
-            "data": data,
-        })
+        emit(
+            {
+                "type": event_type,
+                "session_id": session_id,
+                "turn": turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": data,
+            }
+        )
 
     def _scan_new_artifacts(turn: int) -> None:
         """Emit artifact events for any new files in output_dir."""
@@ -137,18 +142,24 @@ def run_session_sync(
             if not fpath.is_file() or fpath.name in emitted_artifacts:
                 continue
             suffix = fpath.suffix.lower()
-            art_type, mime_type = mime_map.get(suffix, ("data", "application/octet-stream"))
+            art_type, mime_type = mime_map.get(
+                suffix, ("data", "application/octet-stream")
+            )
             emitted_artifacts.add(fpath.name)
-            _emit("artifact", {
-                "artifact": {
-                    "filename": fpath.name,
-                    "type": art_type,
-                    "mime_type": mime_type,
-                    "size_bytes": fpath.stat().st_size,
-                    "local_path": str(fpath),
-                    "turn": turn,
-                }
-            }, turn=turn)
+            _emit(
+                "artifact",
+                {
+                    "artifact": {
+                        "filename": fpath.name,
+                        "type": art_type,
+                        "mime_type": mime_type,
+                        "size_bytes": fpath.stat().st_size,
+                        "local_path": str(fpath),
+                        "turn": turn,
+                    }
+                },
+                turn=turn,
+            )
 
     current_agent = driver_agent
     if resume_state and resume_state.get("current_agent_name"):
@@ -203,6 +214,23 @@ def run_session_sync(
             },
         )
 
+    def _drain_control_messages(turn: int) -> None:
+        if control_message_queue is None:
+            return
+        while True:
+            try:
+                content = control_message_queue.get_nowait()
+            except queue.Empty:
+                return
+            history.append({"role": "system", "content": content})
+            if memory_manager is not None:
+                memory_manager.add_message("system", content)
+            _emit(
+                "system_message",
+                {"content": content, "category": "Configuration change"},
+                turn=turn,
+            )
+
     def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
         """Wait for one interactive message; return false if the session stops."""
         _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
@@ -212,29 +240,40 @@ def run_session_sync(
             return False
 
         while True:
+            _drain_control_messages(turns_completed)
             if stop_flag.is_set():
                 if logger:
                     logger.info("Session stopped while waiting for user input")
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return False
             try:
                 user_msg = user_input_queue.get(timeout=1.0)
                 if logger:
-                    logger.info("User message received | turn: %s | length: %s chars", turn, len(user_msg))
+                    logger.info(
+                        "User message received | turn: %s | length: %s chars",
+                        turn,
+                        len(user_msg),
+                    )
                 history.append({"role": "user", "content": user_msg})
                 if memory_manager is not None:
                     memory_manager.add_message("user", user_msg)
                 next_turn = turns_completed + 1
-                _emit("message_complete", {
-                    "message": {
-                        "id": f"msg_{session_id}_user_{next_turn}",
-                        "turn": next_turn,
-                        "role": "user",
-                        "agent_name": "",
-                        "content": user_msg,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-                }, turn=next_turn)
+                _emit(
+                    "message_complete",
+                    {
+                        "message": {
+                            "id": f"msg_{session_id}_user_{next_turn}",
+                            "turn": next_turn,
+                            "role": "user",
+                            "agent_name": "",
+                            "content": user_msg,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                    },
+                    turn=next_turn,
+                )
                 return True
             except queue.Empty:
                 continue
@@ -244,23 +283,33 @@ def run_session_sync(
             if not _wait_for_user(turns_completed, "recovered_ready"):
                 return
         while True:
+            _drain_control_messages(turns_completed)
             if stop_flag.is_set():
                 if logger:
                     logger.info("Session stopped (user requested)")
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return
 
             if is_auto and turns_completed >= max_turns:
                 if logger:
                     logger.info("Session stopped — max turns reached (%s)", max_turns)
-                _emit("status_change", {"status": "stopped", "reason": f"max turns reached ({max_turns})"})
+                _emit(
+                    "status_change",
+                    {"status": "stopped", "reason": f"max turns reached ({max_turns})"},
+                )
                 return
 
             turn = turns_completed + 1
-            _emit("status_change", {
-                "status": "running",
-                "reason": f"turn {turn} — {current_agent.name}",
-            }, turn=turn)
+            _emit(
+                "status_change",
+                {
+                    "status": "running",
+                    "reason": f"turn {turn} — {current_agent.name}",
+                },
+                turn=turn,
+            )
 
             # --- Build cleaned context ---
             if report_memory is not None:
@@ -269,14 +318,18 @@ def run_session_sync(
                 if logger:
                     logger.info(
                         "Turn %s | agent: %s | context_length: %s (report_memory)",
-                        turn, current_agent.name, len(cleaned_context),
+                        turn,
+                        current_agent.name,
+                        len(cleaned_context),
                     )
             elif memory_manager is not None:
                 cleaned_context = memory_manager.get_context()
                 if logger:
                     logger.info(
                         "Turn %s | agent: %s | context_length: %s (episodic)",
-                        turn, current_agent.name, len(cleaned_context),
+                        turn,
+                        current_agent.name,
+                        len(cleaned_context),
                     )
             else:
                 cleaned_context = []
@@ -316,7 +369,11 @@ def run_session_sync(
                             )
                     full_msg += token
                     token_chars += len(token)
-                    _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
+                    _emit(
+                        "token",
+                        {"agent_name": current_agent.name, "token": token},
+                        turn=turn,
+                    )
                 msg = full_msg
                 if logger:
                     logger.info(
@@ -328,12 +385,16 @@ def run_session_sync(
             except Exception as exc:
                 if logger:
                     logger.error("LLM error | turn: %s | %s", turn, exc, exc_info=True)
-                _emit("error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True})
+                _emit(
+                    "error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True}
+                )
                 _emit("status_change", {"status": "error", "reason": str(exc)})
                 return
 
             if stop_flag.is_set():
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return
 
             if cancel_response_flag.is_set() and not is_auto:
@@ -349,31 +410,47 @@ def run_session_sync(
                 memory_manager.add_message("assistant", msg)
             turns_completed += 1
 
-            _emit("message_complete", {
-                "message": {
-                    "id": f"msg_{session_id}_{turn}",
-                    "turn": turn,
-                    "role": "assistant",
-                    "agent_name": current_agent.name,
-                    "content": msg,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-            }, turn=turn)
+            _emit(
+                "message_complete",
+                {
+                    "message": {
+                        "id": f"msg_{session_id}_{turn}",
+                        "turn": turn,
+                        "role": "assistant",
+                        "agent_name": current_agent.name,
+                        "content": msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                },
+                turn=turn,
+            )
 
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
-            if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
+            if (
+                detect_end_session(msg)
+                and _count_code_blocks(msg) == 0
+                and not has_delegation
+            ):
                 if is_auto:
                     if logger:
-                        logger.info("Session finished — agent signalled end | turn: %s", turn)
+                        logger.info(
+                            "Session finished — agent signalled end | turn: %s", turn
+                        )
                     _checkpoint_boundary()
-                    _emit("status_change", {"status": "stopped", "reason": "agent_finished"})
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_finished"},
+                    )
                     return
                 else:
                     if logger:
                         logger.info("Agent requested session end | turn: %s", turn)
                     _checkpoint_boundary()
-                    _emit("status_change", {"status": "stopped", "reason": "agent_requested_end"})
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_requested_end"},
+                    )
                     return
 
             _action_fired = False
@@ -408,11 +485,15 @@ def run_session_sync(
                     )
                     if memory_manager is not None:
                         memory_manager.add_message("system", err)
-                    _emit("error", {
-                        "code": "RAG_ERROR",
-                        "message": str(rag_exc),
-                        "fatal": False,
-                    }, turn=turn)
+                    _emit(
+                        "error",
+                        {
+                            "code": "RAG_ERROR",
+                            "message": str(rag_exc),
+                            "fatal": False,
+                        },
+                        turn=turn,
+                    )
 
             # --- Delegation ---
             cmd = detect_delegation(msg)
@@ -429,16 +510,22 @@ def run_session_sync(
                             cmd,
                             turn,
                         )
-                    _emit("agent_switch", {
-                        "from_agent": current_agent.name,
-                        "to_agent": target_name,
-                        "command": cmd,
-                        "reason": None,
-                    }, turn=turn)
-                    history.append({
-                        "role": "assistant",
-                        "content": f"Routing to **{target_name}** (command `{cmd}`)"
-                    })
+                    _emit(
+                        "agent_switch",
+                        {
+                            "from_agent": current_agent.name,
+                            "to_agent": target_name,
+                            "command": cmd,
+                            "reason": None,
+                        },
+                        turn=turn,
+                    )
+                    history.append(
+                        {
+                            "role": "assistant",
+                            "content": f"Routing to **{target_name}** (command `{cmd}`)",
+                        }
+                    )
                     if memory_manager is not None:
                         memory_manager.add_message(
                             "assistant",
@@ -449,6 +536,7 @@ def run_session_sync(
                         from caribou.execution.report_generation import (
                             _generate_agent_report,
                         )
+
                         agent_slice = history[current_agent_history_start:]
                         agent_report = _generate_agent_report(
                             console,
@@ -462,12 +550,17 @@ def run_session_sync(
                             if logger:
                                 logger.info(
                                     "Agent report generated for %s | length: %s chars",
-                                    current_agent.name, len(agent_report),
+                                    current_agent.name,
+                                    len(agent_report),
                                 )
-                        report_memory.update_agent_prompt(new_agent.get_full_prompt(None))
+                        report_memory.update_agent_prompt(
+                            new_agent.get_full_prompt(None)
+                        )
                         current_agent_history_start = len(history)
                     switch_history_start = len(history)
-                    refreshed_agent_prompt = new_agent.get_full_prompt(None) + "\n\n" + analysis_context
+                    refreshed_agent_prompt = (
+                        new_agent.get_full_prompt(None) + "\n\n" + analysis_context
+                    )
                     _emit(
                         "system_message",
                         {"content": refreshed_agent_prompt, "category": "Agent prompt"},
@@ -511,13 +604,17 @@ def run_session_sync(
                             code.count("\n") + 1,
                         )
 
-                    _emit("code_submitted", {
-                        "action_id": f"{session_id}:{turn}:{idx}",
-                        "agent_name": current_agent.name,
-                        "source": code,
-                        "block_index": idx,
-                        "total_blocks": len(code_blocks),
-                    }, turn=turn)
+                    _emit(
+                        "code_submitted",
+                        {
+                            "action_id": f"{session_id}:{turn}:{idx}",
+                            "agent_name": current_agent.name,
+                            "source": code,
+                            "block_index": idx,
+                            "total_blocks": len(code_blocks),
+                        },
+                        turn=turn,
+                    )
 
                     ledger_entry = {
                         "action_id": f"{session_id}:{turn}:{idx}",
@@ -539,15 +636,19 @@ def run_session_sync(
                             "stderr": str(exc),
                             "duration_ms": duration_ms,
                         }
-                        _emit("code_result", {
-                            "action_id": ledger_entry["action_id"],
-                            "agent_name": current_agent.name,
-                            "stdout": "",
-                            "stderr": str(exc),
-                            "success": False,
-                            "duration_ms": duration_ms,
-                            "block_index": idx,
-                        }, turn=turn)
+                        _emit(
+                            "code_result",
+                            {
+                                "action_id": ledger_entry["action_id"],
+                                "agent_name": current_agent.name,
+                                "stdout": "",
+                                "stderr": str(exc),
+                                "success": False,
+                                "duration_ms": duration_ms,
+                                "block_index": idx,
+                            },
+                            turn=turn,
+                        )
                         _checkpoint_boundary()
                         raise
                     duration_ms = int((time.time() - t0) * 1000)
@@ -564,15 +665,19 @@ def run_session_sync(
                             success,
                         )
 
-                    _emit("code_result", {
-                        "action_id": ledger_entry["action_id"],
-                        "agent_name": current_agent.name,
-                        "stdout": exec_result.get("stdout", ""),
-                        "stderr": exec_result.get("stderr", ""),
-                        "success": success,
-                        "duration_ms": duration_ms,
-                        "block_index": idx,
-                    }, turn=turn)
+                    _emit(
+                        "code_result",
+                        {
+                            "action_id": ledger_entry["action_id"],
+                            "agent_name": current_agent.name,
+                            "stdout": exec_result.get("stdout", ""),
+                            "stderr": exec_result.get("stderr", ""),
+                            "success": success,
+                            "duration_ms": duration_ms,
+                            "block_index": idx,
+                        },
+                        turn=turn,
+                    )
                     ledger_entry["recorded_result"] = {
                         "success": success,
                         "stdout": exec_result.get("stdout", ""),
@@ -619,20 +724,28 @@ def run_session_sync(
             # Track / escalate stuck-loop conditions in auto mode.
             if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
                 _checkpoint_boundary()
-                _emit("status_change", {
-                    "status": "stopped",
-                    "reason": f"stuck: {consecutive_failures} consecutive code failures",
-                }, turn=turn)
+                _emit(
+                    "status_change",
+                    {
+                        "status": "stopped",
+                        "reason": f"stuck: {consecutive_failures} consecutive code failures",
+                    },
+                    turn=turn,
+                )
                 return
 
             if is_auto and not _action_fired:
                 consecutive_no_action += 1
                 if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
                     _checkpoint_boundary()
-                    _emit("status_change", {
-                        "status": "stopped",
-                        "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
-                    }, turn=turn)
+                    _emit(
+                        "status_change",
+                        {
+                            "status": "stopped",
+                            "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
+                        },
+                        turn=turn,
+                    )
                     return
                 no_action_msg = (
                     "[SYSTEM] No action was recognised in your last message. "
@@ -655,9 +768,13 @@ def run_session_sync(
             _checkpoint_boundary()
 
             if is_auto:
-                history.append({"role": "user", "content": "Please continue with the next step."})
+                history.append(
+                    {"role": "user", "content": "Please continue with the next step."}
+                )
                 if memory_manager is not None:
-                    memory_manager.add_message("user", "Please continue with the next step.")
+                    memory_manager.add_message(
+                        "user", "Please continue with the next step."
+                    )
                 continue
 
             # --- Interactive: wait for next user message ---
@@ -667,18 +784,22 @@ def run_session_sync(
     except Exception as exc:
         if logger:
             logger.error("Runner error: %s", exc, exc_info=True)
-        _emit("error", {
-            "code": "RUNNER_ERROR",
-            "message": str(exc),
-            "traceback": traceback.format_exc(limit=8),
-            "fatal": True,
-        })
+        _emit(
+            "error",
+            {
+                "code": "RUNNER_ERROR",
+                "message": str(exc),
+                "traceback": traceback.format_exc(limit=8),
+                "fatal": True,
+            },
+        )
         _emit("status_change", {"status": "error", "reason": str(exc)})
 
 
 # ---------------------------------------------------------------------------
 # Async wrapper
 # ---------------------------------------------------------------------------
+
 
 async def run_session_async(
     *,
@@ -697,6 +818,7 @@ async def run_session_async(
     stop_flag: threading.Event,
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    control_message_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
     memory_manager: Any = None,
     report_memory: Any = None,
@@ -731,6 +853,7 @@ async def run_session_async(
         stop_flag=stop_flag,
         cancel_response_flag=cancel_response_flag,
         user_input_queue=user_input_queue,
+        control_message_queue=control_message_queue,
         logger=logger,
         memory_manager=memory_manager,
         report_memory=report_memory,

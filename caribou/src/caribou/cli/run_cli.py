@@ -83,6 +83,7 @@ class AppContext:
         self.llm_client: object | None = None
         self.model_name: str | None = None
         self.model_parameters: Dict[str, object] = {}
+        self.evaluator_runtime: object | None = None
         self.initial_history: List[dict] | None = None
         self.dataset_path: Path | None = None
         self.reference_dataset_path: Optional[Path] = None
@@ -225,6 +226,7 @@ def _setup_and_run_session(
             output_dir=host_output_path if context.output_dir else None,
             make_report=context.make_report,
             agent_report_memory=context.agent_report_memory,
+            evaluator_runtime=context.evaluator_runtime,
         )
     finally:
         auto_save_mode = context.output_dir is not None
@@ -372,6 +374,8 @@ def initialize_context(
     resources_dir: Optional[Path],
     llm_backend: Optional[str],
     model_name: Optional[str],
+    evaluator_llm: Optional[str],
+    evaluator_model: Optional[str],
     ollama_host: str,
     sandbox: Optional[str],
     force_refresh: bool,
@@ -505,7 +509,7 @@ def initialize_context(
             )
             raise typer.Exit(1)
         context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        context.model_name = "gpt-5.2"
+        context.model_name = model_name or "gpt-5.2"
     elif llm_backend == "claude":
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if not anthropic_key:
@@ -516,7 +520,7 @@ def initialize_context(
         from caribou.core.anthropic_wrapper import AnthropicClient
 
         context.llm_client = AnthropicClient(api_key=anthropic_key)
-        context.model_name = "claude-sonnet-4-5-20250929"
+        context.model_name = model_name or "claude-sonnet-4-5-20250929"
     elif is_deepseek_backend(llm_backend):
         if not os.getenv("DEEPSEEK_API_KEY"):
             console.print(
@@ -528,7 +532,7 @@ def initialize_context(
             cast(str, os.getenv("DEEPSEEK_API_KEY")),
             profile=profile,
         )
-        context.model_name = profile.model
+        context.model_name = model_name or profile.model
         context.model_parameters = profile.model_parameters()
     elif llm_backend == "openrouter":
         from caribou.core.openrouter import (
@@ -565,6 +569,49 @@ def initialize_context(
         context.model_name = "llama3"
     else:
         raise typer.BadParameter(f"Unknown LLM backend '{llm_backend}'.")
+
+    # ---- Evaluator LLM Backend ----
+    from caribou.execution.evaluation import EvaluatorRuntime
+    from caribou.server.session_setup import build_model_client, resolve_model_binding
+
+    if evaluator_llm is None:
+        worker_resolved = resolve_model_binding(
+            backend=llm_backend,
+            model_name=context.model_name,
+            resolved_model_name=context.model_name,
+        )
+        context.evaluator_runtime = EvaluatorRuntime(
+            llm_client=cast(object, context.llm_client),
+            model_name=cast(str, context.model_name),
+            provider=(worker_resolved.provider if worker_resolved else llm_backend),
+            selection={"mode": "inherit_worker"},
+        )
+    else:
+        if not evaluator_model:
+            raise typer.BadParameter(
+                "--evaluator-model is required with --evaluator-llm"
+            )
+        evaluator_client, exact_evaluator_model = build_model_client(
+            backend=evaluator_llm,
+            model_name=evaluator_model,
+        )
+        evaluator_resolved = resolve_model_binding(
+            backend=evaluator_llm,
+            model_name=evaluator_model,
+            resolved_model_name=exact_evaluator_model,
+        )
+        context.evaluator_runtime = EvaluatorRuntime(
+            llm_client=evaluator_client,
+            model_name=exact_evaluator_model,
+            provider=(
+                evaluator_resolved.provider if evaluator_resolved else evaluator_llm
+            ),
+            selection={
+                "mode": "explicit",
+                "llm_backend": evaluator_llm,
+                "model_name": evaluator_model,
+            },
+        )
 
     # ---- Additional Resources ----
     context.resources = (
@@ -622,6 +669,8 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "resources_dir",
         "llm_backend",
         "model_name",
+        "evaluator_llm",
+        "evaluator_model",
         "ollama_host",
         "sandbox",
         "force_refresh",
@@ -682,6 +731,12 @@ def main_run_callback(
     llm_backend: Optional[str] = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
     model_name: Optional[str] = typer.Option(
         None, "--model", help="Exact provider model identifier."
+    ),
+    evaluator_llm: Optional[str] = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: Optional[str] = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
     ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
@@ -798,6 +853,12 @@ def run_interactive(
     model_name: str = typer.Option(
         None, "--model", help="Exact provider model identifier."
     ),
+    evaluator_llm: str = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: str = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
+    ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
     ),
@@ -900,6 +961,12 @@ def run_auto(
     llm_backend: str = typer.Option(None, "--llm", help=LLM_BACKEND_HELP),
     model_name: str = typer.Option(
         None, "--model", help="Exact provider model identifier."
+    ),
+    evaluator_llm: str = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: str = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
     ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."

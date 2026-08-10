@@ -3,7 +3,8 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 import {
   Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
-  SessionForkRequest, SessionResumeRequest
+  SessionForkRequest, SessionResumeRequest,
+  EvaluatorModelState, EvaluatorModelUpdateRequest,
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -102,6 +103,29 @@ export class SessionService {
 
   evaluate(id: string): Observable<EvaluationResult> {
     return this.http.post<EvaluationResult>(`api/sessions/${id}/evaluate`, {});
+  }
+
+  getEvaluatorModel(id: string): Observable<EvaluatorModelState> {
+    return this.http.get<EvaluatorModelState>(`api/sessions/${id}/evaluator-model`);
+  }
+
+  updateEvaluatorModel(
+    id: string,
+    request: EvaluatorModelUpdateRequest,
+  ): Observable<EvaluatorModelState> {
+    return this.http.patch<EvaluatorModelState>(
+      `api/sessions/${id}/evaluator-model`,
+      request,
+    ).pipe(
+      tap(state => {
+        this.sessions.update(all => all.map(s =>
+          s.id === id ? { ...s, evaluator_model: state } : s
+        ));
+        if (this.currentSession()?.id === id) {
+          this.currentSession.update(s => s ? { ...s, evaluator_model: state } : s);
+        }
+      })
+    );
   }
 
   updateLocal(session: Session): void {

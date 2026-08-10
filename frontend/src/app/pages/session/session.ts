@@ -14,7 +14,8 @@ import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
 import {
-  Message, Artifact, MemoryState, EvaluationResult, RecoveryMode, SessionForkRequest, SessionResumeRequest
+  Message, Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
+  RecoveryMode, SessionForkRequest, SessionResumeRequest
 } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
@@ -105,6 +106,11 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   evaluating = signal(false);
   evaluationResult = signal<EvaluationResult | null>(null);
   evaluationError = signal<string | null>(null);
+  editingEvaluatorModel = signal(false);
+  evaluatorModelSaving = signal(false);
+  evaluatorModelError = signal<string | null>(null);
+  evaluatorModelReason = signal('');
+  evaluatorModelForm: EvaluatorModelConfig = { mode: 'inherit_worker' };
   showConnectionBanner = computed(() => {
     const s = this.stream.connectionState();
     return s === 'reconnecting' || s === 'expired';
@@ -745,7 +751,15 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       ? this.sessionSvc.resumeSession(s.id, request)
       : kind === 'retry'
         ? this.sessionSvc.retryRecovery(s.id, request)
-        : this.sessionSvc.forkSession(s.id, { ...request, name: this.recoveryForm.name.trim(), llm_backend: this.recoveryForm.llm_backend, model_name: this.recoveryForm.model_name, ollama_model: this.recoveryForm.ollama_model });
+        : this.sessionSvc.forkSession(s.id, {
+            ...request,
+            name: this.recoveryForm.name.trim(),
+            llm_backend: this.recoveryForm.llm_backend,
+            model_name: this.recoveryForm.model_name,
+            ollama_model: this.recoveryForm.ollama_model,
+            evaluator_model: this.recoveryForm.evaluator_model,
+            model_change_reason: this.recoveryForm.model_change_reason?.trim() || undefined,
+          });
     operation.subscribe({
       next: result => {
         this.recoverySubmitting.set(false);
@@ -825,6 +839,51 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.evaluating.set(false);
         this.evaluationError.set(err?.error?.detail ?? 'Evaluation failed.');
         this.toasts.show({ kind: 'error', title: 'Evaluation failed', ttlMs: 4000 });
+      },
+    });
+  }
+
+  openEvaluatorModelEditor(): void {
+    const state = this.session()?.evaluator_model;
+    if (!state) return;
+    this.evaluatorModelForm = { ...state.selection };
+    this.evaluatorModelReason.set('');
+    this.evaluatorModelError.set(null);
+    this.editingEvaluatorModel.set(true);
+  }
+
+  saveEvaluatorModel(): void {
+    const session = this.session();
+    if (!session || this.evaluatorModelSaving()) return;
+    if (
+      this.evaluatorModelForm.mode === 'explicit' &&
+      (!this.evaluatorModelForm.llm_backend?.trim() || !this.evaluatorModelForm.model_name?.trim())
+    ) {
+      this.evaluatorModelError.set('Backend and exact model identifier are required.');
+      return;
+    }
+    const selection: EvaluatorModelConfig = this.evaluatorModelForm.mode === 'inherit_worker'
+      ? { mode: 'inherit_worker' }
+      : {
+          mode: 'explicit',
+          llm_backend: this.evaluatorModelForm.llm_backend?.trim(),
+          model_name: this.evaluatorModelForm.model_name?.trim(),
+        };
+    this.evaluatorModelSaving.set(true);
+    this.evaluatorModelError.set(null);
+    this.sessionSvc.updateEvaluatorModel(session.id, {
+      selection,
+      expected_revision: session.evaluator_model.revision,
+      reason: this.evaluatorModelReason().trim() || null,
+    }).subscribe({
+      next: () => {
+        this.evaluatorModelSaving.set(false);
+        this.editingEvaluatorModel.set(false);
+        this.toasts.show({ kind: 'success', title: 'Evaluator model updated', ttlMs: 3000 });
+      },
+      error: err => {
+        this.evaluatorModelSaving.set(false);
+        this.evaluatorModelError.set(err?.error?.detail ?? 'Unable to update evaluator model.');
       },
     });
   }

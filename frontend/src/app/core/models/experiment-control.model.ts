@@ -157,6 +157,8 @@ export interface PresetResolveRequest {
   executor: PresetExecutor;
   owner: string;
   reviewer: string;
+  evaluator_provider?: PresetProvider;
+  evaluator_model_name?: string;
 }
 
 export interface PresetResolveData {

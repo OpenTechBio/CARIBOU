@@ -22,6 +22,7 @@ export interface Session {
   agent_system: string;
   llm_backend: string;
   resolved_model: ResolvedModelInfo | null;
+  evaluator_model: EvaluatorModelState;
   sandbox_type: SandboxType;
   dataset_path: string;
   max_turns: number | null;
@@ -70,12 +71,33 @@ export interface SessionForkRequest extends SessionResumeRequest {
   llm_backend?: string;
   model_name?: string;
   ollama_model?: string;
+  evaluator_model?: EvaluatorModelConfig;
+  model_change_reason?: string;
 }
 
 export interface ResolvedModelInfo {
   provider: string;
   model: string;
   parameters: Record<string, unknown>;
+}
+
+export interface EvaluatorModelConfig {
+  mode: 'inherit_worker' | 'explicit';
+  llm_backend?: string | null;
+  model_name?: string | null;
+  ollama_model?: string | null;
+}
+
+export interface EvaluatorModelState {
+  selection: EvaluatorModelConfig;
+  resolved_model: ResolvedModelInfo | null;
+  revision: number;
+}
+
+export interface EvaluatorModelUpdateRequest {
+  selection: EvaluatorModelConfig;
+  expected_revision: number;
+  reason?: string | null;
 }
 
 export interface SessionCreateRequest {
@@ -97,6 +119,7 @@ export interface SessionCreateRequest {
   memory_chunk_size?: number;
   compress_memory?: boolean;
   agent_report_memory?: boolean;
+  evaluator_model?: EvaluatorModelConfig;
 }
 
 export interface OpenRouterModel {
@@ -263,6 +286,10 @@ export interface EvaluationResult {
   evaluator_agent: string;
   evaluator_source: string;
   model: string;
+  provider: string | null;
+  evaluator_model: ResolvedModelInfo | null;
+  evaluator_model_revision: number;
+  provider_receipt: Record<string, unknown>;
   assessment: string;
   created_at: string;
 }

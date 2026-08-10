@@ -4,6 +4,7 @@ Disk persistence for CARIBOU sessions.
 Every non-token event triggers a session.json write so a crash or restart
 leaves us with an up-to-date snapshot to reload.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +57,7 @@ def save_session(
         path = session_file(session.id, sessions_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "schema_version": "caribou.web_session.v2",
+            "schema_version": "caribou.web_session.v3",
             "id": session.id,
             "name": session.name,
             "config": session.config.model_dump(mode="json"),
@@ -65,6 +66,12 @@ def save_session(
                 if session.resolved_model is not None
                 else None
             ),
+            "resolved_evaluator_model": (
+                session.resolved_evaluator_model.model_dump()
+                if session.resolved_evaluator_model is not None
+                else None
+            ),
+            "evaluator_model_revision": session.evaluator_model_revision,
             "status": session.status.value,
             "current_agent": session.current_agent,
             "current_turn": session.current_turn,
@@ -79,7 +86,9 @@ def save_session(
             "attempt_number": session.attempt_number,
             "attempts": session.attempts,
             "recovery_mode": (
-                session.recovery_mode.value if session.recovery_mode is not None else None
+                session.recovery_mode.value
+                if session.recovery_mode is not None
+                else None
             ),
             "recovery_status": session.recovery_status.value,
             "recovery_detail": session.recovery_detail,
@@ -126,6 +135,11 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 if data.get("resolved_model")
                 else None
             )
+            resolved_evaluator_model = (
+                ResolvedModelInfo(**data["resolved_evaluator_model"])
+                if data.get("resolved_evaluator_model")
+                else resolved_model
+            )
             raw_status = data.get("status", "stopped")
             # Sessions that were mid-run when the server died are now stopped
             interrupted_recovery = raw_status == "recovering"
@@ -153,6 +167,15 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 updated_at=datetime.fromisoformat(data["updated_at"]),
                 model_name=(resolved_model.model if resolved_model is not None else ""),
                 resolved_model=resolved_model,
+                evaluator_model_name=(
+                    resolved_evaluator_model.model
+                    if resolved_evaluator_model is not None
+                    else ""
+                ),
+                resolved_evaluator_model=resolved_evaluator_model,
+                evaluator_model_revision=max(
+                    1, int(data.get("evaluator_model_revision", 1) or 1)
+                ),
                 parent_session_id=data.get("parent_session_id"),
                 forked_from_checkpoint_id=data.get("forked_from_checkpoint_id"),
                 attempt_number=max(1, int(data.get("attempt_number", 1))),
@@ -183,13 +206,15 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):
-                session.events.append({
-                    "type": "status_change",
-                    "session_id": session.id,
-                    "turn": session.current_turn,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "data": {"status": "stopped", "reason": "server restarted"},
-                })
+                session.events.append(
+                    {
+                        "type": "status_change",
+                        "session_id": session.id,
+                        "turn": session.current_turn,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "data": {"status": "stopped", "reason": "server restarted"},
+                    }
+                )
             sessions[session.id] = session
         except Exception as exc:
             # Skip but log — silent skips have masked schema drift and

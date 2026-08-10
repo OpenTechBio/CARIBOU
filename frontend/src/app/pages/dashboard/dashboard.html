@@ -410,6 +410,26 @@
             </div>
           }
 
+          <label>Evaluator model</label>
+          <div class="ollama-picker">
+            <select [(ngModel)]="form.evaluator_model!.mode">
+              <option value="inherit_worker">Same as worker</option>
+              <option value="explicit">Configure separately</option>
+            </select>
+            @if (form.evaluator_model?.mode === 'explicit') {
+              <select [(ngModel)]="form.evaluator_model!.llm_backend">
+                @for (be of availableBackends(); track be.id) {
+                  <option [value]="be.id">{{ be.display_name }}</option>
+                }
+              </select>
+              <input
+                [(ngModel)]="form.evaluator_model!.model_name"
+                placeholder="Exact evaluator model identifier"
+              />
+              <span class="field-note">Evaluator credentials come from server settings.</span>
+            }
+          </div>
+
           <label>Sandbox</label>
           <select [(ngModel)]="form.sandbox_type">
             <option value="singularity">Singularity</option>
@@ -569,6 +589,14 @@
             {{ form.llm_backend }}{{ form.ollama_model ? ' · ' + form.ollama_model : ''
             }}{{ form.model_name ? ' · ' + form.model_name : '' }}
           </dd>
+          <dt>Evaluator</dt>
+          <dd>
+            @if (form.evaluator_model?.mode === 'explicit') {
+              {{ form.evaluator_model?.llm_backend }} · {{ form.evaluator_model?.model_name }}
+            } @else {
+              Same as worker
+            }
+          </dd>
           <dt>Sandbox</dt>
           <dd>{{ form.sandbox_type }}</dd>
           <dt>Mode</dt>
@@ -654,6 +682,9 @@
             }
           </select>
         }
+
+        <label>Model change reason <span class="field-note">optional</span></label>
+        <textarea [(ngModel)]="forkForm.model_change_reason" maxlength="1000" rows="2"></textarea>
 
         <div class="recovery-field-label">
           <label for="dashboard-fork-recovery">Recovery</label>

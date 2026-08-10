@@ -12,9 +12,11 @@ lowercasing), not prefix matching: `/todo` and `/todos` are different tokens,
 so a former startswith("/todo") check that also matched "/todos" can't
 recur here.
 """
+
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,8 @@ from caribou.execution.artifacts import SessionArtifacts
 from caribou.execution.benchmark_runner import run_benchmark
 from caribou.execution.evaluation import (
     EvaluationContextTooLarge,
+    EvaluatorRuntime,
+    evaluation_response_metadata,
     build_evaluation_payload,
     resolve_evaluator_agent,
     run_evaluation,
@@ -60,6 +64,7 @@ class UserCommandContext:
     benchmark_modules: Optional[List[str]]
     sandbox_manager: object
     output_dir: Optional[Path]
+    evaluator_runtime: EvaluatorRuntime
 
 
 @dataclass
@@ -93,17 +98,19 @@ def _cmd_evaluate(_arg: str, ctx: UserCommandContext) -> None:
     )
 
     console.print("[cyan]Evaluating run...[/cyan]")
+    provider_receipt: Dict[str, object] = {}
     try:
         assessment = run_evaluation(
             evaluator_agent=evaluator_agent,
-            llm_client=ctx.llm_client,
-            model_name=ctx.model_name,
+            llm_client=ctx.evaluator_runtime.llm_client,
+            model_name=ctx.evaluator_runtime.model_name,
             payload=payload,
+            response_callback=lambda response: provider_receipt.update(
+                evaluation_response_metadata(response)
+            ),
         )
     except EvaluationContextTooLarge as exc:
-        console.print(
-            f"[red]{exc} Evaluation aborted; nothing was sent.[/red]"
-        )
+        console.print(f"[red]{exc} Evaluation aborted; nothing was sent.[/red]")
         return
 
     console.print(Panel(assessment, title="Run Evaluation", border_style="cyan"))
@@ -120,13 +127,83 @@ def _cmd_evaluate(_arg: str, ctx: UserCommandContext) -> None:
                 "run_id": ctx.run_id,
                 "turn": ctx.turn,
                 "evaluator_agent": evaluator_agent.name,
-                "model": ctx.model_name,
+                "model": ctx.evaluator_runtime.model_name,
+                "provider": ctx.evaluator_runtime.provider,
+                "evaluator_model_revision": ctx.evaluator_runtime.revision,
+                "provider_receipt": provider_receipt,
                 "assessment": assessment,
             },
             indent=2,
         )
     )
     console.print(f"[bold green]✓ Evaluation saved to:[/bold green] {report_path}")
+
+
+def _cmd_evaluator(arg: str, ctx: UserCommandContext) -> None:
+    """Inspect or change the evaluator-only model binding."""
+
+    tokens = shlex.split(arg)
+    if not tokens or tokens[0] == "status":
+        ctx.console.print(
+            f"Evaluator model: {ctx.evaluator_runtime.provider}/"
+            f"{ctx.evaluator_runtime.model_name} "
+            f"(revision {ctx.evaluator_runtime.revision})"
+        )
+        return
+    if tokens[0] != "model":
+        ctx.console.print(
+            "[yellow]Usage: /evaluator status | /evaluator model "
+            "--llm PROVIDER --model MODEL_ID [--reason TEXT][/yellow]"
+        )
+        return
+    values: Dict[str, str] = {}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token not in {"--llm", "--model", "--reason"} or index + 1 >= len(tokens):
+            ctx.console.print("[red]Invalid evaluator model arguments.[/red]")
+            return
+        values[token] = tokens[index + 1]
+        index += 2
+    backend = values.get("--llm", "").strip()
+    model = values.get("--model", "").strip()
+    if not backend or not model:
+        ctx.console.print("[red]--llm and --model are required.[/red]")
+        return
+    reason = values.get("--reason", "").strip() or None
+    if reason is not None and len(reason) > 1000:
+        ctx.console.print("[red]--reason cannot exceed 1000 characters.[/red]")
+        return
+    from caribou.server.session_setup import build_model_client, resolve_model_binding
+
+    try:
+        client, exact_model = build_model_client(backend=backend, model_name=model)
+        resolved = resolve_model_binding(
+            backend=backend, model_name=model, resolved_model_name=exact_model
+        )
+    except Exception as exc:
+        ctx.console.print(f"[red]Could not configure evaluator model: {exc}[/red]")
+        return
+    previous = ctx.evaluator_runtime.model_name
+    ctx.evaluator_runtime.llm_client = client
+    ctx.evaluator_runtime.model_name = exact_model
+    ctx.evaluator_runtime.provider = resolved.provider if resolved else backend
+    ctx.evaluator_runtime.selection = {
+        "mode": "explicit",
+        "llm_backend": backend,
+        "model_name": model,
+    }
+    ctx.evaluator_runtime.revision += 1
+    system_message = (
+        "[SYSTEM — CONFIGURATION CHANGE] Evaluator model changed "
+        f"from {previous} to {exact_model}. Configuration revision: "
+        f"{ctx.evaluator_runtime.revision - 1} → {ctx.evaluator_runtime.revision}. "
+        f"Reason: {reason or 'not provided'}. Worker model unchanged."
+    )
+    ctx.history.append({"role": "system", "content": system_message})
+    if ctx.memory_manager:
+        ctx.memory_manager.add_message("system", system_message)
+    ctx.console.print(f"[green]{system_message}[/green]")
 
 
 def _format_state_value(value: object) -> str:
@@ -143,7 +220,11 @@ def _print_memory_state(console: Console, state: Dict[str, object], label: str) 
         if k != "context_breakdown"
     ]
     breakdown_lines = [f"  {k}: {_format_state_value(v)}" for k, v in breakdown.items()]
-    body = "\n".join(top_lines) + "\n\n-- context breakdown --\n" + "\n".join(breakdown_lines)
+    body = (
+        "\n".join(top_lines)
+        + "\n\n-- context breakdown --\n"
+        + "\n".join(breakdown_lines)
+    )
     console.print(Panel(body, title=f"Memory State ({label})", border_style="magenta"))
 
 
@@ -214,9 +295,7 @@ def _cmd_artifacts(_arg: str, ctx: UserCommandContext) -> None:
     if not files:
         ctx.console.print(f"[yellow]No artifact files found under {base_dir}[/yellow]")
         return
-    lines = [
-        f"{p.relative_to(base_dir)}  ({p.stat().st_size:,} bytes)" for p in files
-    ]
+    lines = [f"{p.relative_to(base_dir)}  ({p.stat().st_size:,} bytes)" for p in files]
     ctx.console.print(
         Panel("\n".join(lines), title=f"Artifacts ({base_dir})", border_style="green")
     )
@@ -257,6 +336,14 @@ def _register(command: UserCommand) -> None:
         _ALIASES[token.lower()] = command.name
 
 
+_register(
+    UserCommand(
+        name="/evaluator",
+        aliases=(),
+        help="/evaluator status | /evaluator model --llm PROVIDER --model MODEL_ID [--reason TEXT]",
+        handler=_cmd_evaluator,
+    )
+)
 _register(
     UserCommand(
         name="/todo",

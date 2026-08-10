@@ -97,6 +97,23 @@ export class ExperimentControlService {
     );
   }
 
+  cloneExperiment(
+    experimentId: string,
+    evaluatorProvider: string,
+    evaluatorModel: string,
+    reason?: string,
+  ): Observable<MachineResponse<Record<string, unknown>>> {
+    return this.http.post<MachineResponse<Record<string, unknown>>>(
+      `api/control/experiments/${encodeURIComponent(experimentId)}/clone`,
+      {
+        evaluator_provider: evaluatorProvider,
+        evaluator_model: evaluatorModel,
+        reason: reason?.trim() || null,
+      },
+      { headers: this.controlHeaders() },
+    );
+  }
+
   status(runId: string): Observable<MachineResponse<StatusData>> {
     return this.http.get<MachineResponse<StatusData>>(`api/control/runs/${runId}`, {
       headers: this.controlHeaders(),

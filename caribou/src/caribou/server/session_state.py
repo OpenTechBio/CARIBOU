@@ -4,6 +4,7 @@ Session data types and shared constants for the CARIBOU server.
 Kept separate from `session_manager` so persistence, setup, and routing
 code can import the record type without pulling in the whole manager.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from caribou.config import CARIBOU_HOME
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
+    EvaluatorModelState,
     MemoryConfigResponse,
     MessageRecord,
     ResolvedModelInfo,
@@ -74,6 +76,7 @@ class _Session:
     user_input_queue: queue.Queue
     created_at: datetime
     updated_at: datetime
+    control_message_queue: queue.Queue = field(default_factory=queue.Queue)
     name: str = ""
     # Set once sandbox + runner are wired up
     sandbox_manager: Any = None
@@ -83,6 +86,11 @@ class _Session:
     initial_history: List[Dict] = field(default_factory=list)
     model_name: str = ""
     resolved_model: Optional[ResolvedModelInfo] = None
+    evaluator_llm_client: Any = None
+    evaluator_model_name: str = ""
+    resolved_evaluator_model: Optional[ResolvedModelInfo] = None
+    evaluator_model_revision: int = 1
+    evaluator_model_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     analysis_context: str = ""
     runner_task: Optional[asyncio.Task] = None
     logger: Any = None
@@ -109,7 +117,10 @@ class _Session:
 
     def to_response(self) -> SessionResponse:
         memory = None
-        if self.config.memory_strategy.value != "full" or self.memory_manager is not None:
+        if (
+            self.config.memory_strategy.value != "full"
+            or self.memory_manager is not None
+        ):
             # Only MemoryManager (episodic strategy) carries a `.config` dict;
             # AgentReportMemory (agent_report strategy) has no equivalent settings.
             mgr_config = getattr(self.memory_manager, "config", {}) or {}
@@ -140,6 +151,11 @@ class _Session:
             agent_system=self.config.agent_system,
             llm_backend=self.config.llm_backend,
             resolved_model=self.resolved_model,
+            evaluator_model=EvaluatorModelState(
+                selection=self.config.evaluator_model,
+                resolved_model=self.resolved_evaluator_model,
+                revision=self.evaluator_model_revision,
+            ),
             sandbox_type=self.config.sandbox_type,
             dataset_path=self.config.dataset_path,
             max_turns=self.config.max_turns,
@@ -150,7 +166,9 @@ class _Session:
             artifact_count=len(self.artifacts),
             message_count=len(self.messages),
             memory=memory,
-            can_evaluate=self.llm_client is not None and self.agent_system is not None,
+            can_evaluate=(
+                self.evaluator_llm_client is not None and self.agent_system is not None
+            ),
             parent_session_id=self.parent_session_id,
             forked_from_checkpoint_id=self.forked_from_checkpoint_id,
             attempt_number=self.attempt_number,

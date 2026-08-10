@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +80,39 @@ class MemoryConfigResponse(BaseModel):
     chunk_size: Optional[int] = None
 
 
+class EvaluatorModelConfig(BaseModel):
+    """Requested evaluator model binding.
+
+    ``inherit_worker`` preserves the historical behaviour while keeping the
+    evaluator role explicit in persisted state and API responses.
+    """
+
+    mode: Literal["inherit_worker", "explicit"] = "inherit_worker"
+    llm_backend: Optional[str] = None
+    model_name: Optional[str] = None
+    ollama_model: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_explicit_binding(self) -> "EvaluatorModelConfig":
+        if self.mode == "explicit" and not (self.llm_backend or "").strip():
+            raise ValueError("explicit evaluator model requires llm_backend")
+        if self.mode == "inherit_worker" and any(
+            value is not None
+            for value in (self.llm_backend, self.model_name, self.ollama_model)
+        ):
+            raise ValueError(
+                "inherit_worker evaluator model cannot declare provider-specific fields"
+            )
+        return self
+
+
+def _normalize_optional_reason(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 class SessionCreateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     mode: SessionMode
@@ -99,6 +132,7 @@ class SessionCreateRequest(BaseModel):
     memory_chunk_size: Optional[int] = None
     compress_memory: bool = False
     agent_report_memory: bool = False
+    evaluator_model: EvaluatorModelConfig = Field(default_factory=EvaluatorModelConfig)
 
 
 class ResolvedModelInfo(BaseModel):
@@ -107,6 +141,22 @@ class ResolvedModelInfo(BaseModel):
     provider: str
     model: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluatorModelState(BaseModel):
+    selection: EvaluatorModelConfig
+    resolved_model: Optional[ResolvedModelInfo] = None
+    revision: int = Field(default=1, ge=1)
+
+
+class EvaluatorModelUpdateRequest(BaseModel):
+    selection: EvaluatorModelConfig
+    expected_revision: int = Field(ge=1)
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+    _normalize_reason = field_validator("reason", mode="before")(
+        _normalize_optional_reason
+    )
 
 
 class MessageRecord(BaseModel):
@@ -154,6 +204,10 @@ class EvaluationResult(BaseModel):
     evaluator_agent: str
     evaluator_source: str
     model: str
+    provider: Optional[str] = None
+    evaluator_model: Optional[ResolvedModelInfo] = None
+    evaluator_model_revision: int = 1
+    provider_receipt: Dict[str, Any] = Field(default_factory=dict)
     assessment: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -167,6 +221,9 @@ class SessionResponse(BaseModel):
     agent_system: str
     llm_backend: str
     resolved_model: Optional[ResolvedModelInfo] = None
+    evaluator_model: EvaluatorModelState = Field(
+        default_factory=lambda: EvaluatorModelState(selection=EvaluatorModelConfig())
+    )
     sandbox_type: SandboxType
     dataset_path: str
     max_turns: Optional[int]
@@ -208,6 +265,12 @@ class SessionForkRequest(SessionResumeRequest):
     llm_backend: Optional[str] = None
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
+    evaluator_model: Optional[EvaluatorModelConfig] = None
+    model_change_reason: Optional[str] = Field(default=None, max_length=1000)
+
+    _normalize_reason = field_validator("model_change_reason", mode="before")(
+        _normalize_optional_reason
+    )
 
 
 # ---------------------------------------------------------------------------

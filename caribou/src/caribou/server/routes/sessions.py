@@ -4,14 +4,15 @@ import json
 from pathlib import Path
 from typing import List
 
-import aiofiles
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from caribou.execution.evaluation import EvaluationContextTooLarge
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
     EvaluationResult,
+    EvaluatorModelState,
+    EvaluatorModelUpdateRequest,
     MessageRecord,
     SessionCreateRequest,
     SessionForkRequest,
@@ -65,9 +66,7 @@ async def retry_recovery(
         raise _lifecycle_error(exc) from exc
 
 
-@router.post(
-    "/{session_id}/recovery/accept-partial", response_model=SessionResponse
-)
+@router.post("/{session_id}/recovery/accept-partial", response_model=SessionResponse)
 async def accept_partial_recovery(session_id: str) -> SessionResponse:
     try:
         return await session_manager.accept_partial_recovery(session_id)
@@ -181,7 +180,7 @@ async def evaluate_session(session_id: str) -> EvaluationResult:
     s = session_manager.get_session(session_id)
     if not s:
         raise HTTPException(404, "Session not found")
-    if s.llm_client is None or s.agent_system is None:
+    if s.evaluator_llm_client is None or s.agent_system is None:
         raise HTTPException(
             400,
             "Session is not running — start (or restart) the run before evaluating it.",
@@ -192,3 +191,25 @@ async def evaluate_session(session_id: str) -> EvaluationResult:
         raise HTTPException(413, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(500, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/{session_id}/evaluator-model", response_model=EvaluatorModelState)
+async def get_evaluator_model(session_id: str) -> EvaluatorModelState:
+    try:
+        return session_manager.get_evaluator_model(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.patch("/{session_id}/evaluator-model", response_model=EvaluatorModelState)
+async def update_evaluator_model(
+    session_id: str, body: EvaluatorModelUpdateRequest
+) -> EvaluatorModelState:
+    try:
+        return await session_manager.update_evaluator_model(session_id, body)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

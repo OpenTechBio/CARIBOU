@@ -149,6 +149,7 @@ export class DashboardComponent implements OnInit {
     memory_working_history_size: 4,
     memory_summarization_threshold: 20,
     memory_chunk_size: 10,
+    evaluator_model: { mode: 'inherit_worker' },
   };
 
   availableBackends = computed(() =>
@@ -308,6 +309,12 @@ export class DashboardComponent implements OnInit {
     }
     if (this.form.llm_backend === 'openrouter' && !this.form.model_name) {
       return 'Select an OpenRouter model before creating a session.';
+    }
+    if (
+      this.form.evaluator_model?.mode === 'explicit' &&
+      (!this.form.evaluator_model.llm_backend || !this.form.evaluator_model.model_name)
+    ) {
+      return 'Select an evaluator backend and enter an exact evaluator model identifier.';
     }
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       return 'Validate the HPC dataset path before creating a session.';

@@ -49,6 +49,7 @@ try:
         UserCommandContext,
         dispatch_user_command,
     )
+    from caribou.execution.evaluation import EvaluatorRuntime
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -516,6 +517,7 @@ def run_agent_session(
     llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
     llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
     max_output_tokens: int | None = None,
+    evaluator_runtime: Optional[EvaluatorRuntime] = None,
 ) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
@@ -532,6 +534,13 @@ def run_agent_session(
         or max_output_tokens < 1
     ):
         raise ValueError("max_output_tokens must be a positive integer")
+    if evaluator_runtime is None:
+        evaluator_runtime = EvaluatorRuntime(
+            llm_client=llm_client,
+            model_name=model_name,
+            provider="worker-provider",
+            selection={"mode": "inherit_worker"},
+        )
     if (should_checkpoint is None) != (checkpoint_callback is None):
         raise ValueError(
             "should_checkpoint and checkpoint_callback must be supplied together"
@@ -1396,7 +1405,9 @@ def run_agent_session(
             if stop_reason is not None:
                 session_end_reason = stop_reason
                 break
-            prompt_text = "\n[bold]Next message ('/help' for commands, 'exit' to quit)[/bold]"
+            prompt_text = (
+                "\n[bold]Next message ('/help' for commands, 'exit' to quit)[/bold]"
+            )
             try:
                 user_input = Prompt.ask(prompt_text, default="").strip()
             except (EOFError, KeyboardInterrupt):
@@ -1424,6 +1435,7 @@ def run_agent_session(
                 benchmark_modules=benchmark_modules,
                 sandbox_manager=sandbox_manager,
                 output_dir=output_dir,
+                evaluator_runtime=evaluator_runtime,
             )
             if dispatch_user_command(user_input, command_ctx):
                 continue
@@ -1450,6 +1462,10 @@ def run_agent_session(
             "driver_agent": driver_agent.name,
             "model": model_name,
             "model_parameters": dict(model_parameters or {}),
+            "evaluator_model": evaluator_runtime.model_name,
+            "evaluator_provider": evaluator_runtime.provider,
+            "evaluator_model_revision": evaluator_runtime.revision,
+            "evaluator_selection": dict(evaluator_runtime.selection),
             "agent_turns": turns_completed,
             "code_blocks_produced": code_block_count,
             "code_exec_attempts": code_exec_attempts,

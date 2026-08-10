@@ -8,11 +8,13 @@ TODOs, report-file conventions) and server/session_manager.py (server-specific:
 session state, HTTP-facing persistence) so both share one implementation of
 the actual evaluation logic instead of drifting apart.
 """
+
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from caribou.agents.AgentSystem import Agent, AgentSystem
 from caribou.config import DEFAULT_AGENT_DIR
@@ -27,6 +29,38 @@ EVALUATOR_BLUEPRINT_NAME = "evaluator_agent"
 # docstring) applied before sending, not tied to any specific model's real
 # limit. Exceeding it aborts the call rather than truncating silently.
 EVALUATE_MAX_CONTEXT_TOKENS = 100_000
+
+
+@dataclass
+class EvaluatorRuntime:
+    """Mutable evaluator-only model binding for an interactive CLI run."""
+
+    llm_client: object
+    model_name: str
+    provider: str
+    selection: Dict[str, object] = field(default_factory=dict)
+    revision: int = 1
+
+
+def evaluation_response_metadata(response: object) -> Dict[str, object]:
+    """Extract a secret-free evaluator provider receipt."""
+
+    def value(item: object | None, name: str) -> object | None:
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    usage = value(response, "usage")
+    return {
+        "response_id": value(response, "id"),
+        "response_model": value(response, "model"),
+        "prompt_tokens": value(usage, "prompt_tokens"),
+        "completion_tokens": value(usage, "completion_tokens"),
+        "total_tokens": value(usage, "total_tokens"),
+        "cost_usd": value(usage, "cost"),
+    }
 
 
 class EvaluationContextTooLarge(ValueError):
@@ -124,6 +158,7 @@ def run_evaluation(
     model_name: str,
     payload: Dict[str, object],
     max_context_tokens: int = EVALUATE_MAX_CONTEXT_TOKENS,
+    response_callback: Optional[Callable[[object], None]] = None,
 ) -> str:
     """Call the evaluator LLM with the given payload. Raises
     EvaluationContextTooLarge if the estimated size exceeds the bound —
@@ -142,4 +177,6 @@ def run_evaluation(
         ],
         temperature=0.2,
     )
+    if response_callback is not None:
+        response_callback(response)
     return response.choices[0].message.content
