@@ -25,6 +25,11 @@ from caribou.core.deepseek import (
     deepseek_profile_for_backend,
     is_deepseek_backend,
 )
+from caribou.core.python_environments import (
+    PythonEnvironmentError,
+    discover_python_environments,
+    validate_python_environment_path,
+)
 
 if TYPE_CHECKING:
     from caribou.agents.AgentSystem import AgentSystem
@@ -88,6 +93,7 @@ class AppContext:
         self.reference_dataset_path: Optional[Path] = None
         self.resources: List[Tuple[Path, str]] = []
         self.sandbox_details: dict = {}
+        self.python_environment_path: Optional[Path] = None
         self.compress_memory: bool = False
         self.output_dir: Optional[Path] = None
         self.parent_params: Dict[str, Any] = {}
@@ -374,6 +380,7 @@ def initialize_context(
     model_name: Optional[str],
     ollama_host: str,
     sandbox: Optional[str],
+    python_env: Optional[Path],
     force_refresh: bool,
     compress_memory: bool,
     output_dir: Optional[Path],  # <-- ADDED
@@ -459,9 +466,42 @@ def initialize_context(
     console.print(f"[cyan]Initializing sandbox backend: {sandbox}[/cyan]")
     script_dir = Path(__file__).resolve().parent
 
+    selected_python_environment: str | None = None
+    if python_env is not None:
+        try:
+            selected_python_environment = validate_python_environment_path(
+                python_env
+            ).path
+        except PythonEnvironmentError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--python-env") from exc
+    elif output_dir is None:
+        candidates = discover_python_environments()
+        if candidates:
+            console.print("\n[bold]Python analysis environment[/bold]")
+            console.print("  [cyan]0[/cyan] Bundled container environment (default)")
+            for index, candidate in enumerate(candidates, start=1):
+                console.print(
+                    f"  [cyan]{index}[/cyan] {candidate.name} "
+                    f"[dim]({candidate.kind.value}: {candidate.path})[/dim]"
+                )
+            selection = IntPrompt.ask(
+                "Select an environment",
+                default=0,
+                choices=[str(index) for index in range(len(candidates) + 1)],
+            )
+            if selection:
+                selected_python_environment = candidates[selection - 1].path
+    context.python_environment_path = (
+        Path(selected_python_environment) if selected_python_environment else None
+    )
+
     if sandbox == "docker":
         manager_class, handle, copy_cmd, exec_endpoint, status_endpoint = init_docker(
-            script_dir, subprocess, console, force_refresh=force_refresh
+            script_dir,
+            subprocess,
+            console,
+            force_refresh=force_refresh,
+            python_environment_path=selected_python_environment,
         )
         is_exec_mode = False
     elif sandbox == "singularity":
@@ -472,6 +512,7 @@ def initialize_context(
                 subprocess,
                 console,
                 force_refresh=force_refresh,
+                python_environment_path=selected_python_environment,
             )
         )
         is_exec_mode = True
@@ -624,6 +665,7 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "model_name",
         "ollama_host",
         "sandbox",
+        "python_env",
         "force_refresh",
         "compress_memory",
         "output_dir",
@@ -688,6 +730,15 @@ def main_run_callback(
     ),
     sandbox: Optional[str] = typer.Option(
         None, "--sandbox", help="Sandbox backend: 'docker' or 'singularity'."
+    ),
+    python_env: Optional[Path] = typer.Option(
+        None,
+        "--python-env",
+        help="Absolute host Conda/venv/pyenv prefix to mount read-only.",
+        exists=True,
+        file_okay=False,
+        readable=True,
+        resolve_path=True,
     ),
     force_refresh: bool = typer.Option(
         False,
@@ -804,6 +855,15 @@ def run_interactive(
     sandbox: str = typer.Option(
         None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."
     ),
+    python_env: Optional[Path] = typer.Option(
+        None,
+        "--python-env",
+        help="Absolute host Conda/venv/pyenv prefix to mount read-only.",
+        exists=True,
+        file_okay=False,
+        readable=True,
+        resolve_path=True,
+    ),
     force_refresh: bool = typer.Option(
         False,
         "--force-refresh",
@@ -906,6 +966,15 @@ def run_auto(
     ),
     sandbox: str = typer.Option(
         None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."
+    ),
+    python_env: Optional[Path] = typer.Option(
+        None,
+        "--python-env",
+        help="Absolute host Conda/venv/pyenv prefix to mount read-only.",
+        exists=True,
+        file_okay=False,
+        readable=True,
+        resolve_path=True,
     ),
     force_refresh: bool = typer.Option(
         False,

@@ -9,9 +9,20 @@ CONNECTION_FILE_PATH="$HOME/kernel-connection.json"
 KERNEL_LOG_PATH="/tmp/kernel.log" # Keep logs in /tmp
 
 echo "[start.sh] Starting Jupyter Kernel ($KERNEL_SCRIPT_PATH) in background..."
+# The API/control service always uses the image environment.  Only the analysis
+# kernel switches to an explicitly mounted host prefix.
+KERNEL_PYTHON="${CARIBOU_PYTHON_EXECUTABLE:-python}"
+if [ -n "${CARIBOU_PYTHON_EXECUTABLE:-}" ]; then
+    echo "[start.sh] Validating mounted analysis Python: $KERNEL_PYTHON"
+    if ! "$KERNEL_PYTHON" -c "import ipykernel" > /tmp/python-env-check.log 2>&1; then
+        echo "[start.sh] ERROR: Selected environment cannot import ipykernel."
+        cat /tmp/python-env-check.log
+        exit 1
+    fi
+fi
 # Start the kernel using the script in the user's home directory.
 # Redirect kernel output to a log file.
-python "$KERNEL_SCRIPT_PATH" > "$KERNEL_LOG_PATH" 2>&1 &
+"$KERNEL_PYTHON" "$KERNEL_SCRIPT_PATH" > "$KERNEL_LOG_PATH" 2>&1 &
 
 # Store the PID of the kernel process
 KERNEL_PID=$!
@@ -44,4 +55,4 @@ echo "[start.sh] Starting FastAPI Uvicorn server..."
 # --host 0.0.0.0 makes it accessible from outside the container (host machine).
 # --port 8000 is the standard port, ensure it's mapped in docker run/compose.
 # Use exec to replace the shell process with uvicorn, allowing tini to manage it correctly.
-exec uvicorn kernel_api:app --host 0.0.0.0 --port 8000 --log-level debug
+exec /usr/local/envs/rapids/bin/python -m uvicorn kernel_api:app --host 0.0.0.0 --port 8000 --log-level debug

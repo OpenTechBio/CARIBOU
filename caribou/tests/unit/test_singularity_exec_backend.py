@@ -4,6 +4,7 @@ import hashlib
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -101,12 +102,21 @@ class FakeSubprocess:
         self.on_flush = on_flush
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
         self.processes: list[FakeProcess] = []
+        self.run_calls: list[tuple[list[str], dict[str, Any]]] = []
 
     def Popen(self, command: list[str], **kwargs: Any) -> FakeProcess:
         self.calls.append((command, kwargs))
         process = FakeProcess(ready=self.ready, on_flush=self.on_flush)
         self.processes.append(process)
         return process
+
+    def run(self, command: list[str], **kwargs: Any):
+        self.run_calls.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="__CARIBOU_PYTHON_VERSION__=3.12.4\n",
+            stderr="",
+        )
 
 
 def _configure_backend(
@@ -119,6 +129,7 @@ def _configure_backend(
     readiness_timeout: float = 0.2,
     gpu_enabled: bool | None = None,
     celltypist_cache_enabled: bool = True,
+    python_environment_path: Path | None = None,
 ):
     import caribou.sandbox.benchmarking_sandbox_management_singularity as sing
 
@@ -141,6 +152,7 @@ def _configure_backend(
         readiness_timeout=readiness_timeout,
         gpu_enabled=gpu_enabled,
         celltypist_cache_enabled=celltypist_cache_enabled,
+        python_environment_path=python_environment_path,
     )
     return manager_class, console, image_path, actual_digest
 
@@ -221,6 +233,44 @@ def test_singularity_exec_can_disable_implicit_celltypist_mount(
     assert not any("celltypist_models" in argument for argument in command)
     assert not any("CELLTYPIST" in key for key in kwargs["env"])
     assert not (tmp_path / "caribou-home" / "celltypist_models").exists()
+
+
+def test_singularity_exec_mounts_and_uses_host_python_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prefix = tmp_path / "analysis-env"
+    python = prefix / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    (prefix / "conda-meta").mkdir()
+    (prefix / "conda-meta" / "history").write_text("+python-3.12\n")
+    fake_subprocess = FakeSubprocess()
+    manager_class, _, image_path, _ = _configure_backend(
+        tmp_path,
+        monkeypatch,
+        fake_subprocess,
+        python_environment_path=prefix,
+    )
+    output_dir = tmp_path / "outputs"
+    backend = manager_class()
+    backend.set_data([], output_dir)
+
+    assert backend.start_container() is True
+
+    preflight, preflight_kwargs = fake_subprocess.run_calls[0]
+    launch, launch_kwargs = fake_subprocess.calls[0]
+    expected_bind = f"{prefix.resolve()}:{prefix.resolve()}:ro"
+    assert expected_bind in preflight
+    assert expected_bind in launch
+    assert str(python.resolve()) in preflight
+    assert str(python.resolve()) in launch
+    assert str(image_path.resolve()) in preflight
+    assert preflight_kwargs["env"]["SINGULARITYENV_CONDA_PREFIX"] == str(prefix)
+    assert launch_kwargs["env"]["SINGULARITYENV_PYTHONNOUSERSITE"] == "1"
+    assert backend.python_environment.mode == "host"
+    assert backend.python_environment.python_version == "3.12.4"
 
 
 def test_singularity_exec_rejects_hash_mismatch_before_launch(

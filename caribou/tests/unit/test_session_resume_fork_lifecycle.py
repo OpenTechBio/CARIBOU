@@ -15,6 +15,7 @@ from caribou.server.models import (
 )
 from caribou.server.session_manager import SessionManager
 from caribou.server.session_state import _Session
+from caribou.core.python_environments import ResolvedPythonEnvironment
 
 
 def _stopped_session(tmp_path: Path) -> _Session:
@@ -71,6 +72,12 @@ def _manager(session: _Session) -> SessionManager:
 def test_resume_keeps_identity_and_creates_a_new_attempt(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         session = _stopped_session(tmp_path)
+        session.python_environment = ResolvedPythonEnvironment(
+            mode="host",
+            path="/shared/envs/analysis",
+            python_executable="/shared/envs/analysis/bin/python",
+            kind="conda",
+        )
         manager = _manager(session)
         completed = asyncio.Event()
 
@@ -90,6 +97,7 @@ def test_resume_keeps_identity_and_creates_a_new_attempt(tmp_path: Path, monkeyp
         assert session.attempt_number == 2
         assert session.attempts[-1]["kind"] == "resume"
         assert session.attempts[-1]["source_checkpoint_id"] == "checkpoint-source"
+        assert response.python_environment.mode == "host"
 
     asyncio.run(run())
 
@@ -99,6 +107,12 @@ def test_fork_records_lineage_and_preserves_model_when_not_overridden(
 ) -> None:
     async def run() -> None:
         session = _stopped_session(tmp_path)
+        session.python_environment = ResolvedPythonEnvironment(
+            mode="host",
+            path="/shared/envs/analysis",
+            python_executable="/shared/envs/analysis/bin/python",
+            kind="conda",
+        )
         manager = _manager(session)
         completed = asyncio.Event()
 
@@ -127,6 +141,94 @@ def test_fork_records_lineage_and_preserves_model_when_not_overridden(
         assert child.config.model_name == "provider/source-model"
         assert child.recovery_status == RecoveryStatus.awaiting_checkpoint
         assert child.attempts[-1]["kind"] == "fork"
+        assert child.python_environment == session.python_environment
+
+    asyncio.run(run())
+
+
+def test_fork_can_explicitly_switch_from_host_to_bundled_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    async def run() -> None:
+        session = _stopped_session(tmp_path)
+        session.config = session.config.model_copy(
+            update={"python_environment_path": "/shared/envs/analysis"}
+        )
+        session.python_environment = ResolvedPythonEnvironment(
+            mode="host",
+            path="/shared/envs/analysis",
+            python_executable="/shared/envs/analysis/bin/python",
+            kind="conda",
+        )
+        manager = _manager(session)
+
+        async def fake_complete(_source, _child, _request):
+            return None
+
+        monkeypatch.setattr(manager, "_complete_fork", fake_complete)
+        monkeypatch.setattr("caribou.server.session_manager.SESSIONS_DIR", tmp_path)
+        monkeypatch.setattr(
+            "caribou.server.session_manager._create_session_logger", lambda *_: None
+        )
+
+        response = await manager.fork_session(
+            session.id,
+            SessionForkRequest(
+                name="bundled fork",
+                recovery_mode="smart",
+                target_mode="interactive",
+                python_environment_path=None,
+            ),
+        )
+        await asyncio.sleep(0)
+        child = manager.get_session(response.id)
+
+        assert child is not None
+        assert child.config.python_environment_path is None
+        assert child.python_environment.mode == "bundled"
+        assert child.python_environment.path is None
+
+    asyncio.run(run())
+
+
+def test_fork_can_select_a_different_host_environment(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        environment = tmp_path / "analysis-env"
+        python = environment / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("#!/bin/sh\n", encoding="utf-8")
+        python.chmod(0o755)
+        (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+
+        session = _stopped_session(tmp_path)
+        manager = _manager(session)
+
+        async def fake_complete(_source, _child, _request):
+            return None
+
+        monkeypatch.setattr(manager, "_complete_fork", fake_complete)
+        monkeypatch.setattr("caribou.server.session_manager.SESSIONS_DIR", tmp_path)
+        monkeypatch.setattr(
+            "caribou.server.session_manager._create_session_logger", lambda *_: None
+        )
+
+        response = await manager.fork_session(
+            session.id,
+            SessionForkRequest(
+                name="host fork",
+                recovery_mode="smart",
+                target_mode="interactive",
+                python_environment_path=str(environment),
+            ),
+        )
+        await asyncio.sleep(0)
+        child = manager.get_session(response.id)
+
+        assert child is not None
+        assert child.config.python_environment_path == str(environment.resolve())
+        assert child.python_environment.mode == "host"
+        assert child.python_environment.path == str(environment.resolve())
+        assert child.python_environment.kind == "venv"
 
     asyncio.run(run())
 
