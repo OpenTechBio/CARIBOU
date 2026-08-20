@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from caribou.core.python_environments import ResolvedPythonEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -122,6 +124,7 @@ class SessionCreateRequest(BaseModel):
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
     sandbox_type: SandboxType = SandboxType.singularity
+    python_environment_path: Optional[str] = None
     dataset_path: str
     reference_dataset_path: Optional[str] = None
     max_turns: Optional[int] = None
@@ -225,6 +228,7 @@ class SessionResponse(BaseModel):
         default_factory=lambda: EvaluatorModelState(selection=EvaluatorModelConfig())
     )
     sandbox_type: SandboxType
+    python_environment: ResolvedPythonEnvironment
     dataset_path: str
     max_turns: Optional[int]
     current_turn: int
@@ -267,10 +271,16 @@ class SessionForkRequest(SessionResumeRequest):
     ollama_model: Optional[str] = None
     evaluator_model: Optional[EvaluatorModelConfig] = None
     model_change_reason: Optional[str] = Field(default=None, max_length=1000)
+    # Omitted means inherit; explicit null selects the bundled environment.
+    python_environment_path: Optional[str] = None
 
     _normalize_reason = field_validator("model_change_reason", mode="before")(
         _normalize_optional_reason
     )
+
+
+class PythonEnvironmentPathRequest(BaseModel):
+    path: str
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from caribou.config import DEFAULT_AGENT_DIR
+from caribou.core.python_environments import PythonEnvironmentError
 from caribou.server.models import (
     EvaluatorModelConfig,
     ResolvedModelInfo,
@@ -305,14 +306,28 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
             from caribou.core.sandbox_management import init_docker
 
             manager_class, handle, copy_cmd, _, _ = init_docker(
-                script_dir, subprocess, console, force_refresh=False
+                script_dir,
+                subprocess,
+                console,
+                force_refresh=False,
+                python_environment_path=config.python_environment_path,
             )
             sandbox = manager_class()
             if not sandbox.start_container():
+                environment_error = getattr(sandbox, "last_start_error", None)
                 raise SandboxUnavailableError(
-                    code="DOCKER_START_FAILED",
-                    message="Docker sandbox failed to start.",
-                    suggested_fix="Confirm the Docker daemon is running (`docker info`), then retry.",
+                    code=(
+                        "PYTHON_ENV_INCOMPATIBLE"
+                        if config.python_environment_path
+                        else "DOCKER_START_FAILED"
+                    ),
+                    message=environment_error or "Docker sandbox failed to start.",
+                    suggested_fix=(
+                        "Use an environment whose Python and ipykernel work inside the "
+                        "CARIBOU Docker image, or select the bundled environment."
+                        if config.python_environment_path
+                        else "Confirm the Docker daemon is running (`docker info`), then retry."
+                    ),
                 )
             copy_cmd(config.dataset_path, f"{handle}:{SANDBOX_DATA_PATH}")
             if config.reference_dataset_path:
@@ -326,7 +341,12 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
             from caribou.core.sandbox_management import init_singularity_exec
 
             manager_class, _, _, _, _ = init_singularity_exec(
-                script_dir, SANDBOX_DATA_PATH, subprocess, console, force_refresh=False
+                script_dir,
+                SANDBOX_DATA_PATH,
+                subprocess,
+                console,
+                force_refresh=False,
+                python_environment_path=config.python_environment_path,
             )
             sandbox = manager_class()
             sandbox.set_data(
@@ -339,10 +359,20 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
                 output_dir,
             )
             if not sandbox.start_container():
+                environment_error = getattr(sandbox, "last_start_error", None)
                 raise SandboxUnavailableError(
-                    code="SINGULARITY_START_FAILED",
-                    message="Singularity sandbox failed to start.",
-                    suggested_fix="Check the singularity/apptainer install and try again.",
+                    code=(
+                        "PYTHON_ENV_INCOMPATIBLE"
+                        if config.python_environment_path
+                        else "SINGULARITY_START_FAILED"
+                    ),
+                    message=environment_error or "Singularity sandbox failed to start.",
+                    suggested_fix=(
+                        "Use an environment built for a compatible Linux/CUDA runtime, "
+                        "or select the bundled environment."
+                        if config.python_environment_path
+                        else "Check the singularity/apptainer install and try again."
+                    ),
                 )
             return sandbox
 
@@ -353,6 +383,15 @@ def build_sandbox(config: SessionCreateRequest, output_dir: Path):
         )
     except SandboxUnavailableError:
         raise
+    except PythonEnvironmentError as exc:
+        raise SandboxUnavailableError(
+            code=exc.code,
+            message=str(exc),
+            suggested_fix=(
+                "Choose a discovered environment or provide an absolute readable prefix "
+                "containing bin/python."
+            ),
+        ) from exc
     except SystemExit as exc:
         # Legacy sandbox helpers call sys.exit(1) on missing binaries at
         # import time. Convert that into an actionable UI error rather than

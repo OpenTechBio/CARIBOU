@@ -372,6 +372,7 @@
   display: flex;
   gap: 0.5rem;
   input { flex: 1; font-family: monospace; }
+  select { flex: 1; min-width: 0; }
 }
 
 .path-note,

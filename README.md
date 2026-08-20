@@ -69,7 +69,24 @@ caribou run interactive
 caribou run auto --turns 10 --prompt "Perform QC and generate a UMAP."
 ```
 
-The run wizard prompts for blueprint, dataset, sandbox, and LLM backend if not supplied as flags.
+The run wizard prompts for blueprint, dataset, sandbox, Python analysis
+environment, and LLM backend if not supplied as flags. The bundled container
+environment remains the default. To use an existing host Conda, Mamba,
+Micromamba, pyenv, or virtualenv prefix instead:
+
+```bash
+caribou run interactive \
+  --sandbox singularity \
+  --python-env /absolute/path/to/environment
+```
+
+CARIBOU mounts the selected prefix read-only at the same absolute path and uses
+its `bin/python` for agent-generated analysis code. The prefix must be visible on
+the machine running CARIBOU and binary-compatible with the selected container.
+Docker environments must also contain `ipykernel`. Invalid or incompatible
+environments fail session startup; CARIBOU never silently falls back to the
+bundled interpreter. Host environments are mutable developer inputs and do not
+replace frozen container images for controlled experiment or benchmark runs.
 
 DeepSeek uses exact V4 model IDs and exposes two locked modes:
 
@@ -212,6 +229,7 @@ caribou run auto \
   --blueprint ~/.local/share/caribou/agent_systems/my_system.json \
   --dataset   ~/.local/share/caribou/datasets/my_data.h5ad \
   --sandbox   singularity \
+  --python-env /absolute/path/to/environment \
   --llm       claude \
   --turns     20 \
   --output-dir ./results/run_001

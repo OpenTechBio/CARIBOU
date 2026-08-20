@@ -13,6 +13,12 @@ from pydantic import BaseModel
 import shutil
 
 from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
+from caribou.core.python_environments import (
+    PythonEnvironmentCandidate,
+    PythonEnvironmentError,
+    discover_python_environments,
+    validate_python_environment_path,
+)
 from caribou.core.deepseek import DEEPSEEK_PROFILES
 from caribou.core.openrouter import (
     OPENROUTER_CATALOG_URL,
@@ -27,6 +33,7 @@ from caribou.server.models import (
     CommandConfig,
     LLMBackend,
     OllamaModelsResponse,
+    PythonEnvironmentPathRequest,
     SaveBlueprintRequest,
     ServerStatus,
 )
@@ -130,6 +137,29 @@ async def get_backends() -> List[LLMBackend]:
                 )
             result.append(b.copy(update=update))
     return result
+
+
+@router.get(
+    "/config/python-environments",
+    response_model=List[PythonEnvironmentCandidate],
+)
+async def get_python_environments() -> List[PythonEnvironmentCandidate]:
+    """Discover usable Python prefixes visible to the CARIBOU server host."""
+
+    return discover_python_environments()
+
+
+@router.post(
+    "/config/python-environments/validate",
+    response_model=PythonEnvironmentCandidate,
+)
+async def validate_python_environment(
+    body: PythonEnvironmentPathRequest,
+) -> PythonEnvironmentCandidate:
+    try:
+        return validate_python_environment_path(body.path)
+    except PythonEnvironmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/config/blueprints", response_model=List[AgentBlueprint])

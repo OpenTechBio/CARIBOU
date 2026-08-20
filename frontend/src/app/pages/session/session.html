@@ -482,6 +482,17 @@
             <span>{{ s.resolved_model?.parameters?.['thinking'] ? 'Enabled' : 'Disabled' }}</span>
           }
           <span class="ml">Sandbox</span><span>{{ s.sandbox_type }}</span>
+          <span class="ml">Python</span>
+          <span>
+            @if (s.python_environment.mode === 'host') {
+              {{ s.python_environment.kind }} · {{ s.python_environment.path }}
+              @if (s.python_environment.python_version) {
+                · {{ s.python_environment.python_version }}
+              }
+            } @else {
+              Bundled container environment
+            }
+          </span>
           <span class="ml">Mode</span><span>{{ s.mode }}</span>
           @if (s.memory; as mem) {
             <span class="ml">Memory</span>

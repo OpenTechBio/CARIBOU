@@ -1,6 +1,8 @@
 # Use official NVIDIA CUDA image based on Ubuntu 22.04
 FROM nvidia/cuda:12.0.0-devel-ubuntu22.04
 
+LABEL org.caribou.host-python-environment="1"
+
 # Set DEBIAN_FRONTEND to noninteractive to prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 

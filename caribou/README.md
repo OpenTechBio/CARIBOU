@@ -49,8 +49,10 @@ PYTHONPATH=caribou/src conda run --prefix "$CARIBOU_CONDA_PREFIX" \
 ```
 
 The control-plane environment is shared by the CLI, web service, and tests.
-Biological code executes in the versioned Docker/Apptainer analysis image; a
-new Conda environment is not created for each run or Slurm job.
+Biological code executes in the versioned Docker/Apptainer analysis image by
+default; a new Conda environment is not created for each run or Slurm job.
+Developer sessions may instead select an existing read-only host prefix as
+described below.
 
 Long-running software agents should use the durable, machine-readable command
 contract in [docs/agent-cli.md](docs/agent-cli.md). It covers discovery,
@@ -118,7 +120,9 @@ This will trigger a series of prompts:
 2.  **Select a driver agent:** Choose which agent in the system will receive the first instruction.
 3.  **Select Dataset:** Pick the dataset you downloaded in Step 2.
 4.  **Choose a sandbox backend:** Select `docker` or `singularity`.
-5.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`,
+5.  **Choose a Python environment:** Keep the bundled default or select a
+    discovered host Conda/Mamba/pyenv/virtualenv prefix.
+6.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`,
     `deepseek-thinking`, or `ollama`. `deepseek` is the quick DeepSeek V4 Flash
     profile; `deepseek-thinking` is DeepSeek V4 Pro with thinking enabled.
 
@@ -149,8 +153,18 @@ The main command for executing an agent system.
       --driver-agent data_analyst \
       --dataset ~/.local/share/caribou/datasets/my_data.h5ad \
       --sandbox docker \
+      --python-env /absolute/path/to/environment \
       --llm chatgpt
     ```
+
+`--python-env` mounts the selected prefix read-only at the same absolute path and
+uses its `bin/python` for sandbox analysis. The environment must be visible on
+the CARIBOU host and compatible with the container; Docker additionally requires
+`ipykernel`. The web session form provides the same discovered-environment picker
+and manual path validation. This feature executes host-provided code and exposes
+server-visible paths, so the current unauthenticated web server remains suitable
+only for trusted/single-user deployment. CARIBOU automatically rebuilds a cached
+Docker image once if it predates host-environment launcher support.
 
 ### `caribou create-system`
 

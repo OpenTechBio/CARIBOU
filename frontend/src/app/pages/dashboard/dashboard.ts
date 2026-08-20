@@ -8,7 +8,7 @@ import { ConfigService } from '../../core/services/config.service';
 import { DatasetService } from '../../core/services/dataset.service';
 import { ToastService } from '../../core/services/toast.service';
 import {
-  Session, SessionCreateRequest, SessionForkRequest, Dataset
+  Session, SessionCreateRequest, SessionForkRequest, Dataset, PythonEnvironmentCandidate
 } from '../../core/models/session.model';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 import { IconComponent } from '../../shared/components/icon/icon';
@@ -109,6 +109,16 @@ export class DashboardComponent implements OnInit {
   forkSource = signal<Session | null>(null);
   forkSubmitting = signal(false);
   forkError = signal<string | null>(null);
+  pythonEnvironmentChoice = signal('bundled');
+  manualPythonEnvironmentPath = signal('');
+  validatedPythonEnvironment = signal<PythonEnvironmentCandidate | null>(null);
+  pythonEnvironmentError = signal<string | null>(null);
+  pythonEnvironmentLoading = signal(false);
+  forkPythonEnvironmentChoice = signal('inherit');
+  forkManualPythonEnvironmentPath = signal('');
+  forkValidatedPythonEnvironment = signal<PythonEnvironmentCandidate | null>(null);
+  forkPythonEnvironmentError = signal<string | null>(null);
+  forkPythonEnvironmentLoading = signal(false);
   forkForm: SessionForkRequest = {
     name: '',
     recovery_mode: 'smart',
@@ -247,6 +257,11 @@ export class DashboardComponent implements OnInit {
     this.createError.set(null);
     this.wizardStep.set('preset');
     this.selectedPreset.set('scrna-explore');
+    this.pythonEnvironmentChoice.set('bundled');
+    this.form.python_environment_path = undefined;
+    this.manualPythonEnvironmentPath.set('');
+    this.validatedPythonEnvironment.set(null);
+    this.pythonEnvironmentError.set(null);
     this.showCreateDialog.set(true);
   }
 
@@ -319,6 +334,12 @@ export class DashboardComponent implements OnInit {
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       return 'Validate the HPC dataset path before creating a session.';
     }
+    if (
+      this.pythonEnvironmentChoice() === 'manual' &&
+      !this.validatedPythonEnvironment()
+    ) {
+      return 'Validate the host Python environment path before creating a session.';
+    }
     if (!this.form.agent_system || !this.form.llm_backend || !this.form.dataset_path) {
       return 'Blueprint, backend, and dataset are required.';
     }
@@ -369,6 +390,61 @@ export class DashboardComponent implements OnInit {
         this.openRouterError.set(null);
       }
     }
+  }
+
+  onPythonEnvironmentChange(value: string): void {
+    this.pythonEnvironmentChoice.set(value);
+    this.pythonEnvironmentError.set(null);
+    this.validatedPythonEnvironment.set(null);
+    if (value === 'bundled' || value === 'manual') {
+      this.form.python_environment_path = undefined;
+    } else {
+      this.form.python_environment_path = value;
+    }
+  }
+
+  onManualPythonEnvironmentInput(value: string): void {
+    this.manualPythonEnvironmentPath.set(value);
+    this.validatedPythonEnvironment.set(null);
+    this.form.python_environment_path = undefined;
+    this.pythonEnvironmentError.set(null);
+  }
+
+  validateManualPythonEnvironment(): void {
+    const path = this.manualPythonEnvironmentPath().trim();
+    if (!path) {
+      this.pythonEnvironmentError.set('Enter an absolute environment prefix.');
+      return;
+    }
+    this.pythonEnvironmentLoading.set(true);
+    this.pythonEnvironmentError.set(null);
+    this.configSvc.validatePythonEnvironment(path).subscribe({
+      next: (candidate) => {
+        this.pythonEnvironmentLoading.set(false);
+        this.validatedPythonEnvironment.set(candidate);
+        this.form.python_environment_path = candidate.path;
+      },
+      error: (err) => {
+        this.pythonEnvironmentLoading.set(false);
+        this.validatedPythonEnvironment.set(null);
+        this.form.python_environment_path = undefined;
+        this.pythonEnvironmentError.set(
+          err?.error?.detail ?? 'The environment prefix is not usable.',
+        );
+      },
+    });
+  }
+
+  refreshPythonEnvironments(): void {
+    this.pythonEnvironmentLoading.set(true);
+    this.pythonEnvironmentError.set(null);
+    this.configSvc.getPythonEnvironments().subscribe({
+      next: () => this.pythonEnvironmentLoading.set(false),
+      error: () => {
+        this.pythonEnvironmentLoading.set(false);
+        this.pythonEnvironmentError.set('Could not query environments on the server host.');
+      },
+    });
   }
 
   loadOpenRouterModels(refresh = false): void {
@@ -444,6 +520,10 @@ export class DashboardComponent implements OnInit {
   duplicateSession(s: Session, event: Event): void {
     event.stopPropagation();
     this.forkError.set(null);
+    this.forkPythonEnvironmentChoice.set('inherit');
+    this.forkManualPythonEnvironmentPath.set('');
+    this.forkValidatedPythonEnvironment.set(null);
+    this.forkPythonEnvironmentError.set(null);
     this.forkForm = {
       name: `${s.name || s.id.slice(0, 8)} fork`,
       llm_backend: s.llm_backend,
@@ -476,6 +556,13 @@ export class DashboardComponent implements OnInit {
     }
     if (this.forkForm.target_mode === 'auto' && !(this.forkForm.additional_turns! > 0)) {
       this.forkError.set('Enter an additional-turn budget for Auto mode.');
+      return;
+    }
+    if (
+      this.forkPythonEnvironmentChoice() === 'manual' &&
+      !this.forkValidatedPythonEnvironment()
+    ) {
+      this.forkError.set('Validate the host Python environment path before creating the fork.');
       return;
     }
     const forkTab = reserveNewTab();
@@ -516,6 +603,63 @@ export class DashboardComponent implements OnInit {
         this.forkForm.ollama_model = result.default_model || result.models[0];
       });
     }
+  }
+
+  onForkPythonEnvironmentChange(value: string): void {
+    this.forkPythonEnvironmentChoice.set(value);
+    this.forkPythonEnvironmentError.set(null);
+    this.forkValidatedPythonEnvironment.set(null);
+    if (value === 'inherit' || value === 'manual') {
+      this.forkForm.python_environment_path = undefined;
+    } else if (value === 'bundled') {
+      this.forkForm.python_environment_path = null;
+    } else {
+      this.forkForm.python_environment_path = value;
+    }
+  }
+
+  onForkManualPythonEnvironmentInput(value: string): void {
+    this.forkManualPythonEnvironmentPath.set(value);
+    this.forkValidatedPythonEnvironment.set(null);
+    this.forkForm.python_environment_path = undefined;
+    this.forkPythonEnvironmentError.set(null);
+  }
+
+  validateForkManualPythonEnvironment(): void {
+    const path = this.forkManualPythonEnvironmentPath().trim();
+    if (!path) {
+      this.forkPythonEnvironmentError.set('Enter an absolute environment prefix.');
+      return;
+    }
+    this.forkPythonEnvironmentLoading.set(true);
+    this.forkPythonEnvironmentError.set(null);
+    this.configSvc.validatePythonEnvironment(path).subscribe({
+      next: (candidate) => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkValidatedPythonEnvironment.set(candidate);
+        this.forkForm.python_environment_path = candidate.path;
+      },
+      error: (err) => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkValidatedPythonEnvironment.set(null);
+        this.forkForm.python_environment_path = undefined;
+        this.forkPythonEnvironmentError.set(
+          err?.error?.detail ?? 'The environment prefix is not usable.',
+        );
+      },
+    });
+  }
+
+  refreshForkPythonEnvironments(): void {
+    this.forkPythonEnvironmentLoading.set(true);
+    this.forkPythonEnvironmentError.set(null);
+    this.configSvc.getPythonEnvironments().subscribe({
+      next: () => this.forkPythonEnvironmentLoading.set(false),
+      error: () => {
+        this.forkPythonEnvironmentLoading.set(false);
+        this.forkPythonEnvironmentError.set('Could not query environments on the server host.');
+      },
+    });
   }
 
   toggleSelectMode(): void {

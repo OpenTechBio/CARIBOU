@@ -8,6 +8,7 @@ import {
   OllamaModelsResponse,
   OpenRouterCatalogue,
   OpenRouterEndpointsResponse,
+  PythonEnvironmentCandidate,
   ServerStatus,
 } from '../models/session.model';
 
@@ -20,12 +21,13 @@ export class ConfigService {
   readonly backends = signal<LLMBackend[]>([]);
   readonly ollamaModels = signal<OllamaModelsResponse | null>(null);
   readonly openRouterCatalogue = signal<OpenRouterCatalogue | null>(null);
+  readonly pythonEnvironments = signal<PythonEnvironmentCandidate[]>([]);
 
   loadAll(): Observable<unknown> {
     return new Observable((obs) => {
       let done = 0;
       const check = () => {
-        if (++done === 4) {
+        if (++done === 5) {
           obs.next(null);
           obs.complete();
         }
@@ -49,6 +51,13 @@ export class ConfigService {
         },
         error: () => {
           this.ollamaModels.set(null);
+          check();
+        },
+      });
+      this.getPythonEnvironments().subscribe({
+        next: () => check(),
+        error: () => {
+          this.pythonEnvironments.set([]);
           check();
         },
       });
@@ -95,5 +104,18 @@ export class ConfigService {
     return this.http.get<OpenRouterEndpointsResponse>('api/config/openrouter/endpoints', {
       params: { model_id: modelId },
     });
+  }
+
+  getPythonEnvironments(): Observable<PythonEnvironmentCandidate[]> {
+    return this.http
+      .get<PythonEnvironmentCandidate[]>('api/config/python-environments')
+      .pipe(tap((items) => this.pythonEnvironments.set(items)));
+  }
+
+  validatePythonEnvironment(path: string): Observable<PythonEnvironmentCandidate> {
+    return this.http.post<PythonEnvironmentCandidate>(
+      'api/config/python-environments/validate',
+      { path },
+    );
   }
 }

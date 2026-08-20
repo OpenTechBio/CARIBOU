@@ -6,6 +6,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
+from caribou.core.python_environments import PythonEnvironmentError
 from caribou.execution.evaluation import EvaluationContextTooLarge
 from caribou.server.models import (
     ArtifactRecord,
@@ -27,12 +28,17 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 @router.post("", response_model=SessionResponse, status_code=201)
 async def create_session(body: SessionCreateRequest) -> SessionResponse:
-    return await session_manager.create_session(body)
+    try:
+        return await session_manager.create_session(body)
+    except PythonEnvironmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _lifecycle_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(404, str(exc).strip("'"))
+    if isinstance(exc, PythonEnvironmentError):
+        return HTTPException(400, str(exc))
     return HTTPException(409, str(exc))
 
 

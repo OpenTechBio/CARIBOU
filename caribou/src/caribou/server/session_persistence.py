@@ -27,6 +27,10 @@ from caribou.server.models import (
     SessionCreateRequest,
     SessionStatus,
 )
+from caribou.core.python_environments import (
+    PythonEnvironmentKind,
+    ResolvedPythonEnvironment,
+)
 from caribou.server.session_state import SESSIONS_DIR, _Session
 
 _log = logging.getLogger(__name__)
@@ -72,6 +76,7 @@ def save_session(
                 else None
             ),
             "evaluator_model_revision": session.evaluator_model_revision,
+            "python_environment": session.python_environment.model_dump(mode="json"),
             "status": session.status.value,
             "current_agent": session.current_agent,
             "current_turn": session.current_turn,
@@ -140,6 +145,14 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 if data.get("resolved_evaluator_model")
                 else resolved_model
             )
+            python_environment = ResolvedPythonEnvironment.model_validate(
+                data.get("python_environment")
+                or {
+                    "mode": "bundled",
+                    "python_executable": "/usr/local/envs/rapids/bin/python",
+                    "kind": PythonEnvironmentKind.conda.value,
+                }
+            )
             raw_status = data.get("status", "stopped")
             # Sessions that were mid-run when the server died are now stopped
             interrupted_recovery = raw_status == "recovering"
@@ -176,6 +189,7 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 evaluator_model_revision=max(
                     1, int(data.get("evaluator_model_revision", 1) or 1)
                 ),
+                python_environment=python_environment,
                 parent_session_id=data.get("parent_session_id"),
                 forked_from_checkpoint_id=data.get("forked_from_checkpoint_id"),
                 attempt_number=max(1, int(data.get("attempt_number", 1))),

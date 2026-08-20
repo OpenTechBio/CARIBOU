@@ -39,4 +39,5 @@ benchmarking/celltyping_benchmarks/clean_plots/tsp_large_intestine/
 *.note
 manuscript/
 .codex
+.opencode
 .dev/CARIBOU_manuscript_revised.docx
