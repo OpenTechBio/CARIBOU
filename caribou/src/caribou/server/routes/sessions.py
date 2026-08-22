@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from caribou.core.python_environments import PythonEnvironmentError
 from caribou.execution.evaluation import EvaluationContextTooLarge
+from caribou.execution.work_items import WorkItemNotFound
 from caribou.server.models import (
     ArtifactRecord,
     CodeEventRecord,
@@ -19,6 +20,9 @@ from caribou.server.models import (
     SessionForkRequest,
     SessionResumeRequest,
     SessionResponse,
+    WorkItemDetail,
+    WorkItemReviewResult,
+    WorkItemSummary,
 )
 from caribou.server.session_manager import session_manager
 
@@ -168,6 +172,50 @@ async def get_code_events(session_id: str) -> List[CodeEventRecord]:
     if not s:
         raise HTTPException(404, "Session not found")
     return s.code_events
+
+
+@router.get("/{session_id}/work-items", response_model=List[WorkItemSummary])
+async def get_work_items(session_id: str) -> List[WorkItemSummary]:
+    try:
+        return [
+            WorkItemSummary.model_validate(item)
+            for item in session_manager.list_work_items(session_id)
+        ]
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.get("/{session_id}/work-items/{item_id}", response_model=WorkItemDetail)
+async def get_work_item(session_id: str, item_id: int) -> WorkItemDetail:
+    try:
+        return WorkItemDetail.model_validate(
+            session_manager.read_work_item(session_id, item_id)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except WorkItemNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post(
+    "/{session_id}/work-items/{item_id}/review",
+    response_model=WorkItemReviewResult,
+)
+async def review_work_item(session_id: str, item_id: int) -> WorkItemReviewResult:
+    try:
+        return WorkItemReviewResult.model_validate(
+            await session_manager.review_work_item(session_id, item_id)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except WorkItemNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Evaluator provider failed: {exc}") from exc
 
 
 @router.get("/{session_id}/memory")

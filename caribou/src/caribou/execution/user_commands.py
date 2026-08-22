@@ -1,16 +1,14 @@
 """
 User-typed REPL commands for the interactive `caribou run` session.
 
-These are commands the *human* types at the interactive prompt (`/todo`,
+These are commands the *human* types at the interactive prompt (`/work-items`,
 `/evaluate`, ...). They are unrelated to agent delegation commands
 (`delegate_to_<agent>`), which are emitted by the LLM itself and dispatched in
 runner.py by matching `detect_delegation()` against `Agent.commands` from the
 blueprint JSON — that mechanism has no human input in the loop at all.
 
 Dispatch is exact-match on the first whitespace-delimited token (after
-lowercasing), not prefix matching: `/todo` and `/todos` are different tokens,
-so a former startswith("/todo") check that also matched "/todos" can't
-recur here.
+lowercasing), not prefix matching.
 """
 
 from __future__ import annotations
@@ -32,6 +30,7 @@ from caribou.execution.evaluation import (
     EvaluationContextTooLarge,
     EvaluatorRuntime,
     evaluation_response_metadata,
+    evaluate_work_item,
     build_evaluation_payload,
     resolve_evaluator_agent,
     run_evaluation,
@@ -40,7 +39,7 @@ from caribou.execution.MemoryManager import MemoryManager
 from caribou.execution.path_utils import get_default_runs_dir
 from caribou.execution.report_generation import AgentReportMemory
 from caribou.execution.token_utils import estimate_messages_tokens
-from caribou.execution.ui_helpers import _render_todos
+from caribou.execution.work_items import WorkItemError, WorkItemStore
 
 
 @dataclass
@@ -65,6 +64,7 @@ class UserCommandContext:
     sandbox_manager: object
     output_dir: Optional[Path]
     evaluator_runtime: EvaluatorRuntime
+    work_items: WorkItemStore
 
 
 @dataclass
@@ -245,53 +245,77 @@ def _cmd_memory(_arg: str, ctx: UserCommandContext) -> None:
         )
 
 
-def _cmd_todo(arg: str, ctx: UserCommandContext) -> None:
-    todo_text = arg.strip()
-    if not todo_text:
-        ctx.console.print("[yellow]Usage: /todo <task>[/yellow]")
+def _cmd_work_items(_arg: str, ctx: UserCommandContext) -> None:
+    items = ctx.work_items.list()
+    if not items:
+        ctx.console.print("[yellow]No work items.[/yellow]")
         return
-    todo_item = ctx.artifacts.add_todo(todo_text, "user", ctx.turn)
-    todo_message = f"TODO added (#{todo_item.id}) by user: {todo_item.text}"
-    ctx.history.append({"role": "system", "content": todo_message})
-    if ctx.memory_manager:
-        ctx.memory_manager.add_message("system", todo_message)
-    ctx.console.print(f"[green]Added TODO #[/green]{todo_item.id}: {todo_item.text}")
+    lines = []
+    for item in items:
+        completed = "—"
+        if item.get("completed_at"):
+            completed = f"T{item['completed_turn']} @ {item['completed_at']}"
+        lines.append(
+            f"{item['id']}  {item['status']}  {item['owner']}  {item['title']}\n"
+            f"  created T{item['created_turn']} @ {item['created_at']}  "
+            f"completed {completed}"
+        )
+    ctx.console.print(Panel("\n".join(lines), title="Work Items", border_style="cyan"))
 
 
-def _cmd_done(arg: str, ctx: UserCommandContext) -> None:
-    parts = arg.split()
-    if not parts or not parts[0].isdigit():
-        ctx.console.print("[yellow]Usage: /done <id>[/yellow]")
+def _cmd_work_item(arg: str, ctx: UserCommandContext) -> None:
+    if not arg.strip().isdigit():
+        ctx.console.print("[yellow]Usage: /work-item <id>[/yellow]")
         return
-    todo_id = int(parts[0])
-    completed_item = ctx.artifacts.complete_todo(todo_id)
-    if not completed_item:
-        ctx.console.print(f"[yellow]No TODO found with id {todo_id}[/yellow]")
+    try:
+        item = ctx.work_items.read(int(arg.strip()))
+    except WorkItemError as exc:
+        ctx.console.print(f"[red]{exc}[/red]")
         return
-    todo_message = f"TODO completed (#{completed_item.id}) by user"
-    ctx.history.append({"role": "system", "content": todo_message})
-    if ctx.memory_manager:
-        ctx.memory_manager.add_message("system", todo_message)
-    ctx.console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
+    ctx.console.print(
+        Panel(
+            json.dumps(item, indent=2),
+            title=f"Work Item {item['id']}",
+            border_style="cyan",
+        )
+    )
 
 
-def _cmd_todos(_arg: str, ctx: UserCommandContext) -> None:
-    todo_items = [
-        {
-            "id": t.id,
-            "text": t.text,
-            "status": t.status,
-            "added_by": t.added_by,
-            "turn": t.turn,
-        }
-        for t in ctx.artifacts.list_todos()
-    ]
-    _render_todos(ctx.console, todo_items)
+def _cmd_review_work_item(arg: str, ctx: UserCommandContext) -> None:
+    if not arg.strip().isdigit():
+        ctx.console.print("[yellow]Usage: /review-work-item <id>[/yellow]")
+        return
+    try:
+        evaluator_agent, source = resolve_evaluator_agent(ctx.agent_system)
+        ctx.console.print(f"[dim]Using {source}.[/dim]")
+        result = evaluate_work_item(
+            store=ctx.work_items,
+            item_id=int(arg.strip()),
+            run_id=ctx.run_id,
+            turn=ctx.turn,
+            evaluator_agent=evaluator_agent,
+            llm_client=ctx.evaluator_runtime.llm_client,
+            model_name=ctx.evaluator_runtime.model_name,
+        )
+    except (
+        Exception
+    ) as exc:  # provider errors are durably recorded by evaluate_work_item
+        ctx.console.print(f"[red]Work-item review failed: {exc}[/red]")
+        return
+    ctx.console.print(
+        Panel(
+            str(result["assessment"]),
+            title=f"Work Item Review: {result['verdict']}",
+            border_style="cyan",
+        )
+    )
 
 
 def _cmd_artifacts(_arg: str, ctx: UserCommandContext) -> None:
     base_dir = ctx.artifacts.base_dir
-    files = sorted(p for p in base_dir.rglob("*") if p.is_file())
+    files = sorted(
+        p for p in base_dir.rglob("*") if p.is_file() and ".git" not in p.parts
+    )
     if not files:
         ctx.console.print(f"[yellow]No artifact files found under {base_dir}[/yellow]")
         return
@@ -346,26 +370,26 @@ _register(
 )
 _register(
     UserCommand(
-        name="/todo",
+        name="/work-items",
         aliases=(),
-        help="/todo <task> — add a TODO item",
-        handler=_cmd_todo,
+        help="/work-items — list work items",
+        handler=_cmd_work_items,
     )
 )
 _register(
     UserCommand(
-        name="/done",
+        name="/work-item",
         aliases=(),
-        help="/done <id> — mark a TODO item complete",
-        handler=_cmd_done,
+        help="/work-item <id> — inspect one work item",
+        handler=_cmd_work_item,
     )
 )
 _register(
     UserCommand(
-        name="/todos",
-        aliases=("todos",),
-        help="/todos — list TODO items",
-        handler=_cmd_todos,
+        name="/review-work-item",
+        aliases=(),
+        help="/review-work-item <id> — evaluate a closed work item",
+        handler=_cmd_review_work_item,
     )
 )
 _register(

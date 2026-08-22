@@ -166,6 +166,24 @@ server-visible paths, so the current unauthenticated web server remains suitable
 only for trusted/single-user deployment. CARIBOU automatically rebuilds a cached
 Docker image once if it predates host-environment launcher support.
 
+Interactive runs expose an enforced work-item ledger to agents. Agent commands
+must occupy the whole message and use these forms:
+
+```text
+open_work_item "<title>" "<body>"
+close_work_item <id> "<completion summary>"
+list_work_items
+read_work_item <id>
+delegate_to_<agent> <id>
+```
+
+Operators can inspect the same ledger with `/work-items` and `/work-item <id>`,
+and request bounded evaluator review with `/review-work-item <id>`. Every
+transition is committed in the run's `work-items/` Git repository. Blueprints
+may set `"work_item_policy": {"qc_mode": "required"}` to make close move an
+item to `In review`; required mode also needs a declared `evaluator_agent`.
+Without that field, close moves directly to `Done` and review is optional.
+
 ### `caribou create-system`
 
 Tools for building new agent system blueprints.

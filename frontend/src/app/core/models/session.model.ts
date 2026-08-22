@@ -315,3 +315,55 @@ export interface EvaluationResult {
   assessment: string;
   created_at: string;
 }
+
+export interface WorkItemSummary {
+  id: number;
+  title: string;
+  status: 'Backlog' | 'Ready' | 'In progress' | 'In review' | 'Done';
+  owner: string;
+  created_turn: number;
+  created_at: string;
+  completed_turn: number | null;
+  completed_at: string | null;
+}
+
+export interface WorkItemDetail extends WorkItemSummary {
+  schema_version: string;
+  run_id: string;
+  body: string;
+  completion_summary: string | null;
+  closed_turn: number | null;
+  closed_at: string | null;
+  transitions: WorkItemTransition[];
+  reviews: WorkItemReview[];
+  opening_commit: string | null;
+  latest_commit: string | null;
+}
+
+export interface WorkItemTransition {
+  kind: string;
+  actor: string;
+  turn: number;
+  timestamp: string;
+  from_status: string | null;
+  to_status: string;
+  from_owner: string | null;
+  to_owner: string;
+}
+
+export interface WorkItemReview {
+  evaluator: string;
+  turn: number;
+  timestamp: string;
+  verdict: 'approve' | 'reject' | null;
+  assessment: string;
+  provider_receipt: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface WorkItemReviewResult {
+  item: WorkItemDetail;
+  verdict: 'approve' | 'reject';
+  assessment: string;
+  provider_receipt: Record<string, unknown>;
+}

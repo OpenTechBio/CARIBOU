@@ -16,6 +16,11 @@ export interface BlueprintContent {
   agents: Record<string, AgentConfig>;
   is_package_default: boolean;
   evaluator_agent: string | null;
+  work_item_policy: WorkItemPolicyConfig;
+}
+
+export interface WorkItemPolicyConfig {
+  qc_mode: 'optional' | 'required';
 }
 
 export interface SaveBlueprintRequest {
@@ -23,6 +28,7 @@ export interface SaveBlueprintRequest {
   global_policy: string;
   agents: Record<string, AgentConfig>;
   evaluator_agent: string | null;
+  work_item_policy: WorkItemPolicyConfig;
 }
 
 // Local editor state types (not sent over the wire)

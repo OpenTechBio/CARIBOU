@@ -1,4 +1,4 @@
-import { Artifact, Message } from './session.model';
+import { Artifact, Message, WorkItemDetail } from './session.model';
 
 export interface AgentEventEnvelope<T = unknown> {
   type: AgentEventType;
@@ -20,6 +20,7 @@ export type AgentEventType =
   | 'recovery_progress'
   | 'recovery_completed'
   | 'system_message'
+  | 'work_item_changed'
   | 'error'
   | 'pong';
 
@@ -97,6 +98,10 @@ export interface SystemMessageData {
   category: string;
 }
 
+export interface WorkItemChangedData {
+  item: WorkItemDetail;
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -108,5 +113,6 @@ export type AgentEvent =
   | AgentEventEnvelope<RecoveryProgressData>
   | AgentEventEnvelope<RecoveryCompletedData>
   | AgentEventEnvelope<SystemMessageData>
+  | AgentEventEnvelope<WorkItemChangedData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

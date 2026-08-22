@@ -33,9 +33,7 @@ class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **_kwargs):
         self.calls += 1
@@ -56,9 +54,7 @@ class FakeSandbox:
 class FakeNonStreamingLLM:
     def __init__(self, text):
         self.text = text
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **_kwargs):
         message = SimpleNamespace(content=self.text, role="assistant")
@@ -70,18 +66,22 @@ class FakeFailingStreamingLLM:
     def __init__(self, *, fail_after_token=False):
         self.fail_after_token = fail_after_token
         self.calls = []
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
         self.calls.append(kwargs)
 
         if kwargs.get("stream"):
+
             def chunks():
                 if self.fail_after_token:
-                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="partial"))])
+                    yield SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(delta=SimpleNamespace(content="partial"))
+                        ]
+                    )
                 raise RuntimeError("incomplete chunked read")
+
             return chunks()
 
         message = SimpleNamespace(content="fallback response", role="assistant")
@@ -92,7 +92,9 @@ class FakeFailingStreamingLLM:
 def test_stream_tokens_accepts_non_streaming_openai_compatible_response():
     llm = FakeNonStreamingLLM("loaded")
 
-    assert list(_stream_tokens(llm, "llama3", [{"role": "user", "content": "load"}])) == ["loaded"]
+    assert list(
+        _stream_tokens(llm, "llama3", [{"role": "user", "content": "load"}])
+    ) == ["loaded"]
 
 
 def test_stream_failure_does_not_issue_a_second_provider_request():
@@ -116,10 +118,14 @@ def test_partial_stream_failure_does_not_replay_the_prompt():
     assert len(llm.calls) == 1
 
 
-def test_interactive_delegation_waits_for_user_before_next_agent_turn(tmp_path: Path, monkeypatch):
+def test_interactive_delegation_waits_for_user_before_next_agent_turn(
+    tmp_path: Path, monkeypatch
+):
     rag_stub = ModuleType("caribou.execution.rag_client")
     rag_stub.get_rag_client = lambda _console: None
-    monkeypatch.setitem(__import__("sys").modules, "caribou.execution.rag_client", rag_stub)
+    monkeypatch.setitem(
+        __import__("sys").modules, "caribou.execution.rag_client", rag_stub
+    )
 
     coder = FakeAgent("coder")
     planner = FakeAgent(
@@ -173,10 +179,97 @@ def test_interactive_delegation_waits_for_user_before_next_agent_turn(tmp_path: 
     assert not thread.is_alive()
 
 
-def test_turn_checkpoint_contains_complete_failed_action_ledger(tmp_path: Path, monkeypatch):
+def test_interactive_work_item_transfers_and_blocks_end_session(
+    tmp_path: Path, monkeypatch
+):
     rag_stub = ModuleType("caribou.execution.rag_client")
     rag_stub.get_rag_client = lambda _console: None
-    monkeypatch.setitem(__import__("sys").modules, "caribou.execution.rag_client", rag_stub)
+    monkeypatch.setitem(
+        __import__("sys").modules, "caribou.execution.rag_client", rag_stub
+    )
+
+    coder = FakeAgent("coder")
+    planner = FakeAgent(
+        "planner",
+        {"delegate_to_coder": SimpleNamespace(target_agent="coder")},
+    )
+    agent_system = FakeAgentSystem({"planner": planner, "coder": coder})
+    llm = FakeLLM(
+        [
+            'open_work_item "Implement" "Build and test it"',
+            "delegate_to_coder 0",
+            "end_session",
+        ]
+    )
+    stop_flag = threading.Event()
+    user_input_queue = queue.Queue()
+    user_input_queue.put("continue")
+    user_input_queue.put("continue")
+    events = []
+    third_idle = threading.Event()
+    idle_count = 0
+
+    def emit(event):
+        nonlocal idle_count
+        events.append(event)
+        if event["type"] == "status_change" and event["data"].get("status") == "idle":
+            idle_count += 1
+            if idle_count == 3:
+                third_idle.set()
+
+    thread = threading.Thread(
+        target=run_session_sync,
+        kwargs={
+            "session_id": "session-work-items",
+            "agent_system": agent_system,
+            "driver_agent": planner,
+            "analysis_context": "analysis",
+            "llm_client": llm,
+            "sandbox_manager": FakeSandbox(),
+            "history": [{"role": "user", "content": "start"}],
+            "is_auto": False,
+            "max_turns": 10,
+            "model_name": "fake",
+            "output_dir": tmp_path,
+            "emit": emit,
+            "stop_flag": stop_flag,
+            "user_input_queue": user_input_queue,
+        },
+    )
+    thread.start()
+
+    assert third_idle.wait(timeout=5)
+    changes = [
+        event["data"]["item"]
+        for event in events
+        if event["type"] == "work_item_changed"
+    ]
+    assert changes[0]["id"] == 0
+    assert changes[-1]["owner"] == "coder"
+    assert any(
+        event["type"] == "system_message"
+        and "end_session refused" in event["data"].get("content", "")
+        for event in events
+    )
+    assert not any(
+        event["type"] == "status_change"
+        and event["data"].get("reason") == "agent_requested_end"
+        for event in events
+    )
+
+    stop_flag.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_turn_checkpoint_contains_complete_failed_action_ledger(
+    tmp_path: Path, monkeypatch
+):
+    rag_stub = ModuleType("caribou.execution.rag_client")
+    rag_stub.get_rag_client = lambda _console: None
+    monkeypatch.setitem(
+        __import__("sys").modules, "caribou.execution.rag_client", rag_stub
+    )
 
     class FailingSandbox:
         def exec_code(self, _code, timeout):

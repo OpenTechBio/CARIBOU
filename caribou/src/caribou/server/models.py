@@ -215,6 +215,37 @@ class EvaluationResult(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class WorkItemSummary(BaseModel):
+    id: int
+    title: str
+    status: str
+    owner: str
+    created_turn: int
+    created_at: str
+    completed_turn: Optional[int] = None
+    completed_at: Optional[str] = None
+
+
+class WorkItemDetail(WorkItemSummary):
+    schema_version: str
+    run_id: str
+    body: str
+    completion_summary: Optional[str] = None
+    closed_turn: Optional[int] = None
+    closed_at: Optional[str] = None
+    transitions: List[Dict[str, Any]] = Field(default_factory=list)
+    reviews: List[Dict[str, Any]] = Field(default_factory=list)
+    opening_commit: Optional[str] = None
+    latest_commit: Optional[str] = None
+
+
+class WorkItemReviewResult(BaseModel):
+    item: WorkItemDetail
+    verdict: str
+    assessment: str
+    provider_receipt: Dict[str, Any] = Field(default_factory=dict)
+
+
 class SessionResponse(BaseModel):
     id: str
     name: str
@@ -326,12 +357,17 @@ class AgentConfig(BaseModel):
     code_samples: List[str] = []
 
 
+class WorkItemPolicyConfig(BaseModel):
+    qc_mode: Literal["optional", "required"] = "optional"
+
+
 class BlueprintContent(BaseModel):
     name: str
     global_policy: str
     agents: Dict[str, AgentConfig]
     is_package_default: bool
     evaluator_agent: Optional[str] = None
+    work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
 
 
 class SaveBlueprintRequest(BaseModel):
@@ -339,6 +375,7 @@ class SaveBlueprintRequest(BaseModel):
     global_policy: str
     agents: Dict[str, AgentConfig]
     evaluator_agent: Optional[str] = None
+    work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
 
 
 class ServerStatus(BaseModel):

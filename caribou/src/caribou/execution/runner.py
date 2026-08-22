@@ -34,7 +34,6 @@ try:
         detect_delegation,
         detect_end_session,
         detect_rag,
-        _extract_artifacts_from_msg,
         _count_code_blocks,
         _code_preview,
     )
@@ -50,6 +49,15 @@ try:
         dispatch_user_command,
     )
     from caribou.execution.evaluation import EvaluatorRuntime
+    from caribou.execution.work_items import (
+        WorkItemError,
+        WorkItemPolicy,
+        WorkItemStore,
+        execute_work_item_command,
+        parse_delegation_item_id,
+        parse_work_item_command,
+        render_work_item_prompt,
+    )
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -561,6 +569,14 @@ def run_agent_session(
         output_dir if output_dir else (default_runs_dir / "session_notes" / run_id)
     )
     artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
+    work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
+    work_items = (
+        WorkItemStore(artifacts_dir, run_id, work_item_policy) if not is_auto else None
+    )
+    if work_items is not None and len(history) > 1:
+        prompt_appendix = render_work_item_prompt(work_item_policy)
+        if prompt_appendix not in history[1].get("content", ""):
+            history[1]["content"] = history[1].get("content", "") + prompt_appendix
 
     if agent_report_memory and compress_memory:
         console.print(
@@ -796,41 +812,68 @@ def run_agent_session(
         if blocks_found:
             code_block_count += blocks_found
 
-        # --- Artifact extraction (notes, TODOs) ---
-        extracted_notes, extracted_todos = _extract_artifacts_from_msg(msg)
-        if extracted_notes:
-            for note in extracted_notes:
-                artifacts.add_note(note, current_agent.name, turn)
-                note_msg = (
-                    f"Captured note (turn {turn}, agent {current_agent.name}): {note}"
-                )
-                history.append({"role": "system", "content": note_msg})
-                if memory_manager:
-                    memory_manager.add_message("system", note_msg)
-            action_space.add_action(
-                "note_logged", f"Logged {len(extracted_notes)} note(s).", status="ok"
+        # Track whether any substantive action fires this turn.
+        _action_fired = False
+        _delegated = False
+
+        # --- Enforced work-item commands (interactive runs only) ---
+        work_command = parse_work_item_command(msg) if work_items is not None else None
+        if work_command is not None:
+            _action_fired = True
+            work_result = execute_work_item_command(
+                work_items,
+                work_command,
+                owner=current_agent.name,
+                turn=turn,
             )
-        if extracted_todos:
-            for todo_text in extracted_todos:
-                item = artifacts.add_todo(todo_text, current_agent.name, turn)
-                todo_msg = (
-                    f"TODO added (#{item.id}) by {current_agent.name}: {item.text}"
-                )
-                history.append({"role": "system", "content": todo_msg})
-                if memory_manager:
-                    memory_manager.add_message("system", todo_msg)
+            work_feedback = "[SYSTEM] " + work_result.feedback
+            history.append({"role": "system", "content": work_feedback})
+            if memory_manager:
+                memory_manager.add_message("system", work_feedback)
             action_space.add_action(
-                "todo_logged", f"Logged {len(extracted_todos)} TODO(s).", status="ok"
+                "work_item_command",
+                work_feedback,
+                status="ok" if work_result.success else "error",
             )
+            if work_result.changed_item is not None:
+                _emit_runner_event(
+                    event_callback,
+                    event_type="work_item_changed",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={"item": work_result.changed_item},
+                )
 
         # --- End session handling ---
         # Only end session if there's no delegation command also present
         # (prevents premature exit when LLM outputs both delegation and end_session)
         has_delegation = detect_delegation(msg) is not None
+        end_session_refused = False
+        if work_items is not None and detect_end_session(msg):
+            blocking = work_items.blocking_for_owner(current_agent.name)
+            if blocking:
+                end_session_refused = True
+                blocked_feedback = (
+                    "[SYSTEM] end_session refused. Current owner "
+                    f"{current_agent.name} still owns non-Done work items: "
+                    + ", ".join(
+                        f"{item['id']} ({item['status']}, owner={item['owner']})"
+                        for item in blocking
+                    )
+                    + ". Close or transfer them before ending the session."
+                )
+                history.append({"role": "system", "content": blocked_feedback})
+                if memory_manager:
+                    memory_manager.add_message("system", blocked_feedback)
+                action_space.add_action(
+                    "end_session_refused", blocked_feedback, status="error"
+                )
         if (
             detect_end_session(msg)
             and _count_code_blocks(msg) == 0
             and not has_delegation
+            and not end_session_refused
         ):
             if is_auto:
                 console.print(
@@ -850,10 +893,6 @@ def run_agent_session(
                     )
                     session_end_reason = "agent_finished"
                     break
-
-        # Track whether any substantive action fires this turn (for loop-detection feedback)
-        _action_fired = False
-        _delegated = False
 
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
@@ -998,11 +1037,43 @@ def run_agent_session(
         # caribou.execution.user_commands — no human input is involved here.
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
-            _action_fired = True
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
+            previous_agent_name = current_agent.name
+            delegation_item_id = (
+                parse_delegation_item_id(msg, cmd) if work_items is not None else None
+            )
+            if new_agent is not None and delegation_item_id is not None:
+                try:
+                    transferred_item = work_items.transfer(
+                        delegation_item_id,
+                        previous_agent_name,
+                        target_agent_name,
+                        turn,
+                    )
+                except WorkItemError as exc:
+                    transfer_feedback = (
+                        f"[SYSTEM] Delegation refused because work-item transfer "
+                        f"failed: {exc}"
+                    )
+                    history.append({"role": "system", "content": transfer_feedback})
+                    if memory_manager:
+                        memory_manager.add_message("system", transfer_feedback)
+                    action_space.add_action(
+                        "work_item_transfer", transfer_feedback, status="error"
+                    )
+                    new_agent = None
+                else:
+                    _emit_runner_event(
+                        event_callback,
+                        event_type="work_item_changed",
+                        run_id=run_id,
+                        turn=turn,
+                        agent_name=previous_agent_name,
+                        payload={"item": transferred_item},
+                    )
             if new_agent:
-                previous_agent_name = current_agent.name
+                _action_fired = True
                 if report_memory:
                     agent_history_slice = history[current_agent_history_start:]
                     agent_report = _generate_agent_report(
@@ -1024,7 +1095,9 @@ def run_agent_session(
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
                 # Global policy lives in the pinned first system message; skip re-embedding here.
-                system_prompt = current_agent.get_full_prompt(None)
+                system_prompt = current_agent.get_full_prompt(
+                    None, work_item_policy if work_items is not None else None
+                )
                 prompt_with_context = system_prompt + "\n\n" + analysis_context
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append(
@@ -1436,6 +1509,7 @@ def run_agent_session(
                 sandbox_manager=sandbox_manager,
                 output_dir=output_dir,
                 evaluator_runtime=evaluator_runtime,
+                work_items=cast(WorkItemStore, work_items),
             )
             if dispatch_user_command(user_input, command_ctx):
                 continue

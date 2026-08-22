@@ -5,7 +5,7 @@ import {
   TokenEventData, MessageCompleteData, AgentSwitchData,
   CodeSubmittedData, CodeResultData, ArtifactEventData,
   StatusChangeData, ErrorData, RecoveryProgressData, RecoveryCompletedData,
-  SystemMessageData
+  SystemMessageData, WorkItemChangedData
 } from '../models/events.model';
 import { SessionService } from './session.service';
 import { SessionStatus } from '../models/session.model';
@@ -52,6 +52,7 @@ export class AgentStreamService implements OnDestroy {
   readonly recoveryProgress$ = this.ofType<RecoveryProgressData>('recovery_progress');
   readonly recoveryCompleted$ = this.ofType<RecoveryCompletedData>('recovery_completed');
   readonly systemMessages$ = this.ofType<SystemMessageData>('system_message');
+  readonly workItemChanges$ = this.ofType<WorkItemChangedData>('work_item_changed');
   readonly errors$ = this.ofType<ErrorData>('error');
 
   // Current streaming state

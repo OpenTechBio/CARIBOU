@@ -412,6 +412,57 @@
         </section>
       }
 
+      <section class="sidebar-section work-items-section">
+        <h3>Work Items <span class="count">{{ workItems().length }}</span></h3>
+        @for (item of workItems(); track item.id) {
+          <button type="button" class="work-item-row"
+            [class.selected]="selectedWorkItem()?.id === item.id"
+            (click)="selectWorkItem(item.id)">
+            <span class="work-item-heading">#{{ item.id }} {{ item.title }}</span>
+            <span class="work-item-meta">{{ item.status }} · {{ item.owner }}</span>
+            <span class="work-item-meta">Created T{{ item.created_turn }} · {{ item.created_at | date:'short' }}</span>
+            @if (item.completed_at) {
+              <span class="work-item-meta">Completed T{{ item.completed_turn }} · {{ item.completed_at | date:'short' }}</span>
+            }
+          </button>
+        }
+        @if (workItems().length === 0) {
+          <p class="empty">No work items yet.</p>
+        }
+        @if (selectedWorkItem(); as item) {
+          <div class="work-item-detail">
+            <div class="work-item-detail-actions">
+              <strong>#{{ item.id }} · {{ item.status }}</strong>
+              <button type="button" class="btn btn-ghost btn-xs"
+                (click)="reviewWorkItem(item.id)"
+                [disabled]="!canReviewWorkItem(item) || workItemReviewing()">
+                {{ workItemReviewing() ? 'Reviewing…' : 'Review' }}
+              </button>
+            </div>
+            <p>{{ item.body }}</p>
+            @if (item.completion_summary) {
+              <p><strong>Completion:</strong> {{ item.completion_summary }}</p>
+            }
+            <div class="work-item-history">
+              @for (transition of item.transitions; track $index) {
+                <div>{{ transition['timestamp'] | date:'short' }} · {{ transition['kind'] }} · {{ transition['actor'] }}</div>
+              }
+              @for (review of item.reviews; track $index) {
+                <div class="work-item-review">
+                  {{ review['timestamp'] | date:'short' }} · review {{ review['verdict'] || 'failed' }}
+                  @if (review['assessment']) { <p>{{ review['assessment'] }}</p> }
+                  @if (review['error']) { <p class="eval-error">{{ review['error'] }}</p> }
+                </div>
+              }
+            </div>
+            <code class="work-item-commit">{{ item.latest_commit }}</code>
+          </div>
+        }
+        @if (workItemError()) {
+          <div class="eval-error">{{ workItemError() }}</div>
+        }
+      </section>
+
       <section class="sidebar-section">
         <h3>Artifacts <span class="count">{{ artifacts().length }}</span></h3>
         @if (artifacts().length > 3) {

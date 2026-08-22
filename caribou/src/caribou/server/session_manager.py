@@ -39,10 +39,12 @@ from caribou.core.python_environments import (
 )
 from caribou.execution.evaluation import (
     build_evaluation_payload,
+    evaluate_work_item,
     resolve_evaluator_agent,
     run_evaluation,
     evaluation_response_metadata,
 )
+from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
 from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
@@ -1197,6 +1199,76 @@ class SessionManager:
 
         return result
 
+    def _work_item_store(self, session: _Session) -> WorkItemStore:
+        policy = (
+            session.agent_system.work_item_policy
+            if session.agent_system is not None
+            else WorkItemPolicy()
+        )
+        return WorkItemStore(session.output_dir, session.id, policy)
+
+    def list_work_items(self, session_id: str) -> List[Dict[str, Any]]:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        return self._work_item_store(session).list()
+
+    def read_work_item(self, session_id: str, item_id: int) -> Dict[str, Any]:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        return self._work_item_store(session).read(item_id)
+
+    async def review_work_item(
+        self, session_id: str, item_id: int
+    ) -> Dict[str, object]:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.agent_system is None or session.evaluator_llm_client is None:
+            raise ValueError(
+                "Session is not running — start or restart it before reviewing."
+            )
+        evaluator_agent, _source = resolve_evaluator_agent(session.agent_system)
+        async with session.evaluator_model_lock:
+            evaluator_client = session.evaluator_llm_client
+            evaluator_model_name = session.evaluator_model_name
+        store = self._work_item_store(session)
+        try:
+            result = await asyncio.to_thread(
+                evaluate_work_item,
+                store=store,
+                item_id=item_id,
+                run_id=session.id,
+                turn=session.current_turn,
+                evaluator_agent=evaluator_agent,
+                llm_client=evaluator_client,
+                model_name=evaluator_model_name,
+            )
+            changed_item = result["item"]
+        except Exception:
+            # Provider/contract failures are committed by evaluate_work_item;
+            # publish that durable failed attempt before surfacing the error.
+            changed_item = store.read(item_id)
+            self._emit_work_item_change(session, changed_item)
+            raise
+        self._emit_work_item_change(session, changed_item)
+        return result
+
+    def _emit_work_item_change(
+        self, session: _Session, item: Dict[str, object]
+    ) -> None:
+        self._on_event(
+            session,
+            {
+                "type": "work_item_changed",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {"item": item},
+            },
+        )
+
     def get_evaluator_model(self, session_id: str) -> EvaluatorModelState:
         session = self._sessions.get(session_id)
         if session is None:
@@ -1860,7 +1932,16 @@ class SessionManager:
             session.analysis_context = analysis_context
 
             driver = session.driver_agent
-            system_prompt = driver.get_full_prompt(None) + "\n\n" + analysis_context
+            system_prompt = (
+                driver.get_full_prompt(
+                    None,
+                    agent_sys.work_item_policy
+                    if session.config.mode == SessionMode.interactive
+                    else None,
+                )
+                + "\n\n"
+                + analysis_context
+            )
             session.initial_history = [
                 {
                     "role": "system",

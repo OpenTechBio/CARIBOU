@@ -5,6 +5,7 @@ import {
   Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
   SessionForkRequest, SessionResumeRequest,
   EvaluatorModelState, EvaluatorModelUpdateRequest,
+  WorkItemDetail, WorkItemReviewResult, WorkItemSummary,
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -85,6 +86,21 @@ export class SessionService {
 
   getCodeEvents(id: string): Observable<CodeEvent[]> {
     return this.http.get<CodeEvent[]>(`api/sessions/${id}/code_events`);
+  }
+
+  getWorkItems(id: string): Observable<WorkItemSummary[]> {
+    return this.http.get<WorkItemSummary[]>(`api/sessions/${id}/work-items`);
+  }
+
+  getWorkItem(id: string, itemId: number): Observable<WorkItemDetail> {
+    return this.http.get<WorkItemDetail>(`api/sessions/${id}/work-items/${itemId}`);
+  }
+
+  reviewWorkItem(id: string, itemId: number): Observable<WorkItemReviewResult> {
+    return this.http.post<WorkItemReviewResult>(
+      `api/sessions/${id}/work-items/${itemId}/review`,
+      {},
+    );
   }
 
   artifactDownloadUrl(sessionId: string, artifactId: string): string {

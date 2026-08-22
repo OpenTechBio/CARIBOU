@@ -103,6 +103,15 @@ def run_session_sync(
         detect_rag,
     )
     from caribou.execution.rag_client import get_rag_client
+    from caribou.execution.work_items import (
+        WorkItemError,
+        WorkItemPolicy,
+        WorkItemStore,
+        execute_work_item_command,
+        parse_delegation_item_id,
+        parse_work_item_command,
+        render_work_item_prompt,
+    )
     from caribou.core.io_helpers import (
         extract_python_code_blocks,
         format_execute_response,
@@ -113,6 +122,16 @@ def run_session_sync(
     cancel_response_flag = cancel_response_flag or threading.Event()
     output_dir.mkdir(parents=True, exist_ok=True)
     emitted_artifacts: Set[str] = set()
+    work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
+    work_items = (
+        WorkItemStore(output_dir, session_id, work_item_policy) if not is_auto else None
+    )
+
+    def _agent_prompt(agent: Any) -> str:
+        prompt = agent.get_full_prompt(None)
+        if work_items is not None:
+            prompt += render_work_item_prompt(work_item_policy)
+        return prompt
 
     def _emit(event_type: str, data: Dict, turn: int = 0) -> None:
         emit(
@@ -425,12 +444,65 @@ def run_session_sync(
                 turn=turn,
             )
 
+            _action_fired = False
+            _delegated = False
+
+            # --- Enforced work-item commands (interactive only) ---
+            work_command = (
+                parse_work_item_command(msg) if work_items is not None else None
+            )
+            if work_command is not None:
+                _action_fired = True
+                work_result = execute_work_item_command(
+                    work_items,
+                    work_command,
+                    owner=current_agent.name,
+                    turn=turn,
+                )
+                feedback = work_result.feedback
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Work item"},
+                    turn=turn,
+                )
+                if work_result.changed_item is not None:
+                    _emit(
+                        "work_item_changed",
+                        {"item": work_result.changed_item},
+                        turn=turn,
+                    )
+
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
+            end_session_refused = False
+            if work_items is not None and detect_end_session(msg):
+                blocking = work_items.blocking_for_owner(current_agent.name)
+                if blocking:
+                    end_session_refused = True
+                    feedback = (
+                        f"end_session refused. Current owner {current_agent.name} "
+                        "still owns non-Done work items: "
+                        + ", ".join(
+                            f"{item['id']} ({item['status']}, owner={item['owner']})"
+                            for item in blocking
+                        )
+                    )
+                    history.append({"role": "system", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", feedback)
+                    _emit(
+                        "system_message",
+                        {"content": feedback, "category": "Work item"},
+                        turn=turn,
+                    )
             if (
                 detect_end_session(msg)
                 and _count_code_blocks(msg) == 0
                 and not has_delegation
+                and not end_session_refused
             ):
                 if is_auto:
                     if logger:
@@ -452,9 +524,6 @@ def run_session_sync(
                         {"status": "stopped", "reason": "agent_requested_end"},
                     )
                     return
-
-            _action_fired = False
-            _delegated = False
 
             # --- RAG ---
             query_str = detect_rag(msg)
@@ -498,10 +567,42 @@ def run_session_sync(
             # --- Delegation ---
             cmd = detect_delegation(msg)
             if cmd and cmd in current_agent.commands:
-                _action_fired = True
                 target_name = current_agent.commands[cmd].target_agent
                 new_agent = agent_system.get_agent(target_name)
+                delegation_item_id = (
+                    parse_delegation_item_id(msg, cmd)
+                    if work_items is not None
+                    else None
+                )
+                if new_agent is not None and delegation_item_id is not None:
+                    try:
+                        transferred_item = work_items.transfer(
+                            delegation_item_id,
+                            current_agent.name,
+                            target_name,
+                            turn,
+                        )
+                    except WorkItemError as exc:
+                        feedback = (
+                            f"Delegation refused: work-item transfer failed: {exc}"
+                        )
+                        history.append({"role": "system", "content": feedback})
+                        if memory_manager is not None:
+                            memory_manager.add_message("system", feedback)
+                        _emit(
+                            "system_message",
+                            {"content": feedback, "category": "Work item"},
+                            turn=turn,
+                        )
+                        new_agent = None
+                    else:
+                        _emit(
+                            "work_item_changed",
+                            {"item": transferred_item},
+                            turn=turn,
+                        )
                 if new_agent:
+                    _action_fired = True
                     if logger:
                         logger.info(
                             "Agent switch: %s -> %s | command: %s | turn: %s",
@@ -553,13 +654,11 @@ def run_session_sync(
                                     current_agent.name,
                                     len(agent_report),
                                 )
-                        report_memory.update_agent_prompt(
-                            new_agent.get_full_prompt(None)
-                        )
+                        report_memory.update_agent_prompt(_agent_prompt(new_agent))
                         current_agent_history_start = len(history)
                     switch_history_start = len(history)
                     refreshed_agent_prompt = (
-                        new_agent.get_full_prompt(None) + "\n\n" + analysis_context
+                        _agent_prompt(new_agent) + "\n\n" + analysis_context
                     )
                     _emit(
                         "system_message",
@@ -567,7 +666,7 @@ def run_session_sync(
                         turn=turn,
                     )
                     _apply_agent_switch(
-                        new_agent_prompt=new_agent.get_full_prompt(None),
+                        new_agent_prompt=_agent_prompt(new_agent),
                         analysis_context=analysis_context,
                         history=history,
                         memory_manager=memory_manager,

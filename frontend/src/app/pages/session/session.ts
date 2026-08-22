@@ -15,12 +15,13 @@ import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
 import {
   Message, Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
-  RecoveryMode, SessionForkRequest, SessionResumeRequest
+  RecoveryMode, SessionForkRequest, SessionResumeRequest,
+  WorkItemDetail, WorkItemSummary,
 } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
   CodeResultData, ErrorData, StatusChangeData, RecoveryCompletedData,
-  SystemMessageData
+  SystemMessageData, WorkItemChangedData,
 } from '../../core/models/events.model';
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
@@ -106,6 +107,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   evaluating = signal(false);
   evaluationResult = signal<EvaluationResult | null>(null);
   evaluationError = signal<string | null>(null);
+  workItems = signal<WorkItemSummary[]>([]);
+  selectedWorkItem = signal<WorkItemDetail | null>(null);
+  workItemReviewing = signal(false);
+  workItemError = signal<string | null>(null);
   editingEvaluatorModel = signal(false);
   evaluatorModelSaving = signal(false);
   evaluatorModelError = signal<string | null>(null);
@@ -405,6 +410,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
           }
         });
         this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
+        this.loadWorkItems(id);
         this.sessionStartTs = Date.now();
         this.fetchMemoryState(id);
       },
@@ -504,6 +510,18 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     this.subs.add(this.stream.artifacts$.subscribe(() => {
       this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
+    }));
+
+    this.subs.add(this.stream.workItemChanges$.subscribe(ev => {
+      const d = ev.data as WorkItemChangedData;
+      this.workItems.update(items => {
+        const summary: WorkItemSummary = d.item;
+        return [...items.filter(item => item.id !== summary.id), summary]
+          .sort((a, b) => a.id - b.id);
+      });
+      if (this.selectedWorkItem()?.id === d.item.id) {
+        this.selectedWorkItem.set(d.item);
+      }
     }));
 
     this.subs.add(this.stream.errors$.subscribe(ev => {
@@ -839,6 +857,50 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.evaluating.set(false);
         this.evaluationError.set(err?.error?.detail ?? 'Evaluation failed.');
         this.toasts.show({ kind: 'error', title: 'Evaluation failed', ttlMs: 4000 });
+      },
+    });
+  }
+
+  loadWorkItems(sessionId?: string): void {
+    const id = sessionId ?? this.session()?.id;
+    if (!id) return;
+    this.sessionSvc.getWorkItems(id).subscribe({
+      next: items => this.workItems.set(items),
+      error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work items.'),
+    });
+  }
+
+  selectWorkItem(itemId: number): void {
+    const id = this.session()?.id;
+    if (!id) return;
+    this.workItemError.set(null);
+    this.sessionSvc.getWorkItem(id, itemId).subscribe({
+      next: item => this.selectedWorkItem.set(item),
+      error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work item.'),
+    });
+  }
+
+  canReviewWorkItem(item: WorkItemSummary): boolean {
+    return this.canEvaluate() && (item.status === 'In review' || item.status === 'Done');
+  }
+
+  reviewWorkItem(itemId: number): void {
+    const id = this.session()?.id;
+    if (!id || this.workItemReviewing()) return;
+    this.workItemReviewing.set(true);
+    this.workItemError.set(null);
+    this.sessionSvc.reviewWorkItem(id, itemId).subscribe({
+      next: result => {
+        this.workItemReviewing.set(false);
+        this.selectedWorkItem.set(result.item);
+        this.workItems.update(items => [
+          ...items.filter(item => item.id !== result.item.id),
+          result.item,
+        ].sort((a, b) => a.id - b.id));
+      },
+      error: err => {
+        this.workItemReviewing.set(false);
+        this.workItemError.set(err?.error?.detail ?? 'Work-item review failed.');
       },
     });
   }

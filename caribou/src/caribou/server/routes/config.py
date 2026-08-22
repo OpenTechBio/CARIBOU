@@ -416,6 +416,7 @@ def _load_blueprint_content(name: str) -> BlueprintContent:
         agents=agents,
         is_package_default=_is_package_default(name),
         evaluator_agent=raw.get("evaluator_agent"),
+        work_item_policy=raw.get("work_item_policy") or {"qc_mode": "optional"},
     )
 
 
@@ -438,6 +439,7 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
     return {
         "global_policy": req.global_policy,
         "evaluator_agent": req.evaluator_agent,
+        "work_item_policy": req.work_item_policy.model_dump(),
         "agents": agents_dict,
     }
 
@@ -467,6 +469,10 @@ def _validate_blueprint(req: SaveBlueprintRequest) -> None:
         raise HTTPException(
             422,
             f"evaluator_agent '{req.evaluator_agent}' does not match any defined agent.",
+        )
+    if req.work_item_policy.qc_mode == "required" and req.evaluator_agent is None:
+        raise HTTPException(
+            422, "Required work-item QC needs an evaluator_agent in this blueprint."
         )
 
 
@@ -520,6 +526,7 @@ async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintCon
         global_policy=req.global_policy,
         agents=req.agents,
         evaluator_agent=req.evaluator_agent,
+        work_item_policy=req.work_item_policy,
     )
     _atomic_write(user_path, _to_disk_dict(req))
     return _load_blueprint_content(name)

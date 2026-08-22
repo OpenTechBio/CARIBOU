@@ -41,6 +41,7 @@ export class BlueprintEditorComponent implements OnInit {
   blueprintName = signal('');
   globalPolicy = signal('');
   evaluatorAgent = signal<string | null>(null);
+  workItemQcMode = signal<'optional' | 'required'>('optional');
   agents = signal<AgentEntry[]>([]);
 
   // Tabs
@@ -102,6 +103,7 @@ export class BlueprintEditorComponent implements OnInit {
         this.blueprintName.set(bp.name);
         this.globalPolicy.set(bp.global_policy);
         this.evaluatorAgent.set(bp.evaluator_agent);
+        this.workItemQcMode.set(bp.work_item_policy?.qc_mode ?? 'optional');
         const entries = this._toAgentEntries(bp.agents);
         this.agents.set(entries);
         this._resetImportState(entries.length);
@@ -120,6 +122,7 @@ export class BlueprintEditorComponent implements OnInit {
     this.blueprintName.set('');
     this.globalPolicy.set('');
     this.evaluatorAgent.set(null);
+    this.workItemQcMode.set('optional');
     this.agents.set([]);
     this._resetImportState(0);
     this.activeTab.set('form');
@@ -180,6 +183,7 @@ export class BlueprintEditorComponent implements OnInit {
       global_policy: this.globalPolicy(),
       agents: this._toAgentConfigMap(this.agents()),
       evaluator_agent: this.evaluatorAgent(),
+      work_item_policy: { qc_mode: this.workItemQcMode() },
     };
 
     this.saving.set(true);
@@ -457,6 +461,7 @@ export class BlueprintEditorComponent implements OnInit {
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
       evaluator_agent: this.evaluatorAgent(),
+      work_item_policy: { qc_mode: this.workItemQcMode() },
       agents: this._toAgentConfigMap(this.agents()),
     }, null, 2);
   }
@@ -467,6 +472,7 @@ export class BlueprintEditorComponent implements OnInit {
       if (parsed.name !== undefined) this.blueprintName.set(parsed.name);
       if (parsed.global_policy !== undefined) this.globalPolicy.set(parsed.global_policy);
       if (parsed.evaluator_agent !== undefined) this.evaluatorAgent.set(parsed.evaluator_agent);
+      this.workItemQcMode.set(parsed.work_item_policy?.qc_mode ?? 'optional');
       if (parsed.agents && typeof parsed.agents === 'object') {
         const entries = this._toAgentEntries(parsed.agents);
         this.agents.set(entries);
@@ -500,6 +506,9 @@ export class BlueprintEditorComponent implements OnInit {
     }
     if (evaluatorAgent && !keys.has(evaluatorAgent)) {
       errors.push(`Evaluator agent '${evaluatorAgent}' does not match any defined agent.`);
+    }
+    if (this.workItemQcMode() === 'required' && !evaluatorAgent) {
+      errors.push('Required work-item QC needs an evaluator agent.');
     }
     return errors;
   }

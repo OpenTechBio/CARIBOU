@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from caribou.agents.AgentSystem import Agent, AgentSystem
 from caribou.config import DEFAULT_AGENT_DIR
 from caribou.execution.token_utils import estimate_messages_tokens, estimate_tokens
+from caribou.execution.work_items import WorkItemConflict, WorkItemStore
 
 PACKAGE_AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 EVALUATOR_BLUEPRINT_NAME = "evaluator_agent"
@@ -141,14 +142,58 @@ def estimate_payload_tokens(system_prompt: str, payload: Dict[str, object]) -> i
     # Estimate on raw message/todo content, not a JSON-serialized blob —
     # escaping quotes/newlines would inflate the count past what the model
     # actually has to read.
-    todos_tokens = sum(
-        estimate_tokens(str(t.get("text", ""))) for t in payload.get("todos", [])
-    )
-    return (
-        estimate_tokens(system_prompt)
-        + estimate_messages_tokens(payload["history"])
-        + todos_tokens
-    )
+    if "history" in payload:
+        todos_tokens = sum(
+            estimate_tokens(str(t.get("text", ""))) for t in payload.get("todos", [])
+        )
+        return (
+            estimate_tokens(system_prompt)
+            + estimate_messages_tokens(payload["history"])
+            + todos_tokens
+        )
+    return estimate_tokens(system_prompt) + estimate_tokens(json.dumps(payload))
+
+
+def build_work_item_review_payload(
+    *, run_id: str, item: Dict[str, Any], diff: str
+) -> Dict[str, object]:
+    """Build a bounded artifact review request without transcript history."""
+    return {
+        "kind": "work_item_review",
+        "run_id": run_id,
+        "work_item": item,
+        "git_diff": diff,
+        "instructions": (
+            "Review whether the completion summary satisfies the title and body. "
+            "Return only one JSON object with keys verdict and assessment. "
+            "verdict must be either approve or reject."
+        ),
+        "response_schema": {
+            "verdict": "approve | reject",
+            "assessment": "non-empty string",
+        },
+    }
+
+
+def parse_work_item_review(response_text: str) -> Tuple[str, str]:
+    """Validate the evaluator's deliberately small, provider-neutral contract."""
+    text = response_text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("evaluator returned malformed work-item review JSON") from exc
+    if not isinstance(payload, dict) or payload.get("verdict") not in {
+        "approve",
+        "reject",
+    }:
+        raise ValueError("evaluator review verdict must be 'approve' or 'reject'")
+    assessment = payload.get("assessment")
+    if not isinstance(assessment, str) or not assessment.strip():
+        raise ValueError("evaluator review assessment must be a non-empty string")
+    return str(payload["verdict"]), assessment.strip()
 
 
 def run_evaluation(
@@ -180,3 +225,63 @@ def run_evaluation(
     if response_callback is not None:
         response_callback(response)
     return response.choices[0].message.content
+
+
+def evaluate_work_item(
+    *,
+    store: WorkItemStore,
+    item_id: int,
+    run_id: str,
+    turn: int,
+    evaluator_agent: Agent,
+    llm_client: object,
+    model_name: str,
+) -> Dict[str, object]:
+    """Run and durably record one bounded work-item review."""
+    item = store.read(item_id)
+    expected_status = "In review" if store.policy.qc_mode == "required" else "Done"
+    if item.get("status") != expected_status:
+        raise WorkItemConflict(
+            f"work item {item_id} must be {expected_status} before review"
+        )
+    payload = build_work_item_review_payload(
+        run_id=run_id, item=item, diff=store.review_diff(item_id)
+    )
+    provider_receipt: Dict[str, object] = {}
+    raw_response = ""
+    try:
+        raw_response = run_evaluation(
+            evaluator_agent=evaluator_agent,
+            llm_client=llm_client,
+            model_name=model_name,
+            payload=payload,
+            response_callback=lambda response: provider_receipt.update(
+                evaluation_response_metadata(response)
+            ),
+        )
+        verdict, assessment = parse_work_item_review(raw_response)
+    except Exception as exc:
+        store.record_review(
+            item_id,
+            evaluator=evaluator_agent.name,
+            turn=turn,
+            verdict=None,
+            assessment=raw_response,
+            provider_receipt=provider_receipt,
+            error=str(exc),
+        )
+        raise
+    updated = store.record_review(
+        item_id,
+        evaluator=evaluator_agent.name,
+        turn=turn,
+        verdict=verdict,  # type: ignore[arg-type]
+        assessment=assessment,
+        provider_receipt=provider_receipt,
+    )
+    return {
+        "item": updated,
+        "verdict": verdict,
+        "assessment": assessment,
+        "provider_receipt": provider_receipt,
+    }
