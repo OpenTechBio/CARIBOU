@@ -1,8 +1,8 @@
-*This repository is a spinoff of the original [OLAF](https://github.com/OpenTechBio/Olaf) project. While OLAF was focused on creating a user-friendly web app for LLM-powered bioinformatics, CARIBOU aims to be a tool to run on accelerated hardware. It is designed for high-performance, reproducible execution of LLM-driven bioinformatics pipelines on GPU and HPC environments.*
-
 # CARIBOU: The Open-source Language Agent Framework 🚀
 
 **CARIBOU is a multi-agent LLM framework for bioinformatics on GPU and HPC environments.** It orchestrates teams of specialized AI agents that collaborate inside secure sandboxes (Docker or Singularity) to perform complex analyses on single-cell and spatial transcriptomics data.
+
+![CARIBOU web UI — session view](docs/images/web-ui-session-chat.png)
 
 CARIBOU ships with two interfaces:
 
@@ -126,6 +126,10 @@ routing policy, returned provider, token usage, and provider-reported cost.
 ## Web Frontend
 
 The web UI provides a full browser-based interface to CARIBOU running on HPC.
+
+| Session list | New session wizard |
+|---|---|
+| ![Session list](docs/images/web-ui-sessions.png) | ![New session wizard](docs/images/web-ui-new-session.png) |
 
 ### Build the frontend
 
@@ -306,3 +310,7 @@ Browser
 ```
 
 The web server layer is entirely separate from the existing CLI (`caribou run`). Both drive the same underlying agent execution engine.
+
+---
+
+CARIBOU builds on the original [OLAF](https://github.com/OpenTechBio/Olaf) project, adapted for high-performance, reproducible execution on GPU and HPC environments.
