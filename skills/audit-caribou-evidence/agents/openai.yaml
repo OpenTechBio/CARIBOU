@@ -1,4 +1,0 @@
-interface:
-  display_name: "Audit CARIBOU Evidence"
-  short_description: "Trace claims to reproducible evidence"
-  default_prompt: "Use $audit-caribou-evidence to audit CARIBOU claims, results, and release artifacts."
