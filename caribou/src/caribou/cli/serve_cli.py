@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm
+from rich.prompt import Confirm, IntPrompt
 
 from caribou.config import ENV_FILE
 from caribou.core.control_access import (
@@ -132,6 +134,38 @@ def _display_host(host: str) -> str:
     return host
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    """Return True if binding host:port fails, i.e. the port is taken."""
+    family = socket.AF_INET6 if host == "::" else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return True
+    return False
+
+
+def _resolve_serve_port(host: str, port: int) -> int:
+    """Return the port to actually bind, prompting interactively if it's taken.
+
+    In a TTY this keeps asking for an alternative until one is free. Without a
+    TTY it fails loudly (no silent auto-pick), suggesting the --port flag.
+    """
+    while _port_in_use(host, port):
+        if not sys.stdin.isatty():
+            _console.print(
+                f"[red]Port {port} is already in use. Re-run with "
+                f"`--port <n>` to choose another port.[/red]"
+            )
+            raise typer.Exit(1)
+        port = IntPrompt.ask(
+            f"Port {port} is already in use — enter an alternative port",
+            default=port + 1,
+        )
+    return port
+
+
 def _write_proxy_config(host: str, port: int) -> Path:
     proxy_host = _backend_proxy_host(host)
     config = {
@@ -234,6 +268,10 @@ def serve(
       Run this on HPC, then in frontend/: ng serve --proxy-config proxy.conf.json
     """
     import uvicorn
+
+    # Resolve the port up front so a taken default (8000) is caught before the
+    # potentially slow frontend build, and so the announced URL is accurate.
+    port = _resolve_serve_port(host, port)
 
     # In --refresh mode Angular serves its own bundle from ng serve, so a
     # prebuilt dist is not required. Otherwise, offer to (re)build when the
