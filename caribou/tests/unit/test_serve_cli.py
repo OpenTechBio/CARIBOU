@@ -1,5 +1,7 @@
 import json
+import socket
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -10,6 +12,8 @@ from caribou.cli.serve_cli import (
     _announce_control_access_token,
     _backend_proxy_host,
     _display_host,
+    _port_in_use,
+    _resolve_serve_port,
     _start_frontend_dev_server,
     _stop_process,
     _write_proxy_config,
@@ -84,6 +88,52 @@ def test_start_frontend_dev_server_requires_frontend_package(tmp_path):
         )
 
 
+def _bind_ephemeral_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_port_in_use_reports_a_bound_port():
+    port = _bind_ephemeral_port()
+    # Re-bind the same port to simulate another process already listening.
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", port))
+    blocker.listen(1)
+    try:
+        assert _port_in_use("127.0.0.1", port) is True
+    finally:
+        blocker.close()
+
+
+def test_resolve_serve_port_keeps_a_free_port(monkeypatch):
+    port = _bind_ephemeral_port()
+    monkeypatch.setattr("caribou.cli.serve_cli._port_in_use", lambda h, p: False)
+    assert _resolve_serve_port("127.0.0.1", port) == port
+
+
+def test_resolve_serve_port_prompts_interactively_for_an_alternative(monkeypatch):
+    port = _bind_ephemeral_port()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("caribou.cli.serve_cli.IntPrompt.ask", Mock(return_value=port + 1))
+    monkeypatch.setattr(
+        "caribou.cli.serve_cli._port_in_use",
+        lambda h, p: p == port,
+    )
+    assert _resolve_serve_port("127.0.0.1", port) == port + 1
+
+
+def test_resolve_serve_port_fails_loudly_without_a_tty(monkeypatch):
+    port = _bind_ephemeral_port()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(
+        "caribou.cli.serve_cli._port_in_use", lambda h, p: True
+    )
+    with pytest.raises(typer.Exit):
+        _resolve_serve_port("127.0.0.1", port)
+
+
 def test_stop_process_terminates_then_kills_if_needed():
     process = Mock()
     process.poll.return_value = None
@@ -118,6 +168,7 @@ def test_serve_resolves_and_displays_control_token_before_uvicorn(capsys):
     )
     with (
         patch("caribou.cli.serve_cli._ensure_frontend_built"),
+        patch("caribou.cli.serve_cli._resolve_serve_port", side_effect=lambda h, p: p),
         patch(
             "caribou.cli.serve_cli.resolve_control_access_token",
             return_value=resolved,

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Develop CARIBOU Platform"
-  short_description: "Evolve CARIBOU without breaking parity"
-  default_prompt: "Use $develop-caribou-platform to implement this CARIBOU platform change with shared execution semantics."

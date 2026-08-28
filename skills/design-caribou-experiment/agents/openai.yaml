@@ -1,4 +1,0 @@
-interface:
-  display_name: "Design CARIBOU Experiment"
-  short_description: "Design frozen, evidence-ready experiments"
-  default_prompt: "Use $design-caribou-experiment to design a frozen, auditable CARIBOU experiment."

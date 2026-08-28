@@ -1,4 +1,0 @@
-interface:
-  display_name: "Orchestrate CARIBOU Program"
-  short_description: "Drive autonomous CARIBOU program milestones"
-  default_prompt: "Use $orchestrate-caribou-program to advance the CARIBOU program to its next validated milestone."
